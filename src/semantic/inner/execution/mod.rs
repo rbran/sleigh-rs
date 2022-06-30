@@ -1,4 +1,5 @@
 use crate::semantic::inner::FieldSizeCell;
+use crate::semantic::inner::FieldSizeMut;
 use crate::semantic::inner::FIELD_SIZE_BOOL;
 use core::cell::Cell;
 use std::cell::RefCell;
@@ -68,10 +69,11 @@ impl Export {
         let mut addr = addr;
         //addr expr is the addr to access the space, so it need to be space
         //addr size
-        addr.update_size(|size| {
-            size.intersection(space.space.memory().addr_size())
-        })
-        .unwrap();
+        addr.size_mut()
+            .update_action(|size| {
+                size.intersection(space.space.memory().addr_size())
+            })
+            .unwrap();
         Self::Reference(addr, space)
     }
     pub fn src(&self) -> &InputSource {
@@ -88,16 +90,12 @@ impl Export {
             Self::Const(size, _) => *size,
         }
     }
-    pub fn update_output_size<F>(&mut self, action: F) -> Option<bool>
-    where
-        F: FnMut(FieldSize) -> Option<FieldSize>,
-    {
+    pub fn output_size_mut(&mut self) -> FieldSizeCell {
         match self {
-            Self::Value(expr) => expr.update_size(action),
-            Self::Reference(_, deref) => {
-                deref.mut_output_size().update_action(action)
-            }
-            Self::Const(size, _) => size.update_action(action),
+            Self::Value(expr) => expr.size_mut(),
+            //TODO verify this
+            Self::Reference(_, deref) => deref.output_size_mut().into(),
+            Self::Const(size, _) => size.into(),
         }
     }
     pub fn solve(
@@ -148,8 +146,7 @@ impl MemWrite {
     ) -> Self {
         //addr expr is the addr to access the space, so it need to be space
         //addr size
-        addr.update_size(|_| Some(mem.space.memory().addr_size()))
-            .unwrap();
+        addr.size_mut().set(mem.space.memory().addr_size());
         Self {
             addr,
             mem,
@@ -194,7 +191,7 @@ impl MemWrite {
         if let Some(write_size) = self.mem.size.final_value() {
             //if left side size is known, right side will need to produce a
             //a value with size equal or smaller then that
-            let modified = self.right.update_size(|size| {
+            let modified = self.right.size_mut().update_action(|size| {
                 size.set_max(write_size)?.set_possible_value(write_size)
             });
             if modified.unwrap() {
@@ -292,16 +289,16 @@ impl Assignment {
         //left and right sizes are the same
         if let Some(trunc) = &mut self.op {
             let modified = FieldSize::all_same_size(&mut [
-                FieldSizeCell::Borrow(trunc.mut_output_size()),
-                self.right.size_capable(),
+                trunc.output_size_mut().into(),
+                self.right.size_mut(),
             ]);
             if modified.ok_or_else(error)? {
                 solved.i_did_a_thing()
             }
         } else {
             let modified = FieldSize::all_same_size(&mut [
-                self.var.size_capable(),
-                self.right.size_capable(),
+                self.var.size_mut().into(),
+                self.right.size_mut(),
             ]);
 
             //if right size is possible min, so does left if size is not defined
@@ -310,7 +307,8 @@ impl Assignment {
             {
                 if self
                     .var
-                    .update_size(|size| Some(size.set_possible_min()))
+                    .size_mut()
+                    .update_action(|size| Some(size.set_possible_min()))
                     .unwrap()
                 {
                     solved.i_did_a_thing();
@@ -347,39 +345,24 @@ pub enum WriteValue {
 }
 
 impl WriteValue {
-    pub fn size_capable<'a>(&'a mut self) -> FieldSizeCell<'a> {
-        match self {
-            Self::Varnode(_, var) => {
-                FieldSizeCell::Owned(FieldSize::new_bits(var.value_bits()))
-            }
-            Self::Table(_, table) => {
-                FieldSizeCell::Cell(table.export_size_capable().unwrap())
-            }
-            Self::ExeVar(_, var) => FieldSizeCell::Cell(var.size_capable()),
-            Self::Assembly(_, ass) => FieldSizeCell::Owned(ass.value_size()),
-            Self::Param(_, param) => FieldSizeCell::Cell(param.size_capable()),
-        }
-    }
     pub fn size(&self) -> FieldSize {
         match self {
             Self::Varnode(_, var) => FieldSize::new_bits(var.value_bits()),
-            Self::Table(_, table) => table.export_size().unwrap(),
-            Self::ExeVar(_, var) => var.size(),
+            Self::Table(_, table) => table.export_size().get(),
+            Self::ExeVar(_, var) => var.size().get(),
             Self::Assembly(_, ass) => ass.value_size(),
-            Self::Param(_, param) => param.size(),
+            Self::Param(_, param) => param.size().get(),
         }
     }
-    pub fn update_size<F>(&mut self, mut action: F) -> Option<bool>
-    where
-        F: FnMut(FieldSize) -> Option<FieldSize>,
-    {
+    pub fn size_mut(&mut self) -> FieldSizeCell {
         match self {
-            Self::Assembly(_, _) | Self::Varnode(_, _) => {
-                action(self.size()).map(|_| false)
+            Self::Varnode(_, var) => {
+                FieldSize::new_bits(var.value_bits()).into()
             }
-            Self::Table(_, table) => table.update_export_size(action),
-            Self::ExeVar(_, var) => var.update_size(action),
-            Self::Param(_, param) => param.update_size(action),
+            Self::Table(_, table) => table.export_size().into(),
+            Self::ExeVar(_, var) => var.size().into(),
+            Self::Assembly(_, ass) => ass.value_size().into(),
+            Self::Param(_, param) => param.size().into(),
         }
     }
     pub fn solve(
@@ -478,7 +461,10 @@ impl MacroCall {
         };
         for (param, macro_param) in self.params.iter_mut().zip(params) {
             if param
-                .update_size(|size| size.intersection(macro_param.size()))
+                .size_mut()
+                .update_action(|size| {
+                    size.intersection(macro_param.size().get())
+                })
                 .ok_or(ExecutionError::VarSize(param.src().clone()))?
             {
                 solved.we_did_a_thing();
@@ -542,7 +528,8 @@ impl UserCall {
         params.iter_mut().for_each(|param| {
             //TODO improve the size speculation
             param
-                .update_size(|size| Some(size.set_possible_min()))
+                .size_mut()
+                .update_action(|size| Some(size.set_possible_min()))
                 .unwrap();
         });
         Self {
@@ -581,7 +568,8 @@ impl LocalGoto {
     ) -> Result<Self, ExecutionError> {
         //condition can have any size, preferencially 1 bit for true/false
         cond.iter_mut().for_each(|cond| {
-            cond.update_size(|size| Some(size.set_possible_min()))
+            cond.size_mut()
+                .update_action(|size| Some(size.set_possible_min()))
                 .unwrap();
         });
         Ok(LocalGoto { cond, dst })
@@ -627,7 +615,8 @@ impl CpuBranch {
     ) -> Self {
         //condition can have any size, preferencially 1 bit for true/false
         cond.iter_mut().for_each(|cond| {
-            cond.update_size(|size| Some(size.set_possible_min()))
+            cond.size_mut()
+                .update_action(|size| Some(size.set_possible_min()))
                 .unwrap();
         });
         CpuBranch {
@@ -651,7 +640,7 @@ impl CpuBranch {
         if let Some(final_size) = self.exec_addr_size.get().final_value() {
             if self
                 .dst
-                .update_size(|size| size.set_final_value(final_size))
+                .size_mut().update_action(|size| size.set_final_value(final_size))
                 .unwrap(/*TODO*/)
             {
                 solved.i_did_a_thing();
@@ -838,25 +827,14 @@ impl Variable {
     pub fn me(&self) -> Rc<Self> {
         self.me.upgrade().unwrap()
     }
-    fn size_capable(&self) -> &Cell<FieldSize> {
+    fn size(&self) -> &Cell<FieldSize> {
         &self.size
-    }
-    fn size(&self) -> FieldSize {
-        self.size.get()
-    }
-    pub fn update_size<F>(&self, mut action: F) -> Option<bool>
-    where
-        F: FnMut(FieldSize) -> Option<FieldSize>,
-    {
-        let old = self.size.get();
-        self.size.set(action(old)?);
-        Some(old != self.size.get())
     }
     fn solve<T: SolverStatus>(
         &self,
         solved: &mut T,
     ) -> Result<(), ExecutionError> {
-        if self.size().is_undefined() {
+        if self.size.get().is_undefined() {
             solved.iam_not_finished_location(&self.src)
         }
         Ok(())
@@ -951,9 +929,8 @@ impl Execution {
             .for_each(|block| match block.statements.borrow_mut().last_mut() {
                 Some(Statement::Export(export)) => {
                     modified |= export
-                        .update_output_size(|size| {
-                            size.intersection(return_size)
-                        })
+                        .output_size_mut()
+                        .update_action(|size| size.intersection(return_size))
                         .unwrap();
                 }
                 _ => (),

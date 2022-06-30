@@ -324,7 +324,8 @@ pub trait ExecutionBuilder<'a> {
                         block::execution::assignment::OpLeft::ByteRangeLsb(x),
                     ) => {
                         new_var
-                            .update_size(|size| {
+                            .size()
+                            .update_action(|size| {
                                 size.set_final_value(
                                     NonZeroTypeU::new(x.value * 8).unwrap(),
                                 )

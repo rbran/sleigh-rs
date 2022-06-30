@@ -17,12 +17,12 @@ use std::ops::{Bound, RangeBounds};
 use std::rc::Rc;
 
 use crate::base::{IntTypeU, NonZeroTypeU};
+use crate::preprocessor::PreProcOutput;
 use crate::semantic::assembly::Assembly;
+use crate::InputSource;
 use crate::{
     syntax, IDENT_EPSILON, IDENT_INSTRUCTION, IDENT_INST_NEXT, IDENT_INST_START,
 };
-use crate::preprocessor::PreProcOutput;
-use crate::InputSource;
 
 pub use self::pattern::{Block, Pattern};
 pub use self::pcode_macro::PcodeMacro;
@@ -293,9 +293,52 @@ impl Default for FieldSize {
     }
 }
 
+pub trait FieldSizeMut {
+    fn get(&self) -> FieldSize;
+    fn set(&mut self, size: FieldSize) -> bool;
+    fn update_action(
+        &mut self,
+        mut action: impl FnMut(FieldSize) -> Option<FieldSize>,
+    ) -> Option<bool> {
+        let new_size = action(self.get())?;
+        Some(self.set(new_size))
+    }
+}
+
+impl<'a> FieldSizeMut for &'a mut FieldSize {
+    fn get(&self) -> FieldSize {
+        **self
+    }
+    fn set(&mut self, size: FieldSize) -> bool {
+        let old = std::mem::replace(*self, size);
+        old != **self
+    }
+}
+impl<'a> FieldSizeMut for &'a Cell<FieldSize> {
+    fn get(&self) -> FieldSize {
+        (*self).get()
+    }
+    fn set(&mut self, size: FieldSize) -> bool {
+        let old = self.replace(size);
+        old != self.get()
+    }
+}
+impl FieldSizeMut for FieldSize {
+    fn get(&self) -> FieldSize {
+        *self
+    }
+    fn set(&mut self, size: FieldSize) -> bool {
+        if *self != size {
+            unreachable!("Try to modify FieldSizeMut owned");
+        }
+        false
+    }
+}
+
 pub enum FieldSizeCell<'a> {
     Borrow(&'a mut FieldSize),
     Cell(&'a Cell<FieldSize>),
+    ///Values that don't need to be updated, eg Varnodes
     Owned(FieldSize),
 }
 impl<'a> From<&'a mut FieldSize> for FieldSizeCell<'a> {
@@ -313,29 +356,20 @@ impl<'a> From<FieldSize> for FieldSizeCell<'a> {
         Self::Owned(value)
     }
 }
-impl<'a> FieldSizeCell<'a> {
+impl<'a> FieldSizeMut for FieldSizeCell<'a> {
     fn get(&self) -> FieldSize {
         match self {
-            Self::Borrow(x) => **x,
+            Self::Borrow(x) => x.get(),
             Self::Cell(x) => x.get(),
-            Self::Owned(x) => *x,
+            Self::Owned(x) => x.get(),
         }
     }
     fn set(&mut self, size: FieldSize) -> bool {
-        let old = self.get();
         match self {
-            Self::Borrow(x) => **x = size,
+            Self::Borrow(x) => x.set(size),
             Self::Cell(x) => x.set(size),
-            Self::Owned(ref mut x) => *x = size,
+            Self::Owned(x) => x.set(size),
         }
-        size != old
-    }
-    fn update_action(
-        &mut self,
-        mut action: impl FnMut(FieldSize) -> Option<FieldSize>,
-    ) -> Option<bool> {
-        let new_size = action(self.get())?;
-        Some(self.set(new_size))
     }
 }
 
@@ -607,12 +641,11 @@ impl<'a> Sleigh<'a> {
                 WithBlock(block) => {
                     //TODO remove this clone
                     let body = block.body.clone();
-                    let with_block =
-                        crate::semantic::inner::WithBlock::new(
-                            self,
-                            &with_block,
-                            block,
-                        )?;
+                    let with_block = crate::semantic::inner::WithBlock::new(
+                        self,
+                        &with_block,
+                        block,
+                    )?;
                     self.process(Some(with_block), body.into_iter())?;
                 }
             }

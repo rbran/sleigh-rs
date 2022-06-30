@@ -84,7 +84,7 @@ impl<'a, 'b, 'c> ExecutionBuilder<'a> for Builder<'a, 'b, 'c> {
                         Ok(ExprValue::new_assembly(src(), Rc::clone(x)))
                     }
                     Varnode(x) => Ok(ExprValue::Varnode(src(), Rc::clone(x))),
-                    Table(table) if table.export_size().is_some() => {
+                    Table(table) if table.exports() => {
                         Ok(ExprValue::Table(src(), Rc::clone(table)))
                     }
                     _ => Err(ExecutionError::InvalidRef(src())),

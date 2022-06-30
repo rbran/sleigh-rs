@@ -5,9 +5,7 @@ use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use crate::semantic::table::{
-    ExecutionError, TableErrorSub, ToTableError,
-};
+use crate::semantic::table::{ExecutionError, TableErrorSub, ToTableError};
 use crate::semantic::{self, TableError};
 use crate::syntax::block;
 use crate::InputSource;
@@ -103,20 +101,11 @@ impl Table {
         constructors.push(constructor);
         Ok(())
     }
-    pub fn export_size_capable<'a>(&'a self) -> Option<&'a Cell<FieldSize>> {
-        self.export.get().then(|| &self.export_size)
+    pub fn exports(&self) -> bool {
+        self.export.get()
     }
-    pub fn export_size(&self) -> Option<FieldSize> {
-        self.export.get().then(|| self.export_size.get())
-    }
-    pub fn update_export_size<F>(&self, mut action: F) -> Option<bool>
-    where
-        F: FnMut(FieldSize) -> Option<FieldSize>,
-    {
-        let old_size = self.export_size.get();
-        let new_size = action(old_size)?;
-        self.export_size.set(new_size);
-        Some(new_size != old_size)
+    pub fn export_size(&self) -> &Cell<FieldSize> {
+        &self.export_size
     }
     pub fn reference(&self) -> Rc<semantic::table::Table> {
         Rc::clone(&self.result)

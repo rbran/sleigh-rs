@@ -23,7 +23,7 @@ impl AddrDereference {
     pub fn output_size(&self) -> &FieldSize {
         &self.size
     }
-    pub fn mut_output_size(&mut self) -> &mut FieldSize {
+    pub fn output_size_mut(&mut self) -> &mut FieldSize {
         &mut self.size
     }
     pub fn solve(&self, solved: &mut impl SolverStatus) {
@@ -69,7 +69,7 @@ impl Truncate {
     pub fn output_size(&self) -> &FieldSize {
         &self.size
     }
-    pub fn mut_output_size(&mut self) -> &mut FieldSize {
+    pub fn output_size_mut(&mut self) -> &mut FieldSize {
         &mut self.size
     }
     pub fn convert(self) -> FinalTruncate {

@@ -1,16 +1,15 @@
+use crate::semantic::inner::FieldSizeMut;
 use core::cell::Cell;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use crate::base::NonZeroTypeU;
-use crate::semantic::pcode_macro::{
-    PcodeMacroError, ToPcodeMacroError,
-};
+use crate::semantic::pcode_macro::{PcodeMacroError, ToPcodeMacroError};
 use crate::semantic::table::ExecutionError;
 use crate::semantic::varnode::VarnodeType;
 use crate::syntax::block;
-use crate::{semantic, ParamNumber};
 use crate::InputSource;
+use crate::{semantic, ParamNumber};
 
 use super::execution::{
     Block, Build, EvaluationTime, Execution, ExecutionBuilder, Expr,
@@ -51,7 +50,7 @@ impl PcodeMacroInstance {
     ) -> Rc<Self> {
         let signature = params
             .iter()
-            .map(|param| param.size().final_value().unwrap())
+            .map(|param| param.size().get().final_value().unwrap())
             .collect();
         Rc::new_cyclic(|me| Self {
             signature,
@@ -82,7 +81,8 @@ impl PcodeMacroInstance {
             .map(|(param, size)| {
                 let param = param.clone_me();
                 param
-                    .update_size(|param| param.set_final_value(*size))
+                    .size()
+                    .update_action(|param| param.set_final_value(*size))
                     .unwrap();
                 param
             })
@@ -169,7 +169,10 @@ impl PcodeMacro {
         *self.solved.borrow()
     }
     pub fn og_signature<'a>(&'a self) -> impl Iterator<Item = FieldSize> + 'a {
-        self.og_instance.params.iter().map(|param| param.size())
+        self.og_instance
+            .params
+            .iter()
+            .map(|param| param.size().get())
     }
     pub fn try_specialize(
         &self,
@@ -284,19 +287,8 @@ impl Parameter {
     pub fn me(&self) -> Rc<Self> {
         self.me.upgrade().unwrap()
     }
-    pub fn size_capable(&self) -> &Cell<FieldSize> {
+    pub fn size(&self) -> &Cell<FieldSize> {
         &self.size
-    }
-    pub fn size(&self) -> FieldSize {
-        self.size.get()
-    }
-    pub fn update_size<F>(&self, mut action: F) -> Option<bool>
-    where
-        F: FnMut(FieldSize) -> Option<FieldSize>,
-    {
-        let old = self.size.get();
-        self.size.set(action(old)?);
-        Some(self.size.get() != old)
     }
     pub fn convert(&self) -> Rc<FinalParameter> {
         if self.result.borrow().is_none() {

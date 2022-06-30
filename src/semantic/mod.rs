@@ -21,8 +21,8 @@ use thiserror::Error;
 
 use crate::base::IntTypeS;
 use crate::base::NonZeroTypeU;
-use crate::semantic::inner::{SolvedLocation, SolverStatus};
 use crate::preprocessor::PreProcOutput;
+use crate::semantic::inner::{SolvedLocation, SolverStatus};
 use crate::InputSource;
 use crate::{PcodeMacro, Space, UserFunction, Varnode};
 

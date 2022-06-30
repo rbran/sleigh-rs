@@ -4,9 +4,9 @@ pub mod export;
 pub mod expr;
 pub mod op;
 
-use crate::syntax::block::execution::assignment::MemWrite;
 use crate::syntax::block::execution::assignment::Assignment;
 use crate::syntax::block::execution::assignment::Declare;
+use crate::syntax::block::execution::assignment::MemWrite;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::combinator::map;

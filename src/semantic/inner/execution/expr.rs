@@ -1,4 +1,5 @@
 use crate::semantic::inner::FieldSizeCell;
+use crate::semantic::inner::FieldSizeMut;
 use crate::semantic::inner::FIELD_SIZE_BOOL;
 use std::rc::Rc;
 
@@ -7,9 +8,7 @@ use crate::semantic;
 use crate::semantic::assembly;
 use crate::semantic::execution::{Binary, ExecutionError};
 use crate::semantic::inner::pcode_macro::Parameter;
-use crate::semantic::inner::{
-    disassembly, FieldSize, SolverStatus, Table,
-};
+use crate::semantic::inner::{disassembly, FieldSize, SolverStatus, Table};
 use crate::{InputSource, Varnode};
 
 use super::{AddrDereference, Truncate, Unary, UserCall, Variable};
@@ -34,7 +33,7 @@ impl Expr {
             Binary::Lsl | Binary::Lsr | Binary::Asr => {
                 //rotation is unlikelly to rotate more then 128 bits,
                 //so right element size only require 32bits max
-                right.size_capable().update_action(|size| {
+                right.size_mut().update_action(|size| {
                     size.set_possible_value(32.try_into().unwrap())
                 });
                 FieldSize::new_unsized()
@@ -78,24 +77,11 @@ impl Expr {
             Expr::Op(_, out_size, _, _, _) => *out_size,
         }
     }
-    pub fn size_capable<'a>(&'a mut self) -> FieldSizeCell<'a> {
+    pub fn size_mut<'a>(&'a mut self) -> FieldSizeCell<'a> {
         match self {
-            Expr::Value(value) => value.size_capable(),
-            Expr::Op(_, out_size, _, _, _) => FieldSizeCell::Borrow(out_size),
+            Expr::Value(value) => value.size_mut(),
+            Expr::Op(_, out_size, _, _, _) => out_size.into(),
         }
-    }
-    pub fn update_size<F>(&mut self, action: F) -> Option<bool>
-    where
-        F: FnMut(FieldSize) -> Option<FieldSize>,
-    {
-        match self {
-            Expr::Value(value) => value.update_size(action),
-            Expr::Op(_, out_size, _, _, _) => out_size.update_action(action),
-        }
-    }
-    #[deprecated]
-    pub fn set_size(&mut self, _size: FieldSize) -> bool {
-        todo!()
     }
     pub fn solve(
         &mut self,
@@ -237,8 +223,8 @@ impl Expr {
                 let error = || ExecutionError::VarSize(src.clone());
                 let modified = FieldSize::all_same_size(&mut [
                     FieldSizeCell::Borrow(&mut out_size),
-                    left.size_capable(),
-                    right.size_capable(),
+                    left.size_mut(),
+                    right.size_mut(),
                 ]);
                 if modified.ok_or_else(error)? {
                     solved.i_did_a_thing();
@@ -255,7 +241,7 @@ impl Expr {
                 let error = || ExecutionError::VarSize(src.clone());
                 let modified = FieldSize::all_same_size(&mut [
                     FieldSizeCell::Borrow(&mut out_size),
-                    left.size_capable(),
+                    left.size_mut(),
                 ]);
                 if modified.ok_or_else(error)? {
                     solved.i_did_a_thing();
@@ -303,8 +289,8 @@ impl Expr {
                 //output can have any size because is always 0/1
                 let error = || ExecutionError::VarSize(src.clone());
                 let modified = FieldSize::all_same_size(&mut [
-                    left.size_capable(),
-                    right.size_capable(),
+                    left.size_mut(),
+                    right.size_mut(),
                 ]);
                 if modified.ok_or_else(error)? {
                     solved.i_did_a_thing();
@@ -355,20 +341,23 @@ impl ReferencedValue {
                 .map(FieldSize::new_bits)
                 .unwrap_or_default(),
             Self::Varnode(_, value) => FieldSize::new_bits(value.value_bits()),
-            Self::Table(_, value) => value.export_size().unwrap(),
+            Self::Table(_, value) => value.export_size().get(),
             //Self::Param(_, value) => value.size(),
         }
     }
-    pub fn update_export_size<F>(&mut self, action: F) -> Option<bool>
-    where
-        F: FnMut(FieldSize) -> Option<FieldSize>,
-    {
+    pub fn size_mut(&self) -> FieldSizeCell {
         match self {
-            Self::Assembly(_, _) | Self::Varnode(_, _) => {
-                self.size().update_action(action).map(|_| false)
+            //TODO remove owned value in case of inst_next inst_start
+            Self::Assembly(_, value) => value
+                .value_bits()
+                .map(FieldSize::new_bits)
+                .unwrap_or_default()
+                .into(),
+            Self::Varnode(_, value) => {
+                FieldSize::new_bits(value.value_bits()).into()
             }
-            Self::Table(_, table) => table.update_export_size(action),
-            //Self::Param(_, param) => param.update_size(size),
+            Self::Table(_, value) => value.export_size().into(),
+            //Self::Param(_, value) => value.size(),
         }
     }
     pub fn convert(self) -> FinalReferencedValue {
@@ -399,17 +388,17 @@ impl ExprElement {
         let size = match &mut op {
             Unary::Dereference(AddrDereference { space, size, .. }) => {
                 //expr is the addr, it need to be the space_addr size
-                expr.update_size(|_| Some(space.memory().addr_size()))
-                    .unwrap();
+                expr.size_mut().set(space.memory().addr_size());
                 *size
             }
             Unary::Truncate(Truncate { size, .. }) => *size,
             Unary::FloatNan => {
                 //the output can be one bit (true/false)
-                expr.update_size(|size| {
-                    size.set_possible_value(1.try_into().unwrap())
-                })
-                .unwrap();
+                expr.size_mut()
+                    .update_action(|size| {
+                        size.set_possible_value(1.try_into().unwrap())
+                    })
+                    .unwrap();
                 FIELD_SIZE_BOOL
             }
             _ => FieldSize::new_unsized(),
@@ -456,7 +445,8 @@ impl ExprElement {
                 let lsb_size =
                     out_size.final_value().unwrap_or(1.try_into().unwrap());
                 if value
-                    .update_size(|size| {
+                    .size_mut()
+                    .update_action(|size| {
                         size.set_min(
                             (*lsb + lsb_size.get()).try_into().unwrap(),
                         )
@@ -502,7 +492,7 @@ impl ExprElement {
                 let error = || ExecutionError::VarSize(src.clone());
                 let modified = FieldSize::all_same_size(&mut [
                     FieldSizeCell::Borrow(out_size),
-                    input.size_capable(),
+                    input.size_mut(),
                 ])
                 .ok_or_else(error)?;
                 if modified {
@@ -546,7 +536,8 @@ impl ExprElement {
                 }
                 //and vise-versa
                 if input
-                    .update_size(|size| size.set_max(output_size.max()))
+                    .size_mut()
+                    .update_action(|size| size.set_max(output_size.max()))
                     .ok_or_else(error)?
                 {
                     solved.i_did_a_thing();
@@ -654,9 +645,9 @@ impl ExprElement {
         }
     }
     //return the size of the value with unary ops apply to it
-    pub fn size_capable<'a>(&'a mut self) -> FieldSizeCell<'a> {
+    pub fn size_mut<'a>(&'a mut self) -> FieldSizeCell<'a> {
         match self {
-            Self::Value(value) => value.size_capable(),
+            Self::Value(value) => value.size_mut(),
             Self::Reference(_, size, _)
             | Self::Op(_, size, _, _)
             | Self::UserCall(size, _) => FieldSizeCell::Borrow(size),
@@ -670,20 +661,6 @@ impl ExprElement {
             Self::Reference(_, size, _) => *size,
             Self::Op(_, size, _, _) => *size,
             Self::UserCall(size, _call) => *size,
-            Self::New(_, _, _) => todo!(),
-            Self::CPool(_, _) => todo!(),
-        }
-    }
-    pub fn update_size<F>(&mut self, action: F) -> Option<bool>
-    where
-        F: FnMut(FieldSize) -> Option<FieldSize>,
-    {
-        match self {
-            Self::Value(value) => value.update_size(action),
-            Self::UserCall(call_size, _call) => call_size.update_action(action),
-            Self::Reference(_, op_size, _) | Self::Op(_, op_size, _, _) => {
-                op_size.update_action(action)
-            }
             Self::New(_, _, _) => todo!(),
             Self::CPool(_, _) => todo!(),
         }
@@ -730,19 +707,17 @@ impl ExprValue {
             | Self::Param(src, _) => src,
         }
     }
-    pub fn size_capable<'a>(&'a mut self) -> FieldSizeCell<'a> {
+    pub fn size_mut<'a>(&'a mut self) -> FieldSizeCell<'a> {
         match self {
             Self::Int(_, size, _)
             | Self::DisVar(_, size, _)
-            | Self::Assembly(_, size, _) => FieldSizeCell::Borrow(size),
+            | Self::Assembly(_, size, _) => size.into(),
             Self::Varnode(_, var) => {
-                FieldSizeCell::Owned(FieldSize::new_bits(var.value_bits()))
+                FieldSize::new_bits(var.value_bits()).into()
             }
-            Self::Table(_, value) => {
-                FieldSizeCell::Cell(value.export_size_capable().unwrap())
-            }
-            Self::ExeVar(_, value) => FieldSizeCell::Cell(value.size_capable()),
-            Self::Param(_, value) => FieldSizeCell::Cell(value.size_capable()),
+            Self::Table(_, value) => value.export_size().into(),
+            Self::ExeVar(_, value) => value.size().into(),
+            Self::Param(_, value) => value.size().into(),
         }
     }
     pub fn size(&self) -> FieldSize {
@@ -751,23 +726,9 @@ impl ExprValue {
             | Self::DisVar(_, size, _)
             | Self::Assembly(_, size, _) => *size,
             Self::Varnode(_, var) => FieldSize::new_bits(var.value_bits()),
-            Self::Table(_, value) => value.export_size().unwrap(),
-            Self::ExeVar(_, value) => value.size(),
-            Self::Param(_, value) => value.size(),
-        }
-    }
-    pub fn update_size<F>(&mut self, mut action: F) -> Option<bool>
-    where
-        F: FnMut(FieldSize) -> Option<FieldSize>,
-    {
-        match self {
-            Self::Int(_, size, _)
-            | Self::DisVar(_, size, _)
-            | Self::Assembly(_, size, _) => size.update_action(action),
-            Self::Varnode(_, _) => action(self.size()).map(|_| false),
-            Self::Table(_, table) => table.update_export_size(action),
-            Self::ExeVar(_, var) => var.update_size(action),
-            Self::Param(_, param) => param.update_size(action),
+            Self::Table(_, value) => value.export_size().get(),
+            Self::ExeVar(_, value) => value.size().get(),
+            Self::Param(_, value) => value.size().get(),
         }
     }
     pub fn solve(
