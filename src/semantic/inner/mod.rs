@@ -66,7 +66,7 @@ impl FieldRange {
         Some(Self { min: self.min, max })
     }
     fn value(&self) -> Option<NonZeroTypeU> {
-        (self.min == self.max).then(|| self.min)
+        (self.min == self.max).then_some(self.min)
     }
 }
 impl RangeBounds<NonZeroTypeU> for FieldRange {
@@ -155,8 +155,7 @@ impl FieldSize {
     pub fn set_final_value(self, final_value: NonZeroTypeU) -> Option<Self> {
         match self {
             //if already value, check if value is eq
-            Self::Value(value) if value == final_value => Some(self),
-            Self::Value(_value) /*if _value != final_value*/ => None,
+            Self::Value(value) => (value == final_value).then_some(self),
             //if not in range, invalid
             Self::Unsized { range, .. } if !range.contains(&final_value) => {
                 None
@@ -173,16 +172,15 @@ impl FieldSize {
     }
     pub fn set_min(self, min: NonZeroTypeU) -> Option<Self> {
         match self {
-            Self::Value(value) if min <= value => Some(self),
-            Self::Value(_value) /*if min > value*/ => None,
+            Self::Value(value) => (min <= value).then_some(self),
             Self::Unsized { range, possible } => {
                 let range = range.set_min(min)?;
                 if let Some(value) = range.value() {
                     return Some(Self::Value(value));
                 }
                 let possible = possible.in_range(&range);
-                Some(Self::Unsized{range, possible})
-            },
+                Some(Self::Unsized { range, possible })
+            }
         }
     }
     pub fn max(&self) -> NonZeroTypeU {
@@ -193,16 +191,15 @@ impl FieldSize {
     }
     pub fn set_max(self, max: NonZeroTypeU) -> Option<Self> {
         match self {
-            Self::Value(value) if max >= value => Some(self),
-            Self::Value(_value) /*if max < value*/ => None,
+            Self::Value(value) => (max >= value).then_some(self),
             Self::Unsized { range, possible } => {
                 let range = range.set_max(max)?;
                 if let Some(value) = range.value() {
                     return Some(Self::Value(value));
                 }
                 let possible = possible.in_range(&range);
-                Some(Self::Unsized{range, possible})
-            },
+                Some(Self::Unsized { range, possible })
+            }
         }
     }
     pub fn possible_value(&self) -> Option<NonZeroTypeU> {
@@ -247,13 +244,14 @@ impl FieldSize {
         pos_value: NonZeroTypeU,
     ) -> Option<Self> {
         match self {
-            Self::Unsized { range, ..} if !range.contains(&pos_value) => None,
-            Self::Unsized { ref mut possible, ..} => {
+            Self::Unsized { range, .. } if !range.contains(&pos_value) => None,
+            Self::Unsized {
+                ref mut possible, ..
+            } => {
                 *possible = FieldAuto::Value(pos_value);
                 Some(self)
-            },
-            Self::Value(value) if value == pos_value => Some(self),
-            Self::Value(_value) /*if _value != pos_value*/ => None,
+            }
+            Self::Value(value) => (value == pos_value).then_some(self),
         }
     }
     pub fn intersection(self, other: Self) -> Option<Self> {

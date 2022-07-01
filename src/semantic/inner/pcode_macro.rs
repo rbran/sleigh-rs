@@ -545,7 +545,7 @@ fn update_write_value(
         WriteValue::Param(_, param) => {
             if let Some(new_param) =
                 old.iter().enumerate().find_map(|(i, x)| {
-                    (Rc::as_ptr(x) == Rc::as_ptr(param)).then(|| i)
+                    (Rc::as_ptr(x) == Rc::as_ptr(param)).then_some(i)
                 })
             {
                 *param = Rc::clone(&new[new_param]);
@@ -602,7 +602,7 @@ fn update_expr_value(
         ExprValue::Param(_, param) => {
             if let Some(new_param) =
                 old.iter().enumerate().find_map(|(i, x)| {
-                    (Rc::as_ptr(x) == Rc::as_ptr(param)).then(|| i)
+                    (Rc::as_ptr(x) == Rc::as_ptr(param)).then_some(i)
                 })
             {
                 *param = Rc::clone(&new[new_param]);
