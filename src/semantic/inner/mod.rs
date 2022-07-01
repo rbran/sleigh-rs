@@ -372,28 +372,12 @@ impl<'a> FieldSizeMut for FieldSizeCell<'a> {
 }
 
 pub trait SolverStatus<T: SolverStatus = Self> {
-    fn iam_not_finished(&mut self);
-    fn iam_not_finished_location(&mut self, _location: &InputSource) {
-        //ignore location by default
-        self.iam_not_finished();
-    }
+    fn iam_not_finished_location(&mut self, _location: &InputSource);
     fn i_did_a_thing(&mut self);
     fn we_finished(&self) -> bool;
     fn we_did_a_thing(&self) -> bool;
-    fn unfinished_locations(&self) -> &[InputSource] {
-        &[]
-    }
-    fn combine(&mut self, other: &T) {
-        if !other.we_finished() {
-            self.iam_not_finished();
-            for location in other.unfinished_locations() {
-                self.iam_not_finished_location(location);
-            }
-        }
-        if other.we_did_a_thing() {
-            self.i_did_a_thing()
-        }
-    }
+    fn unfinished_locations(&self) -> &[InputSource];
+    fn combine(&mut self, other: &Self);
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -403,7 +387,7 @@ pub struct Solved {
 }
 
 impl SolverStatus for Solved {
-    fn iam_not_finished(&mut self) {
+    fn iam_not_finished_location(&mut self, _location: &InputSource) {
         self.finished = false;
     }
     fn i_did_a_thing(&mut self) {
@@ -414,6 +398,9 @@ impl SolverStatus for Solved {
     }
     fn we_did_a_thing(&self) -> bool {
         self.did_a_thing
+    }
+    fn unfinished_locations(&self) -> &[InputSource] {
+        &[]
     }
     fn combine(&mut self, other: &Self) {
         self.did_a_thing |= other.we_did_a_thing();
@@ -438,22 +425,17 @@ pub struct SolvedLocation {
 
 impl SolverStatus for SolvedLocation {
     fn iam_not_finished_location(&mut self, location: &InputSource) {
-        self.solved.finished = false;
+        self.solved.iam_not_finished_location(location);
         self.locations.push(location.clone());
     }
-    fn iam_not_finished(&mut self) {
-        //TODO: delete this, detect unecessary location ignoring
-        panic!();
-        //self.solved.finished = false;
-    }
     fn i_did_a_thing(&mut self) {
-        self.solved.did_a_thing = true;
+        self.solved.i_did_a_thing();
     }
     fn we_finished(&self) -> bool {
-        self.solved.finished
+        self.solved.we_finished()
     }
     fn we_did_a_thing(&self) -> bool {
-        self.solved.did_a_thing
+        self.solved.we_did_a_thing()
     }
     fn unfinished_locations(&self) -> &[InputSource] {
         &self.locations
