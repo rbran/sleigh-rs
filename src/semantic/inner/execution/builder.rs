@@ -167,40 +167,28 @@ pub trait ExecutionBuilder<'a> {
                 _ => (),
             }
         }
-        //find the return type for this execution, only block without next are
-        //returns
-        let mut return_value = None;
-        for block in self
+        //find the return type for this execution
+        let return_type = self
             .execution()
             .blocks()
+            //only blocks with no next block can export
             .filter(|block| block.next.borrow().is_none())
-        {
-            let this_ret_value = matches!(
-                block.statements.borrow().last(),
-                Some(Statement::Export(_))
-            );
-            match return_value {
-                //we found the fist block with returning block
-                None => return_value = Some(this_ret_value),
-                //found a return block with a diferent behaviour than the
-                //previous found
-                Some(x) if x != this_ret_value => {
-                    match block.statements.borrow().last() {
-                        Some(Statement::Export(exp)) => {
-                            let src = exp.src().clone();
-                            return Err(ExecutionError::InvalidExport(src));
-                        }
-                        _ => unreachable!(),
-                    }
-                }
-                //found other return block, with the same behaviour
-                Some(_) => (),
-            }
-        }
-        //all returning blocks export values, so update the export size type
-        if return_value.unwrap_or(false) {
-            self.execution_mut().return_size = Some(FieldSize::new_unsized());
-        }
+            //if the last statement is export, convert to export size
+            .filter_map(|block| match block.statements.borrow().last() {
+                Some(Statement::Export(exp)) => Some(exp.return_type()),
+                _ => None,
+            })
+            .try_reduce(|acc, item| acc.combine(item));
+        self.execution_mut().return_value = match return_type {
+            //short circuit, AKA invalid combination of return types
+            None => {
+                return Err(ExecutionError::InvalidExport)
+            },
+            //there are no returns
+            Some(None) => ExecutionExport::None,
+            //some return type
+            Some(Some(ret)) => ret,
+        };
         Ok(())
     }
 

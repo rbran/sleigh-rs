@@ -12,8 +12,8 @@ use crate::InputSource;
 use crate::{semantic, ParamNumber};
 
 use super::execution::{
-    Block, Build, EvaluationTime, Execution, ExecutionBuilder, Expr,
-    ExprElement, ExprValue, Statement, WriteValue,
+    Block, Build, Execution, ExecutionBuilder, Expr, ExprElement, ExprValue,
+    Statement, WriteValue,
 };
 use super::{FieldSize, GlobalScope, Sleigh, SolverStatus};
 
@@ -260,7 +260,6 @@ pub struct Parameter {
     me: Weak<Self>,
 
     size: Cell<FieldSize>,
-    time: EvaluationTime,
     result: RefCell<Option<Rc<FinalParameter>>>,
 }
 impl Parameter {
@@ -270,7 +269,6 @@ impl Parameter {
             src,
             me: Weak::clone(me),
             size: Cell::default(),
-            time: EvaluationTime::default(),
             result: RefCell::default(),
         })
     }
@@ -280,7 +278,6 @@ impl Parameter {
             src: self.src.clone(),
             me: Weak::clone(me),
             size: self.size.clone(),
-            time: self.time,
             result: RefCell::default(),
         })
     }

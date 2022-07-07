@@ -1,3 +1,6 @@
+//Those features should be stabilized before this project is finished
+#![feature(iterator_try_reduce)]
+
 use std::ops::{Bound, RangeBounds};
 use std::path::Path;
 use std::rc::Rc;

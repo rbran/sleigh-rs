@@ -8,7 +8,6 @@ use crate::base::{IntTypeU, NonZeroTypeU};
 use crate::BitRange;
 use crate::InputSource;
 
-use super::inner::execution::EvaluationTime;
 use super::space::Space;
 use super::{Meaning, PrintFmt};
 
@@ -115,13 +114,6 @@ impl Varnode {
             BitRange(bit_range) => bit_range.value_bits(),
             Context(context) => context.value_bits(),
             Memory(mem) => mem.value_bits(),
-        }
-    }
-    pub fn value_eval_time(&self) -> EvaluationTime {
-        use VarnodeType::*;
-        match &self.varnode_type {
-            BitRange(_) | Memory(_) => EvaluationTime::Execution,
-            Context(_) => EvaluationTime::Disassembly,
         }
     }
 }

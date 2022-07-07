@@ -91,10 +91,8 @@ impl Table {
                 (true, Some(_)) => (),
                 (_, _) => {
                     //TODO find the export statement src
-                    return Err(ExecutionError::InvalidExport(
-                        constructor.src.clone(),
-                    ))
-                    .to_table(constructor.src);
+                    return Err(ExecutionError::InvalidExport)
+                        .to_table(constructor.src);
                 }
             }
         }

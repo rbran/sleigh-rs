@@ -43,8 +43,8 @@ pub enum ExecutionError {
     DefaultSpace, //TODO src
     #[error("Can only `goto` to a label")]
     InvalidLocalGoto, //TODO src
-    #[error("TableConstructor have diferent return types at {0}")]
-    InvalidExport(InputSource),
+    #[error("TableConstructor have diferent return types")]
+    InvalidExport,
     #[error("BitRange can't be zero")]
     BitRangeZero, //TODO src
 

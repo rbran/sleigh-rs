@@ -76,6 +76,16 @@ impl Export {
             .unwrap();
         Self::Reference(addr, space)
     }
+    pub fn return_type(&self) -> ExecutionExport {
+        match self {
+            Export::Value(value) => ExecutionExport::Multiple(value.size()),
+            Export::Reference(_addr, space) => ExecutionExport::Reference(
+                *space.output_size(),
+                Rc::clone(&space.space),
+            ),
+            Export::Const(size, _) => ExecutionExport::DissasemblyValue(*size),
+        }
+    }
     pub fn src(&self) -> &InputSource {
         match self {
             Self::Value(expr) | Export::Reference(expr, _) => expr.src(),
@@ -395,36 +405,10 @@ impl WriteValue {
 #[derive(Clone, Debug)]
 pub struct Build {
     pub table: Rc<Table>,
-    //var: Rc<Variable>,
 }
 impl Build {
-    pub fn new(
-        table: Rc<Table>,
-        //var: Rc<Variable>
-    ) -> Self {
-        Self {
-            table,
-            // var
-        }
-    }
-    pub fn solve(
-        &mut self,
-        _solved: &mut impl SolverStatus,
-    ) -> Result<(), ExecutionError> {
-        //let new_size =
-        //    self.table.export_size().combine(self.var.size()).ok_or(
-        //        ExecutionError::InvalidVarAssignSize(
-        //            todo!("Remove the replace table export with Variable"),
-        //            format!("{}:{}", file!(), line!()),
-        //        ),
-        //    )?;
-        //if self.table.set_export_size(new_size) {
-        //    solved.i_did_a_thing();
-        //}
-        //if self.var.set_size(new_size) {
-        //    solved.i_did_a_thing();
-        //}
-        Ok(())
+    pub fn new(table: Rc<Table>) -> Self {
+        Self { table }
     }
     pub fn convert(self) -> semantic::execution::Build {
         semantic::execution::Build {
@@ -689,7 +673,7 @@ impl Statement {
         T: SolverStatus + Default,
     {
         match self {
-            Self::Build(x) => x.solve(solved)?,
+            Self::Build(x) => (),
             Self::Delayslot(_) => (),
             Self::Export(x) => x.solve(solved)?,
             Self::Declare(_x) => (),
@@ -769,41 +753,10 @@ impl Block {
         Rc::clone(&self.result)
     }
 }
-/// An specializing struct, the hierarchy for more general to more specified
-/// is:
-/// Execution -> Disassembly -> Compile
-///
-/// Eg: all values that are Compile time can also be evaluated as Execution time.
-#[derive(Clone, Debug, Copy, PartialEq, Eq)]
-pub enum EvaluationTime {
-    Compile,
-    Disassembly,
-    Execution,
-}
-
-impl Default for EvaluationTime {
-    fn default() -> Self {
-        Self::Compile
-    }
-}
-
-impl EvaluationTime {
-    pub fn combine(&self, other: &EvaluationTime) -> Self {
-        match (self, other) {
-            (EvaluationTime::Execution, _) | (_, EvaluationTime::Execution) => {
-                Self::Compile
-            }
-            (EvaluationTime::Disassembly, _)
-            | (_, EvaluationTime::Disassembly) => Self::Disassembly,
-            _ => Self::Compile,
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct Variable {
     pub name: Rc<str>,
-    pub eval_time: RefCell<EvaluationTime>,
     //pub scope: RefCell<VariableScope>,
     pub size: Cell<FieldSize>,
     pub src: InputSource,
@@ -816,7 +769,6 @@ impl Variable {
     pub fn new(name: Rc<str>, src: InputSource) -> Rc<Self> {
         Rc::new_cyclic(|me| Self {
             name,
-            eval_time: RefCell::new(EvaluationTime::Execution),
             //scope,
             size: Cell::default(),
             src,
@@ -853,13 +805,90 @@ impl Variable {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub enum ExecutionExport {
+    //don't return
+    #[default]
+    None,
+    //type can't be defined yet.
+    //Undefined(FieldSize),
+    //value that is known at Dissassembly time
+    DissasemblyValue(FieldSize),
+    //value that can be know at execution time
+    Value(FieldSize),
+    //References/registers and other mem locations, all with the same size and
+    //same address space
+    Reference(FieldSize, Rc<Space>),
+    //multiple source, can by any kind of return, value or address,
+    //but all with the same size
+    Multiple(FieldSize),
+}
+
+impl ExecutionExport {
+    pub fn size(&self) -> Option<&FieldSize> {
+        match self {
+            ExecutionExport::None => None,
+            //       ExecutionExport::Undefined(size)
+            ExecutionExport::DissasemblyValue(size)
+            | ExecutionExport::Value(size)
+            | ExecutionExport::Reference(size, _)
+            | ExecutionExport::Multiple(size) => Some(size),
+        }
+    }
+    pub fn size_mut(&mut self) -> Option<&mut FieldSize> {
+        match self {
+            ExecutionExport::None => None,
+            //      ExecutionExport::Undefined(size)
+            ExecutionExport::DissasemblyValue(size)
+            | ExecutionExport::Value(size)
+            | ExecutionExport::Reference(size, _)
+            | ExecutionExport::Multiple(size) => Some(size),
+        }
+    }
+    pub fn combine(self, other: Self) -> Option<Self> {
+        match (self, other) {
+            //if both return nothing, the result is to return nothing
+            (Self::None, Self::None) => Some(Self::None),
+            //one return nothing and the other return something is invalid
+            (Self::None, _) | (_, Self::None) => None,
+            //if one is multiple, it consumes any other value type
+            (Self::Multiple(one), other) | (other, Self::Multiple(one)) => {
+                one.intersection(*other.size().unwrap()).map(Self::Multiple)
+            }
+            //two values, keep the same type
+            (Self::Value(one), Self::Value(other)) => {
+                one.intersection(other).map(Self::Value)
+            }
+            //two dissassembly values, keep the type
+            (Self::DissasemblyValue(one), Self::DissasemblyValue(other)) => {
+                one.intersection(other).map(Self::DissasemblyValue)
+            }
+            //two references from the same address space, keep the same type
+            (Self::Reference(one, space1), Self::Reference(other, space2))
+                if Rc::as_ptr(&space1) == Rc::as_ptr(&space2) =>
+            {
+                one.intersection(other)
+                    .map(|size| Self::Reference(size, space1))
+            }
+            //two references from the diff address space, is invalid
+            (Self::Reference(_, _), Self::Reference(_, _)) => None,
+            //any other combination is is just multiple
+            (one, other) => one
+                .size()
+                .unwrap()
+                .intersection(*other.size().unwrap())
+                .map(Self::Multiple),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Execution {
     src: InputSource,
     pub blocks: HashMap<Rc<str>, Rc<Block>>,
     pub vars: HashMap<Rc<str>, Rc<Variable>>,
 
-    pub return_size: Option<FieldSize>,
+    pub return_value: ExecutionExport,
 
     //entry_block have no name and is not on self.labels
     pub entry_block: Rc<Block>,
@@ -889,7 +918,7 @@ impl Execution {
             src: src.clone(),
             blocks: HashMap::default(),
             vars: HashMap::default(),
-            return_size: None,
+            return_value: ExecutionExport::default(),
             entry_block,
         }
     }
@@ -912,16 +941,14 @@ impl Execution {
             .blocks()
             .filter(|block| block.next.borrow().is_none())
             .filter_map(|block| match block.statements.borrow().last()? {
-                Statement::Export(exp) => {
-                    Some((exp.src().clone(), exp.output_size()))
-                }
+                Statement::Export(exp) => Some(exp.output_size()),
                 _ => None,
             })
-            .try_fold(false, |acc, (src, out_size)| {
+            .try_fold(false, |acc, out_size| {
                 return_size
                     .update_action(|size| size.intersection(out_size))
                     .map(|modified| acc | modified)
-                    .ok_or_else(|| ExecutionError::InvalidExport(src))
+                    .ok_or_else(|| ExecutionError::InvalidExport)
             })?;
         //update all the export output sizes
         self.blocks()
@@ -967,10 +994,10 @@ impl Execution {
         }
     }
     pub fn size(&self) -> Option<&FieldSize> {
-        self.return_size.as_ref()
+        self.return_value.size()
     }
     pub fn mut_size(&mut self) -> Option<&mut FieldSize> {
-        self.return_size.as_mut()
+        self.return_value.size_mut()
     }
     pub fn blocks(&self) -> impl Iterator<Item = &Block> {
         self.blocks

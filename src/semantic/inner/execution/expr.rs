@@ -124,7 +124,7 @@ impl Expr {
                 solved.iam_not_finished_location(&src);
                 let value = op.execute(left, right).ok_or_else(|| {
                     //TODO better error
-                    ExecutionError::InvalidExport(src.clone())
+                    ExecutionError::InvalidExport
                 })?;
                 let value = Value::new_int(src.clone(), value);
                 //replace self with our new value
