@@ -1,3 +1,4 @@
+use crate::semantic::inner::execution::FinalTruncate;
 use crate::semantic::inner::FieldSizeCell;
 use crate::semantic::inner::FieldSizeMut;
 use crate::semantic::inner::FIELD_SIZE_BOOL;
@@ -157,28 +158,25 @@ impl Expr {
             {
                 solved.i_did_a_thing();
                 solved.iam_not_finished_location(&src);
-                let size = FieldSize::new_bits(
-                    NonZeroTypeU::new(integer.count_ones().into()).unwrap(),
-                );
-                Expr::Value(ExprElement::Op(
+                let size = out_size.final_value().unwrap();
+                Expr::Value(ExprElement::Truncate(
                     src.clone(),
-                    out_size,
-                    Unary::Truncate(Truncate { lsb: 0, size }),
+                    Truncate::new(0, size),
                     Box::new(value),
                 ))
             }
 
             //convert if the output bit size, if the left hand is a value with
-            //an defined bit size and the right side an interger, the output
-            //can be a bitrange from the left.
-            //eg value is 8bits: `tmp = value >> 7 => tmp = tmp = value[7,1]`
+            //an defined bit size and the right side an integer, the output
+            //can be a bitrange truncate from the left.
+            //eg `value` is 8bits: `tmp = value >> 7; => tmp = value[7,1]`
             (
                 value,
                 Binary::Lsr,
                 Expr::Value(Ele::Value(Value::Int(_, _, lsb))),
             ) if out_size
-                .possible_value()
-                .zip(value.size().possible_value())
+                .final_value()
+                .zip(value.size().final_value())
                 .map(|(out, val)| {
                     val.get() >= lsb && out.get() == (val.get() - lsb)
                 })
@@ -186,17 +184,12 @@ impl Expr {
             {
                 solved.i_did_a_thing();
                 solved.iam_not_finished_location(&src);
-                let size = NonZeroTypeU::new(
-                    value.size().possible_value().unwrap().get()
-                        - out_size.possible_value().unwrap().get(),
-                )
-                .unwrap();
+                let size = out_size.final_value().unwrap();
                 //take the value from self, and put on the new self
                 //safe because the self is overwriten after
-                Expr::Value(Ele::Op(
+                Expr::Value(Ele::Truncate(
                     src.clone(),
-                    out_size,
-                    Unary::Truncate(Truncate::new(lsb, size)),
+                    Truncate::new(lsb, size),
                     Box::new(value),
                 ))
             }
@@ -222,7 +215,7 @@ impl Expr {
             ) => {
                 let error = || ExecutionError::VarSize(src.clone());
                 let modified = FieldSize::all_same_size(&mut [
-                    FieldSizeCell::Borrow(&mut out_size),
+                    (&mut out_size).into(),
                     left.size_mut(),
                     right.size_mut(),
                 ]);
@@ -240,7 +233,7 @@ impl Expr {
             (mut left, Binary::Lsl | Binary::Lsr | Binary::Asr, right) => {
                 let error = || ExecutionError::VarSize(src.clone());
                 let modified = FieldSize::all_same_size(&mut [
-                    FieldSizeCell::Borrow(&mut out_size),
+                    (&mut out_size).into(),
                     left.size_mut(),
                 ]);
                 if modified.ok_or_else(error)? {
@@ -377,6 +370,8 @@ pub enum ExprElement {
     Value(ExprValue),
     UserCall(FieldSize, UserCall),
     Reference(InputSource, FieldSize, ReferencedValue),
+    DeReference(InputSource, AddrDereference, Box<Expr>),
+    Truncate(InputSource, Truncate, Box<Expr>),
     Op(InputSource, FieldSize, Unary, Box<Expr>),
     //TODO allow full expr??
     New(InputSource, Box<Expr>, Option<Box<Expr>>),
@@ -384,14 +379,24 @@ pub enum ExprElement {
     CPool(InputSource, Vec<Expr>),
 }
 impl ExprElement {
+    pub fn new_truncate(
+        src: InputSource,
+        truncate: Truncate,
+        expr: Expr,
+    ) -> Self {
+        Self::Truncate(src, truncate, Box::new(expr))
+    }
+    pub fn new_deref(
+        src: InputSource,
+        deref: AddrDereference,
+        mut addr: Expr,
+    ) -> Self {
+        //addr expr, need to be the space_addr size
+        addr.size_mut().set(deref.space.memory().addr_size());
+        Self::DeReference(src, deref, Box::new(addr))
+    }
     pub fn new_op(src: InputSource, mut op: Unary, mut expr: Expr) -> Self {
         let size = match &mut op {
-            Unary::Dereference(AddrDereference { space, size, .. }) => {
-                //expr is the addr, it need to be the space_addr size
-                expr.size_mut().set(space.memory().addr_size());
-                *size
-            }
-            Unary::Truncate(Truncate { size, .. }) => *size,
             Unary::FloatNan => {
                 //the output can be one bit (true/false)
                 expr.size_mut()
@@ -410,6 +415,8 @@ impl ExprElement {
             Self::Value(value) => value.src(),
             Self::UserCall(_, call) => call.src(),
             Self::Op(src, _, _, _)
+            | Self::DeReference(src, _, _)
+            | Self::Truncate(src, _, _)
             | Self::Reference(src, _, _)
             | Self::New(src, _, _)
             | Self::CPool(src, _) => src,
@@ -422,58 +429,37 @@ impl ExprElement {
         match self {
             Self::Value(_) => {}
             Self::Reference(_, _, _) => {}
-            Self::Op(
-                src,
-                out_size,
-                Unary::Truncate(Truncate {
-                    size: lsb_size,
-                    lsb,
-                }),
-                value,
-            ) => {
+            Self::Truncate(src, Truncate { size, lsb }, value) => {
+                let mut modified = false;
                 let error = || ExecutionError::VarSize(src.clone());
-                //output size need to be the same as op truncate size
-                let modified = FieldSize::all_same_size(&mut [
-                    FieldSizeCell::Borrow(out_size),
-                    FieldSizeCell::Borrow(lsb_size),
-                ]);
-                if modified.ok_or_else(error)? {
-                    solved.i_did_a_thing();
-                }
-                //expr min size need to be lsb + size, if size is unknonwn use 1
-                //because size will never be zero
+                //* value min size need to be lsb + size, if size is unknonwn
+                //use 1 because size will never be zero
                 let lsb_size =
-                    out_size.final_value().unwrap_or(1.try_into().unwrap());
-                if value
+                    size.final_value().unwrap_or(1.try_into().unwrap());
+                modified |= value
                     .size_mut()
                     .update_action(|size| {
                         size.set_min(
                             (*lsb + lsb_size.get()).try_into().unwrap(),
                         )
                     })
-                    .ok_or_else(error)?
+                    .ok_or_else(error)?;
+                //truncate output size can't be bigger than the value size
+                modified |= size
+                    .update_action(|size| size.set_max(value.size().max()))
+                    .ok_or_else(error)?;
+                //if the value size is known, the size of truncate output is
+                //optional, because MsbTruncate auto adjust to the required size
+                if value.size().final_value().is_none()
+                    && size.possible_value().is_none()
                 {
-                    solved.i_did_a_thing();
+                    solved.iam_not_finished_location(&src);
                 }
-            }
-            Self::Op(
-                src,
-                out_size,
-                Unary::Dereference(AddrDereference {
-                    size: deref_size, ..
-                }),
-                _,
-            ) => {
-                let error = || ExecutionError::VarSize(src.clone());
-                let modified = FieldSize::all_same_size(&mut [
-                    FieldSizeCell::Borrow(out_size),
-                    FieldSizeCell::Borrow(deref_size),
-                ])
-                .ok_or_else(error)?;
                 if modified {
                     solved.i_did_a_thing();
                 }
             }
+            Self::DeReference(_, _, _) => {}
             Self::Op(
                 src,
                 out_size,
@@ -490,11 +476,21 @@ impl ExprElement {
             ) => {
                 //the input and output have the same number of bits
                 let error = || ExecutionError::VarSize(src.clone());
-                let modified = FieldSize::all_same_size(&mut [
-                    FieldSizeCell::Borrow(out_size),
+                let mut modified = FieldSize::all_same_size(&mut [
+                    out_size.into(),
                     input.size_mut(),
                 ])
                 .ok_or_else(error)?;
+                //if one can be min size, both can be
+                if out_size.possible_min() || input.size().possible_min() {
+                    modified |= out_size
+                        .update_action(|size| Some(size.set_possible_min()))
+                        .unwrap();
+                    modified |= input
+                        .size_mut()
+                        .update_action(|size| Some(size.set_possible_min()))
+                        .unwrap();
+                }
                 if modified {
                     solved.i_did_a_thing();
                 }
@@ -560,25 +556,27 @@ impl ExprElement {
             }
             Self::Op(
                 _src,
-                _output_size,
+                output_size,
                 Unary::FloatNan,
                 _input,
                 //the output can be any size, because is true/false 1/0
-            ) => {}
+            ) => {
+                if output_size
+                    .update_action(|size| Some(size.set_possible_min()))
+                    .unwrap()
+                {
+                    solved.i_did_a_thing();
+                }
+            }
             Self::UserCall(_size, _call) => (),
             Self::New(_, _, _) => todo!(),
             Self::CPool(_, _) => todo!(),
         }
         match self {
             Self::Value(value) => value.solve(solved),
-            //if the op is Msb truncate, value have known size, but truncated
-            //size is undefined, the output size becames value size - lsb
-            Self::Op(
-                _,
-                _,
-                Unary::Truncate(Truncate { lsb: _, size: _ }),
-                value,
-            ) if !value.size().is_undefined() => value.solve(solved),
+            Self::DeReference(_, _, value) | Self::Truncate(_, _, value) => {
+                value.solve(solved)
+            }
             Self::Op(src, size, _, value) => {
                 if size.is_undefined() {
                     solved.iam_not_finished_location(src);
@@ -606,26 +604,36 @@ impl ExprElement {
                 size.possible_value().unwrap(),
                 value.convert(),
             ),
-            Self::Op(
-                _,
-                _,
-                Unary::Truncate(Truncate {
-                    lsb,
-                    size: lsb_size,
-                }),
-                value,
-            ) if !value.size().is_undefined() && lsb_size.is_undefined() => {
-                let size = NonZeroTypeU::new(
-                    value.size().possible_value().unwrap().get() - lsb,
-                )
-                .unwrap();
+            Self::DeReference(_, deref, value) => {
+                let size = deref.size.final_value().unwrap();
                 FinalExprElement::Op(
                     size,
-                    super::FinalUnary::Truncate(super::FinalTruncate::new(
-                        lsb, size,
-                    )),
+                    super::FinalUnary::Dereference(deref.convert()),
                     Box::new(value.convert()),
                 )
+            }
+            Self::Truncate(_, truncate, value) => {
+                //if the truncate size is unknown, the value size is used,
+                //because Msb truncate auto adjust the output size
+                if let Some(out_size) = truncate.size.final_value() {
+                    FinalExprElement::Op(
+                        out_size,
+                        super::FinalUnary::Truncate(truncate.convert()),
+                        Box::new(value.convert()),
+                    )
+                } else {
+                    let size = value.size().final_value().unwrap();
+                    let size =
+                        NonZeroTypeU::new(size.get() - truncate.lsb).unwrap();
+                    FinalExprElement::Op(
+                        size,
+                        super::FinalUnary::Truncate(FinalTruncate::new(
+                            truncate.lsb,
+                            size,
+                        )),
+                        Box::new(value.convert()),
+                    )
+                }
             }
             Self::Op(_src, size, unary, value) => FinalExprElement::Op(
                 size.possible_value().unwrap(),
@@ -648,9 +656,11 @@ impl ExprElement {
     pub fn size_mut<'a>(&'a mut self) -> FieldSizeCell<'a> {
         match self {
             Self::Value(value) => value.size_mut(),
+            Self::DeReference(_, deref, _) => (&mut deref.size).into(),
+            Self::Truncate(_, trunc, _) => (&mut trunc.size).into(),
             Self::Reference(_, size, _)
             | Self::Op(_, size, _, _)
-            | Self::UserCall(size, _) => FieldSizeCell::Borrow(size),
+            | Self::UserCall(size, _) => size.into(),
             Self::New(_, _, _) => todo!(),
             Self::CPool(_, _) => todo!(),
         }
@@ -658,6 +668,8 @@ impl ExprElement {
     pub fn size(&self) -> FieldSize {
         match self {
             Self::Value(value) => value.size(),
+            Self::DeReference(_, deref, _) => deref.size,
+            Self::Truncate(_, trunc, _) => trunc.size,
             Self::Reference(_, size, _) => *size,
             Self::Op(_, size, _, _) => *size,
             Self::UserCall(size, _call) => *size,

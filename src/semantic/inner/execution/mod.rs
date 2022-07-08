@@ -180,16 +180,16 @@ impl MemWrite {
             .map(|(left, right)| left.get() < right.get())
             .unwrap_or(false)
         {
+            //dummy value
             let mut taken = Expr::Value(ExprElement::Value(ExprValue::Int(
                 self.src.clone(),
                 FieldSize::new_unsized(),
                 0.try_into().unwrap(),
             )));
             std::mem::swap(&mut self.right, &mut taken);
-            self.right = Expr::Value(ExprElement::Op(
+            self.right = Expr::Value(ExprElement::Truncate(
                 taken.src().clone(),
-                FieldSize::new_bits(left_size.unwrap()),
-                Unary::Truncate(Truncate::new_msb(0)),
+                Truncate::new(0, left_size.unwrap()),
                 Box::new(taken),
             ));
             self.right.solve(solved)?;

@@ -230,7 +230,11 @@ impl FieldSize {
     }
     pub fn set_possible_min(mut self) -> Self {
         match self {
-            Self::Value(_) => self,
+            Self::Value(_)
+            | Self::Unsized {
+                possible: FieldAuto::Value(_),
+                ..
+            } => self,
             Self::Unsized {
                 ref mut possible, ..
             } => {

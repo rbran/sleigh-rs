@@ -181,9 +181,7 @@ pub trait ExecutionBuilder<'a> {
             .try_reduce(|acc, item| acc.combine(item));
         self.execution_mut().return_value = match return_type {
             //short circuit, AKA invalid combination of return types
-            None => {
-                return Err(ExecutionError::InvalidExport)
-            },
+            None => return Err(ExecutionError::InvalidExport),
             //there are no returns
             Some(None) => ExecutionExport::None,
             //some return type
@@ -484,9 +482,8 @@ pub trait ExecutionBuilder<'a> {
             }
             RawExprElement::Op(src, raw_op, input) => {
                 let src = self.sleigh().input_src(src);
-                let op = self.new_op_unary(&raw_op)?;
                 let input = self.new_expr(*input)?;
-                Ok(ExprElement::new_op(src, op, input))
+                self.new_op_unary(&raw_op, src, input)
             }
             RawExprElement::New(src, param0, param1) => {
                 let src = self.sleigh().input_src(src);
@@ -513,9 +510,9 @@ pub trait ExecutionBuilder<'a> {
                 //can be one of two possibilities:
                 if let Ok(value) = self.read_scope(name) {
                     //first: value with ByteRangeMsb operator
-                    Ok(ExprElement::new_op(
+                    Ok(ExprElement::new_truncate(
                         self.sleigh().input_src(param_src),
-                        Unary::Truncate(Truncate::new_msb(param)),
+                        Truncate::new_msb(param),
                         Expr::Value(ExprElement::Value(value)),
                     ))
                 } else {
@@ -555,22 +552,41 @@ pub trait ExecutionBuilder<'a> {
     fn new_op_unary(
         &self,
         input: &block::execution::op::Unary<'a>,
-    ) -> Result<Unary, ExecutionError> {
+        src: InputSource,
+        expr: Expr,
+    ) -> Result<ExprElement, ExecutionError> {
         use block::execution::op::Unary as Op;
         let to_nonzero =
             //TODO generic error here
             |x: IntTypeU| NonZeroTypeU::new(x).ok_or(ExecutionError::BitRangeZero);
         let op = match input {
-            Op::ByteRangeMsb(x) => Unary::Truncate(Truncate::new_msb(x.value)),
-            Op::ByteRangeLsb(x) => {
-                Unary::Truncate(Truncate::new_lsb(to_nonzero(x.value)?))
+            Op::ByteRangeMsb(x) => {
+                return Ok(ExprElement::Truncate(
+                    src,
+                    Truncate::new_msb(x.value),
+                    Box::new(expr),
+                ))
             }
-            Op::BitRange(range) => Unary::Truncate(Truncate::new(
-                range.lsb_bit,
-                to_nonzero(range.n_bits)?,
-            )),
+            Op::ByteRangeLsb(x) => {
+                return Ok(ExprElement::Truncate(
+                    src,
+                    Truncate::new_lsb(to_nonzero(x.value)?),
+                    Box::new(expr),
+                ))
+            }
+            Op::BitRange(range) => {
+                return Ok(ExprElement::Truncate(
+                    src,
+                    Truncate::new(range.lsb_bit, to_nonzero(range.n_bits)?),
+                    Box::new(expr),
+                ))
+            }
             Op::Dereference(x) => {
-                self.new_addr_derefence(x).map(Unary::Dereference)?
+                return Ok(ExprElement::DeReference(
+                    src,
+                    self.new_addr_derefence(x)?,
+                    Box::new(expr),
+                ))
             }
             Op::Negation => Unary::Negation,
             Op::BitNegation => Unary::BitNegation,
@@ -589,7 +605,7 @@ pub trait ExecutionBuilder<'a> {
             Op::FloatFloor => Unary::FloatFloor,
             Op::FloatRound => Unary::FloatRound,
         };
-        Ok(op)
+        Ok(ExprElement::new_op(src, op, expr))
     }
     fn new_addr_derefence(
         &self,

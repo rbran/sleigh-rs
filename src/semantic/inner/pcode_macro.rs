@@ -575,7 +575,9 @@ fn update_expr_element(
             }
         }
         ExprElement::Reference(_, _, _) => todo!(),
-        ExprElement::Op(_, _, _, expr) => update_expr(expr, old, new),
+        ExprElement::DeReference(_, _, expr)
+        | ExprElement::Truncate(_, _, expr)
+        | ExprElement::Op(_, _, _, expr) => update_expr(expr, old, new),
         ExprElement::New(_, param0, param1) => {
             update_expr(param0, old, new);
             if let Some(param1) = param1 {

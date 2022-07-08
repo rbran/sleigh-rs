@@ -81,9 +81,6 @@ pub type FinalUnary = execution::Unary;
 #[derive(Clone, Debug)]
 pub enum Unary {
     //NOTE: Byte Range Operator is part of the expr::ExprElement::Ambiguous1
-    Truncate(Truncate),
-    Dereference(AddrDereference),
-    //Reference(AddrReference),
     Negation,
     BitNegation,
     Negative,
@@ -103,14 +100,8 @@ pub enum Unary {
 }
 
 impl Unary {
-    pub fn solve(&self) -> Result<(), ExecutionError> {
-        //TODO how to handle the truncate MSB(0) that with automatical size?
-        todo!("Implement this");
-    }
     pub fn convert(self) -> FinalUnary {
         match self {
-            Self::Truncate(x) => FinalUnary::Truncate(x.convert()),
-            Self::Dereference(x) => FinalUnary::Dereference(x.convert()),
             Self::Negation => FinalUnary::Negation,
             Self::BitNegation => FinalUnary::BitNegation,
             Self::Negative => FinalUnary::Negative,
