@@ -226,7 +226,25 @@ pub trait ExecutionBuilder<'a> {
             //RawExportValue::Unique{} => todo!(),
             RawExport::Value(value) => {
                 let value = self.new_expr(value)?;
-                Ok(Export::new_value(value))
+                //if the value is just an varnode, then is actually a reference
+                match value {
+                    Expr::Value(ExprElement::Value(ExprValue::Varnode(
+                        src,
+                        varnode,
+                    ))) => Ok(Export::new_reference(
+                        Expr::Value(ExprElement::Value(ExprValue::new_int(
+                            src.clone(),
+                            varnode.memory().offset,
+                        ))),
+                        AddrDereference::new(
+                            Rc::clone(varnode.space()),
+                            //TODO what if is a reference to bitrange?
+                            FieldSize::new_bits(varnode.value_bits()),
+                            src,
+                        ),
+                    )),
+                    _ => Ok(Export::new_value(value)),
+                }
             }
             RawExport::Reference { space, addr } => {
                 let addr = self.new_expr(addr)?;
