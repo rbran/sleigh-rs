@@ -358,7 +358,9 @@ impl WriteValue {
     pub fn size(&self) -> FieldSize {
         match self {
             Self::Varnode(_, var) => FieldSize::new_bits(var.value_bits()),
-            Self::Table(_, table) => table.export_size().get(),
+            Self::Table(_, value) => {
+                *value.export().borrow().as_ref().unwrap().size().unwrap()
+            }
             Self::ExeVar(_, var) => var.size().get(),
             Self::Assembly(_, ass) => ass.value_size(),
             Self::Param(_, param) => param.size().get(),
@@ -369,7 +371,7 @@ impl WriteValue {
             Self::Varnode(_, var) => {
                 FieldSize::new_bits(var.value_bits()).into()
             }
-            Self::Table(_, table) => table.export_size().into(),
+            Self::Table(_, value) => value.export().into(),
             Self::ExeVar(_, var) => var.size().into(),
             Self::Assembly(_, ass) => ass.value_size().into(),
             Self::Param(_, param) => param.size().into(),
@@ -825,6 +827,9 @@ pub enum ExecutionExport {
 }
 
 impl ExecutionExport {
+    pub fn export_nothing(&self) -> bool {
+        matches!(self, Self::None)
+    }
     pub fn size(&self) -> Option<&FieldSize> {
         match self {
             ExecutionExport::None => None,
@@ -931,7 +936,7 @@ impl Execution {
             .collect::<Result<(), _>>()?;
 
         //get the export sizes, otherwise we are finished
-        let mut return_size = if let Some(size) = self.size().cloned() {
+        let mut return_size = if let Some(size) = self.return_size().cloned() {
             size
         } else {
             return Ok(());
@@ -963,7 +968,7 @@ impl Execution {
                 _ => (),
             });
         modified |= self
-            .mut_size()
+            .return_size_mut()
             .unwrap()
             .update_action(|size| size.intersection(return_size))
             .unwrap();
@@ -993,11 +998,17 @@ impl Execution {
             entry_block,
         }
     }
-    pub fn size(&self) -> Option<&FieldSize> {
+    pub fn return_size(&self) -> Option<&FieldSize> {
         self.return_value.size()
     }
-    pub fn mut_size(&mut self) -> Option<&mut FieldSize> {
+    pub fn return_size_mut(&mut self) -> Option<&mut FieldSize> {
         self.return_value.size_mut()
+    }
+    pub fn return_type(&self) -> &ExecutionExport {
+        &self.return_value
+    }
+    pub fn return_type_mut(&mut self) -> &mut ExecutionExport {
+        &mut self.return_value
     }
     pub fn blocks(&self) -> impl Iterator<Item = &Block> {
         self.blocks

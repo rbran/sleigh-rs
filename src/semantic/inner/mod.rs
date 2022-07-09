@@ -11,7 +11,7 @@ pub mod user_function;
 pub mod varnode;
 pub mod with_block;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ops::{Bound, RangeBounds};
 use std::rc::Rc;
@@ -24,6 +24,7 @@ use crate::{
     syntax, IDENT_EPSILON, IDENT_INSTRUCTION, IDENT_INST_NEXT, IDENT_INST_START,
 };
 
+use self::execution::ExecutionExport;
 pub use self::pattern::{Block, Pattern};
 pub use self::pcode_macro::PcodeMacro;
 pub use self::table::{Constructor, Table};
@@ -340,6 +341,7 @@ impl FieldSizeMut for FieldSize {
 pub enum FieldSizeCell<'a> {
     Borrow(&'a mut FieldSize),
     Cell(&'a Cell<FieldSize>),
+    ReturnType(&'a RefCell<Option<ExecutionExport>>),
     ///Values that don't need to be updated, eg Varnodes
     Owned(FieldSize),
 }
@@ -353,6 +355,11 @@ impl<'a> From<&'a Cell<FieldSize>> for FieldSizeCell<'a> {
         Self::Cell(value)
     }
 }
+impl<'a> From<&'a RefCell<Option<ExecutionExport>>> for FieldSizeCell<'a> {
+    fn from(value: &'a RefCell<Option<ExecutionExport>>) -> Self {
+        Self::ReturnType(value)
+    }
+}
 impl<'a> From<FieldSize> for FieldSizeCell<'a> {
     fn from(value: FieldSize) -> Self {
         Self::Owned(value)
@@ -363,6 +370,9 @@ impl<'a> FieldSizeMut for FieldSizeCell<'a> {
         match self {
             Self::Borrow(x) => x.get(),
             Self::Cell(x) => x.get(),
+            Self::ReturnType(x) => {
+                *x.borrow().as_ref().unwrap().size().unwrap()
+            }
             Self::Owned(x) => x.get(),
         }
     }
@@ -370,6 +380,14 @@ impl<'a> FieldSizeMut for FieldSizeCell<'a> {
         match self {
             Self::Borrow(x) => x.set(size),
             Self::Cell(x) => x.set(size),
+            Self::ReturnType(x) => x
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .size_mut()
+                .unwrap()
+                .update_action(|_| Some(size))
+                .unwrap(),
             Self::Owned(x) => x.set(size),
         }
     }

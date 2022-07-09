@@ -84,7 +84,16 @@ impl<'a, 'b, 'c> ExecutionBuilder<'a> for Builder<'a, 'b, 'c> {
                         Ok(ExprValue::new_assembly(src(), Rc::clone(x)))
                     }
                     Varnode(x) => Ok(ExprValue::Varnode(src(), Rc::clone(x))),
-                    Table(table) if table.exports() => {
+                    //only if this table have at least one constructor that
+                    //export any kind of value
+                    Table(table)
+                        if table
+                            .export()
+                            .borrow()
+                            .as_ref()
+                            .map(|x| !x.export_nothing())
+                            .unwrap_or(false) =>
+                    {
                         Ok(ExprValue::Table(src(), Rc::clone(table)))
                     }
                     _ => Err(ExecutionError::InvalidRef(src())),

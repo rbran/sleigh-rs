@@ -1,7 +1,6 @@
 pub mod disassembly;
 pub mod execution;
 
-use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
@@ -14,6 +13,7 @@ use self::disassembly::Builder;
 
 use super::disassembly::{Disassembly, DisassemblyBuilder};
 use super::display::Display;
+use super::execution::ExecutionExport;
 use super::execution::{Execution, ExecutionBuilder};
 use super::pattern::Pattern;
 use super::{FieldSize, GlobalScope, Sleigh, SolverStatus, WithBlock};
@@ -31,8 +31,10 @@ pub struct Table {
      * With this diference being clear on the `addrmode2`.
      * In this case, if the context is `c1619=15`, `rn` returns a value,
      * otherwise it returns a varnode. */
-    export: Cell<bool>,
-    export_size: Cell<FieldSize>,
+    //None means no constructors is able to define the return type, because
+    //this table is empty or contructors are all `unimpl`.
+    //Some(ExecutionExport::None) mean that this table doesn't export
+    export: RefCell<Option<ExecutionExport>>,
 
     empty: RefCell<bool>,
     result: Rc<semantic::table::Table>,
@@ -40,12 +42,7 @@ pub struct Table {
 
 impl std::fmt::Debug for Table {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Table {}, returning: {:?}",
-            self.name,
-            self.export_size.get(),
-        )
+        write!(f, "Table {}, returning: {:?}", self.name, self.export,)
     }
 }
 
@@ -58,8 +55,7 @@ impl Table {
             result: Rc::new(semantic::table::Table::new_empty(name)),
             empty: RefCell::new(true),
             //it does not export, unless a exporting constructor is added
-            export: Cell::new(false),
-            export_size: Cell::default(),
+            export: RefCell::default(),
             //export_time: RefCell::default(),
             me: Weak::clone(me),
         })
@@ -75,35 +71,29 @@ impl Table {
         constructor: Constructor,
     ) -> Result<(), TableError> {
         let mut constructors = self.constructors.borrow_mut();
-        //all the constructor need to export or non can export
-        if constructors.is_empty() {
-            //first constructor will define if this table exports or not
-            if let Some(size) = constructor.export_size() {
-                self.export.set(true);
-                self.export_size.set(*size);
-            }
-        } else {
-            //if this table exports, the new constructor also need to export
-            match (self.export.get(), constructor.export_size()) {
-                //Both do not export
-                (false, None) => (),
-                //Both exports
-                (true, Some(_)) => (),
-                (_, _) => {
-                    //TODO find the export statement src
-                    return Err(ExecutionError::InvalidExport)
-                        .to_table(constructor.src);
-                }
+        //all the constructor need to export or none can export
+        //if this constructor is not `unimpl` update/verify the return type
+        if let Some(execution) = constructor.execution() {
+            let mut export = self.export.borrow_mut();
+            if let Some(export) = export.as_mut() {
+                //if this table exports, the new constructor need to be compatible
+                *export = export
+                    .clone()
+                    .combine(execution.return_type().clone())
+                    .ok_or(
+                        ExecutionError::InvalidExport
+                            .to_table(constructor.src.clone()),
+                    )?;
+            } else {
+                //first constructor will define the table export type
+                *export = Some(execution.return_type().clone());
             }
         }
         constructors.push(constructor);
         Ok(())
     }
-    pub fn exports(&self) -> bool {
-        self.export.get()
-    }
-    pub fn export_size(&self) -> &Cell<FieldSize> {
-        &self.export_size
+    pub fn export(&self) -> &RefCell<Option<ExecutionExport>> {
+        &self.export
     }
     pub fn reference(&self) -> Rc<semantic::table::Table> {
         Rc::clone(&self.result)
@@ -118,46 +108,55 @@ impl Table {
             .map(|constructor| constructor.solve(solved))
             .collect::<Result<(), _>>()?;
 
-        let mut new_size = if self.export.get() {
-            self.export_size.get()
+        //TODO update the FieldSize::all_same_size to use iterators and use it
+        //here
+        //update all the constructors return size, if none/undefined return just
+        //finish solving
+        let mut modified = false;
+        let mut export = self.export.borrow_mut();
+        let new_size: &mut FieldSize = if let Some(export) =
+            export.as_mut().map(|x| x.size_mut()).flatten()
+        {
+            export
         } else {
             return Ok(());
         };
         //find the sizes of all contructors
         for con in self.constructors.borrow().iter() {
-            let (src, size) = if con.export_size().is_some() {
-                (&con.src, con.export_size().unwrap())
+            //if the execution is unimpl, ignore this constructor
+            let (src, size) = if let Some(exe) = con.execution() {
+                (&con.src, exe.return_type().size().unwrap(/*unreachable*/))
             } else {
                 continue;
             };
-            new_size
+            modified |= new_size
                 .update_action(|new_size| new_size.intersection(*size))
-                .ok_or_else(|| TableError {
-                    table_pos: src.clone(),
-                    sub: TableErrorSub::TableConstructorExportSizeInvalid,
+                .ok_or_else(|| {
+                    TableErrorSub::TableConstructorExportSizeInvalid
+                        .to_table(src.clone())
                 })?;
         }
 
         //update all the constructors
         for con in self.constructors.borrow_mut().iter_mut() {
-            let (src, size) = if con.export_size().is_some() {
-                (con.src.clone(), con.mut_export_size().unwrap())
+            let src = con.src.clone();
+            //if the execution is unimpl, ignore this constructor
+            let (src, size) = if let Some(exe) = con.execution_mut() {
+                let size =
+                    exe.return_type_mut().size_mut().unwrap(/*unreachable*/);
+                (src, size)
             } else {
                 continue;
             };
-            if size
-                .update_action(|size| size.intersection(new_size))
-                .unwrap()
-            {
-                solved.i_did_a_thing();
-            }
+            modified |= size
+                .update_action(|size| size.intersection(*new_size))
+                .unwrap();
             if size.is_undefined() {
                 solved.iam_not_finished_location(&src);
             }
         }
         //update the export size
-        if self.export_size.get() != new_size {
-            self.export_size.set(new_size);
+        if modified {
             solved.i_did_a_thing();
         }
         Ok(())
@@ -204,11 +203,11 @@ impl Constructor {
             src,
         }
     }
-    pub fn export_size(&self) -> Option<&FieldSize> {
-        self.execution.as_ref().map(|exe| exe.size()).flatten()
+    pub fn execution(&self) -> Option<&Execution> {
+        self.execution.as_ref()
     }
-    pub fn mut_export_size(&mut self) -> Option<&mut FieldSize> {
-        self.execution.as_mut().map(|exe| exe.mut_size()).flatten()
+    pub fn execution_mut(&mut self) -> Option<&mut Execution> {
+        self.execution.as_mut()
     }
     pub fn solve<T>(&mut self, solved: &mut T) -> Result<(), TableError>
     where

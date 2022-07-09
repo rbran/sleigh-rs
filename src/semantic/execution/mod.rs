@@ -8,7 +8,7 @@ use crate::base::{IntTypeU, NonZeroTypeU};
 use crate::{InputSource, UserFunction};
 
 use super::pcode_macro::PcodeMacroInstance;
-use super::table::Table;
+use super::table::{Table, TableError, TableErrorSub};
 use super::varnode::Varnode;
 use super::{assembly, disassembly};
 
@@ -59,6 +59,15 @@ pub enum ExecutionError {
     //TODO remove this
     #[error("Invalid amb1: {0}")]
     InvalidAmb1(InputSource),
+}
+
+impl ExecutionError {
+    pub fn to_table(self, table_pos: InputSource) -> TableError {
+        TableError {
+            table_pos,
+            sub: TableErrorSub::Execution(self),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

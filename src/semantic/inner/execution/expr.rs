@@ -312,7 +312,7 @@ pub type FinalReferencedValue = semantic::execution::ReferencedValue;
 pub enum ReferencedValue {
     //only if translate into varnode
     Assembly(InputSource, Rc<assembly::Assembly>),
-    Varnode(InputSource, Rc<Varnode>),
+    //Varnode(InputSource, Rc<Varnode>),
     Table(InputSource, Rc<Table>),
     //Param(InputSource, Rc<Parameter>),
 }
@@ -321,40 +321,14 @@ impl ReferencedValue {
     pub fn src(&self) -> &InputSource {
         match self {
             Self::Assembly(src, _)
-            | Self::Varnode(src, _)
+            //| Self::Varnode(src, _)
             | Self::Table(src, _) => src,
-        }
-    }
-    pub fn size(&self) -> FieldSize {
-        match self {
-            Self::Assembly(_, value) => value
-                .value_bits()
-                .map(FieldSize::new_bits)
-                .unwrap_or_default(),
-            Self::Varnode(_, value) => FieldSize::new_bits(value.value_bits()),
-            Self::Table(_, value) => value.export_size().get(),
-            //Self::Param(_, value) => value.size(),
-        }
-    }
-    pub fn size_mut(&self) -> FieldSizeCell {
-        match self {
-            //TODO remove owned value in case of inst_next inst_start
-            Self::Assembly(_, value) => value
-                .value_bits()
-                .map(FieldSize::new_bits)
-                .unwrap_or_default()
-                .into(),
-            Self::Varnode(_, value) => {
-                FieldSize::new_bits(value.value_bits()).into()
-            }
-            Self::Table(_, value) => value.export_size().into(),
-            //Self::Param(_, value) => value.size(),
         }
     }
     pub fn convert(self) -> FinalReferencedValue {
         match self {
             Self::Assembly(_, value) => FinalReferencedValue::Assembly(value),
-            Self::Varnode(_, _value) => todo!(),
+            //Self::Varnode(_, _value) => todo!(),
             Self::Table(_, value) => {
                 FinalReferencedValue::Table(value.convert())
             } //Self::Param(_, value) => FinalExprValue::Param(value.convert()),
@@ -707,7 +681,7 @@ impl ExprValue {
             Self::Varnode(_, var) => {
                 FieldSize::new_bits(var.value_bits()).into()
             }
-            Self::Table(_, value) => value.export_size().into(),
+            Self::Table(_, value) => value.export().into(),
             Self::ExeVar(_, value) => value.size().into(),
             Self::Param(_, value) => value.size().into(),
         }
@@ -718,7 +692,9 @@ impl ExprValue {
             | Self::DisVar(_, size, _)
             | Self::Assembly(_, size, _) => *size,
             Self::Varnode(_, var) => FieldSize::new_bits(var.value_bits()),
-            Self::Table(_, value) => value.export_size().get(),
+            Self::Table(_, value) => {
+                *value.export().borrow().as_ref().unwrap().size().unwrap()
+            }
             Self::ExeVar(_, value) => value.size().get(),
             Self::Param(_, value) => value.size().get(),
         }
