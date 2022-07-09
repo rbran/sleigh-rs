@@ -113,6 +113,7 @@ impl Expr {
         use ExprElement as Ele;
         use ExprValue as Value;
 
+        let mut modified = false;
         //TODO make the moves and mut ref more elegant
         *self = match (*left, op, *right) {
             //if two Integer, calculate it and replace self with the result.
@@ -214,14 +215,12 @@ impl Expr {
                 mut right,
             ) => {
                 let error = || ExecutionError::VarSize(src.clone());
-                let modified = FieldSize::all_same_size(&mut [
+                modified |= FieldSize::all_same_size(&mut [
                     (&mut out_size).into(),
                     left.size_mut(),
                     right.size_mut(),
-                ]);
-                if modified.ok_or_else(error)? {
-                    solved.i_did_a_thing();
-                }
+                ])
+                .ok_or_else(error)?;
                 if out_size.is_undefined() {
                     solved.iam_not_finished_location(&src)
                 }
@@ -232,13 +231,11 @@ impl Expr {
             //right (rotated value) can have any size
             (mut left, Binary::Lsl | Binary::Lsr | Binary::Asr, right) => {
                 let error = || ExecutionError::VarSize(src.clone());
-                let modified = FieldSize::all_same_size(&mut [
+                modified |= FieldSize::all_same_size(&mut [
                     (&mut out_size).into(),
                     left.size_mut(),
-                ]);
-                if modified.ok_or_else(error)? {
-                    solved.i_did_a_thing();
-                }
+                ])
+                .ok_or_else(error)?;
                 if out_size.is_undefined() {
                     solved.iam_not_finished_location(&src);
                 }
@@ -281,19 +278,20 @@ impl Expr {
                 //Both sides need to have the same number of bits.
                 //output can have any size because is always 0/1
                 let error = || ExecutionError::VarSize(src.clone());
-                let modified = FieldSize::all_same_size(&mut [
+                modified |= FieldSize::all_same_size(&mut [
                     left.size_mut(),
                     right.size_mut(),
-                ]);
-                if modified.ok_or_else(error)? {
-                    solved.i_did_a_thing();
-                }
+                ])
+                .ok_or_else(error)?;
                 if left.size().is_undefined() || right.size().is_undefined() {
                     solved.iam_not_finished_location(&src);
                 }
                 Expr::Op(src, out_size, op, Box::new(left), Box::new(right))
             }
         };
+        if modified {
+            solved.i_did_a_thing();
+        }
         Ok(())
     }
     pub fn convert(self) -> FinalExpr {
@@ -401,7 +399,8 @@ impl ExprElement {
                 //the output can be one bit (true/false)
                 expr.size_mut()
                     .update_action(|size| {
-                        size.set_possible_value(1.try_into().unwrap())
+                        size.set_possible_min()
+                            .set_possible_value(1.try_into().unwrap())
                     })
                     .unwrap();
                 FIELD_SIZE_BOOL
@@ -426,13 +425,13 @@ impl ExprElement {
         &mut self,
         solved: &mut impl SolverStatus,
     ) -> Result<(), ExecutionError> {
+        let mut modified = false;
         match self {
-            Self::Value(_) => {}
-            Self::Reference(_, _, _) => {}
+            Self::Value(value) => value.solve(solved)?,
+            Self::Reference(_, _, _) => (/*TODO*/),
             Self::Truncate(src, Truncate { size, lsb }, value) => {
-                let mut modified = false;
                 let error = || ExecutionError::VarSize(src.clone());
-                //* value min size need to be lsb + size, if size is unknonwn
+                //value min size need to be lsb + size, if size is unknown
                 //use 1 because size will never be zero
                 let lsb_size =
                     size.final_value().unwrap_or(1.try_into().unwrap());
@@ -448,21 +447,22 @@ impl ExprElement {
                 modified |= size
                     .update_action(|size| size.set_max(value.size().max()))
                     .ok_or_else(error)?;
-                //if the value size is known, the size of truncate output is
-                //optional, because MsbTruncate auto adjust to the required size
-                if value.size().final_value().is_none()
-                    && size.possible_value().is_none()
-                {
+                //if the value size is known, the size of truncate output size
+                //is optional, because MsbTruncate auto adjust to the value size
+                //so we are are not finished only, if the truncate size is
+                //unknown and value size is also unknown
+                if !value.size().is_final() && !size.is_final() {
                     solved.iam_not_finished_location(&src);
                 }
-                if modified {
-                    solved.i_did_a_thing();
-                }
+                value.solve(solved)?;
             }
-            Self::DeReference(_, _, _) => {}
+            Self::DeReference(_, deref, value) => {
+                deref.solve(solved);
+                value.solve(solved)?;
+            }
             Self::Op(
                 src,
-                out_size,
+                size,
                 Unary::Negation
                 | Unary::BitNegation
                 | Unary::Negative
@@ -474,114 +474,91 @@ impl ExprElement {
                 | Unary::FloatRound,
                 input,
             ) => {
-                //the input and output have the same number of bits
                 let error = || ExecutionError::VarSize(src.clone());
-                let mut modified = FieldSize::all_same_size(&mut [
-                    out_size.into(),
+                //the input and output have the same number of bits
+                modified |= FieldSize::all_same_size(&mut [
+                    size.into(),
                     input.size_mut(),
                 ])
                 .ok_or_else(error)?;
                 //if one can be min size, both can be
-                if out_size.possible_min() || input.size().possible_min() {
-                    modified |= out_size
-                        .update_action(|size| Some(size.set_possible_min()))
-                        .unwrap();
-                    modified |= input
-                        .size_mut()
-                        .update_action(|size| Some(size.set_possible_min()))
-                        .unwrap();
+                if size.possible_min() || input.size().possible_min() {
+                    let set_min =
+                        |size: FieldSize| Some(size.set_possible_min());
+                    modified |= size.update_action(set_min).unwrap();
+                    modified |=
+                        input.size_mut().update_action(set_min).unwrap();
                 }
-                if modified {
-                    solved.i_did_a_thing();
+                if size.is_undefined() {
+                    solved.iam_not_finished_location(src);
                 }
+                input.solve(solved)?;
             }
-            Self::Op(src, output_size, Unary::Popcount, input) => {
+            Self::Op(src, size, Unary::Popcount, input) => {
+                let error = || ExecutionError::VarSize(src.clone());
                 //the output min size is: log2(bit_len(input) + 1)
-                if let Some(input_num_bits) = input.size().possible_value() {
+                if let Some(input_num_bits) = input.size().final_value() {
                     //equivalent to log2(bit_len(input) + 1)
                     let output_min =
                         IntTypeU::BITS - input_num_bits.get().leading_zeros();
                     if let Some(output_min) =
                         NonZeroTypeU::new(output_min.into())
                     {
-                        if output_size
-                            .update_action(|size| size.set_min(output_min))
-                            .ok_or_else(|| {
-                                ExecutionError::VarSize(src.clone())
-                            })?
+                        if size
+                            .update_action(|size| {
+                                size.set_possible_min().set_min(output_min)
+                            })
+                            .ok_or_else(error)?
                         {
                             solved.i_did_a_thing();
                         }
                     }
                 }
+                if size.is_undefined() {
+                    solved.iam_not_finished_location(src);
+                }
+                input.solve(solved)?;
             }
 
             Self::Op(
                 src,
-                output_size,
+                size,
                 Unary::Zext | Unary::Sext | Unary::SignTrunc,
                 input,
             ) => {
                 let error = || ExecutionError::VarSize(src.clone());
                 //input size need to be bigger or eq to the input size
-                if output_size
+                modified |= size
                     .update_action(|size| size.set_min(input.size().min()))
-                    .ok_or_else(error)?
-                {
-                    solved.i_did_a_thing();
-                }
+                    .ok_or_else(error)?;
                 //and vise-versa
-                if input
+                modified |= input
                     .size_mut()
-                    .update_action(|size| size.set_max(output_size.max()))
-                    .ok_or_else(error)?
-                {
-                    solved.i_did_a_thing();
-                }
+                    .update_action(|size| size.set_max(size.max()))
+                    .ok_or_else(error)?;
 
-                if output_size.is_undefined() || input.size().is_undefined() {
+                if size.is_undefined() || input.size().is_undefined() {
                     solved.iam_not_finished_location(src);
                 }
+                input.solve(solved)?;
             }
             Self::Op(
                 src,
-                output_size,
+                size,
                 Unary::Float2Float | Unary::Int2Float,
                 input,
             ) => {
                 //input and output can have any size
-                if output_size.is_undefined() || input.size().is_undefined() {
+                if size.is_undefined() || input.size().is_undefined() {
                     solved.iam_not_finished_location(src);
                 }
+                input.solve(solved)?;
             }
-            Self::Op(
-                _src,
-                output_size,
-                Unary::FloatNan,
-                _input,
-                //the output can be any size, because is true/false 1/0
-            ) => {
-                if output_size
-                    .update_action(|size| Some(size.set_possible_min()))
-                    .unwrap()
-                {
-                    solved.i_did_a_thing();
-                }
-            }
-            Self::UserCall(_size, _call) => (),
-            Self::New(_, _, _) => todo!(),
-            Self::CPool(_, _) => todo!(),
-        }
-        match self {
-            Self::Value(value) => value.solve(solved),
-            Self::DeReference(_, _, value) | Self::Truncate(_, _, value) => {
-                value.solve(solved)
-            }
-            Self::Op(src, size, _, value) => {
+            Self::Op(src, size, Unary::FloatNan, input) => {
                 if size.is_undefined() {
                     solved.iam_not_finished_location(src);
                 }
-                value.solve(solved)
+                input.solve(solved)?;
             }
             Self::UserCall(size, call) => {
                 if size.is_undefined() {
@@ -590,12 +567,15 @@ impl ExprElement {
                 call.params
                     .iter_mut()
                     .map(|param| param.solve(solved))
-                    .collect::<Result<(), _>>()
+                    .collect::<Result<_, _>>()?;
             }
-            Self::Reference(_, _, _) => Ok(()),
             Self::New(_, _, _) => todo!(),
             Self::CPool(_, _) => todo!(),
         }
+        if modified {
+            solved.i_did_a_thing();
+        }
+        Ok(())
     }
     pub fn convert(self) -> FinalExprElement {
         match self {

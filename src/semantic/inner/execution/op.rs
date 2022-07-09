@@ -1,7 +1,5 @@
 use std::rc::Rc;
 
-use execution::ExecutionError;
-
 use crate::base::{FloatType, IntTypeS, IntTypeU, NonZeroTypeU};
 use crate::semantic::inner::{FieldSize, SolverStatus};
 use crate::semantic::space::Space;

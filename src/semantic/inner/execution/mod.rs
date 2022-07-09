@@ -673,7 +673,7 @@ impl Statement {
         T: SolverStatus + Default,
     {
         match self {
-            Self::Build(x) => (),
+            Self::Build(_x) => (),
             Self::Delayslot(_) => (),
             Self::Export(x) => x.solve(solved)?,
             Self::Declare(_x) => (),
