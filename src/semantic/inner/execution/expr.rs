@@ -12,6 +12,7 @@ use crate::semantic::inner::pcode_macro::Parameter;
 use crate::semantic::inner::{disassembly, FieldSize, SolverStatus, Table};
 use crate::{InputSource, Varnode};
 
+use super::ExecutionExport;
 use super::{AddrDereference, Truncate, Unary, UserCall, Variable};
 
 pub type FinalExpr = semantic::execution::Expr;
@@ -402,7 +403,27 @@ impl ExprElement {
         let mut modified = false;
         match self {
             Self::Value(value) => value.solve(solved)?,
-            Self::Reference(_, _, _) => (/*TODO*/),
+            Self::Reference(src, size, ReferencedValue::Table(_src, table)) => {
+                let error = || ExecutionError::VarSize(src.clone());
+                //if the table reference is return space references
+                //(like varnode) update the output size with the addr size
+                match table.export().borrow().as_ref().unwrap(/*TODO*/) {
+                    ExecutionExport::Reference(_, space) => {
+                        modified |= size
+                            .update_action(|size| {
+                                size.intersection(space.memory().addr_size())
+                            })
+                            .ok_or_else(error)?;
+                    }
+                    ExecutionExport::None
+                    | ExecutionExport::DissasemblyValue(_)
+                    | ExecutionExport::Value(_)
+                    | ExecutionExport::Multiple(_) => (/*TODO*/),
+                }
+            }
+            Self::Reference(_, _, ReferencedValue::Assembly(_, _)) => {
+                (/*TODO*/)
+            }
             Self::Truncate(src, Truncate { size, lsb }, value) => {
                 let error = || ExecutionError::VarSize(src.clone());
                 //value min size need to be lsb + size, if size is unknown
