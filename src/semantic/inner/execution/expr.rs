@@ -368,17 +368,11 @@ impl ExprElement {
         addr.size_mut().set(deref.space.memory().addr_size());
         Self::DeReference(src, deref, Box::new(addr))
     }
-    pub fn new_op(src: InputSource, mut op: Unary, mut expr: Expr) -> Self {
+    pub fn new_op(src: InputSource, mut op: Unary, expr: Expr) -> Self {
         let size = match &mut op {
             Unary::FloatNan => {
                 //the output can be one bit (true/false)
-                expr.size_mut()
-                    .update_action(|size| {
-                        size.set_possible_min()
-                            .set_possible_value(1.try_into().unwrap())
-                    })
-                    .unwrap();
-                FIELD_SIZE_BOOL
+                FieldSize::new_unsized().set_possible_min()
             }
             _ => FieldSize::new_unsized(),
         };
