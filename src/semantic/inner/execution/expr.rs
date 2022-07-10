@@ -661,6 +661,9 @@ pub enum ExprValue {
     DisVar(InputSource, FieldSize, Rc<disassembly::Variable>),
     Assembly(InputSource, FieldSize, Rc<assembly::Assembly>),
     Varnode(InputSource, Rc<Varnode>),
+    //context may be extend (like zext and assembly) based on the context
+    Context(InputSource, FieldSize, Rc<Varnode>),
+    BitRange(InputSource, FieldSize, Rc<Varnode>),
     Table(InputSource, Rc<Table>),
     ExeVar(InputSource, Rc<Variable>),
     Param(InputSource, Rc<Parameter>),
@@ -683,12 +686,33 @@ impl ExprValue {
     ) -> Self {
         Self::Assembly(src, value.value_size(), value)
     }
+    pub fn new_varnode(src: InputSource, value: Rc<Varnode>) -> Self {
+        match &value.varnode_type {
+            semantic::varnode::VarnodeType::Memory(_) => {
+                Self::Varnode(src, value)
+            }
+            semantic::varnode::VarnodeType::BitRange(x) => Self::BitRange(
+                src,
+                FieldSize::new_unsized().set_min(x.value_bits()).unwrap(),
+                value,
+            ),
+            semantic::varnode::VarnodeType::Context(x) => Self::Context(
+                src,
+                FieldSize::new_unsized()
+                    .set_min(x.bitrange.value_bits())
+                    .unwrap(),
+                value,
+            ),
+        }
+    }
     pub fn src(&self) -> &InputSource {
         match self {
             Self::Int(src, _, _)
             | Self::DisVar(src, _, _)
             | Self::Assembly(src, _, _)
             | Self::Varnode(src, _)
+            | Self::Context(src, _, _)
+            | Self::BitRange(src, _, _)
             | Self::Table(src, _)
             | Self::ExeVar(src, _)
             | Self::Param(src, _) => src,
@@ -698,6 +722,8 @@ impl ExprValue {
         match self {
             Self::Int(_, size, _)
             | Self::DisVar(_, size, _)
+            | Self::Context(_, size, _)
+            | Self::BitRange(_, size, _)
             | Self::Assembly(_, size, _) => size.into(),
             Self::Varnode(_, var) => {
                 FieldSize::new_bits(var.value_bits()).into()
@@ -711,6 +737,8 @@ impl ExprValue {
         match self {
             Self::Int(_, size, _)
             | Self::DisVar(_, size, _)
+            | Self::Context(_, size, _)
+            | Self::BitRange(_, size, _)
             | Self::Assembly(_, size, _) => *size,
             Self::Varnode(_, var) => FieldSize::new_bits(var.value_bits()),
             Self::Table(_, value) => {
@@ -728,6 +756,8 @@ impl ExprValue {
             Self::Int(_, _, _)
             | Self::DisVar(_, _, _)
             | Self::Varnode(_, _)
+            | Self::Context(_, _, _)
+            | Self::BitRange(_, _, _)
             | Self::Param(_, _) => Ok(()),
             //inst_start/inst_next could be updated externally
             Self::Assembly(src, size, ass) => {
@@ -752,6 +782,8 @@ impl ExprValue {
             }
             Self::Assembly(_, _, value) => FinalExprValue::Assembly(value),
             Self::Varnode(_, value) => FinalExprValue::Varnode(value),
+            Self::Context(_, _, value) => FinalExprValue::Varnode(value),
+            Self::BitRange(_, _, value) => FinalExprValue::Varnode(value),
             Self::Table(_, value) => FinalExprValue::Table(value.convert()),
             Self::ExeVar(_, value) => FinalExprValue::ExeVar(value.convert()),
             //Self::Param(_, value) => FinalExprValue::Param(value.convert()),

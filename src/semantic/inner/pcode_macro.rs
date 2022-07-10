@@ -367,15 +367,14 @@ impl<'a, 'b, 'c> ExecutionBuilder<'a> for Builder<'a, 'b, 'c> {
                     Assembly(x) => match x.assembly_type {
                         semantic::assembly::AssemblyType::Next(_)
                         | semantic::assembly::AssemblyType::Start(_) => {
-                            Ok(ExprValue::Assembly(
+                            Ok(ExprValue::new_assembly(
                                 src(),
-                                x.value_size(),
                                 Rc::clone(x),
                             ))
                         }
                         _ => Err(ExecutionError::InvalidRef(src())),
                     },
-                    Varnode(x) => Ok(ExprValue::Varnode(src(), Rc::clone(x))),
+                    Varnode(x) => Ok(ExprValue::new_varnode(src(), Rc::clone(x))),
                     _ => Err(ExecutionError::InvalidRef(src())),
                 }
             })
@@ -596,6 +595,8 @@ fn update_expr_value(
         | ExprValue::DisVar(_, _, _)
         | ExprValue::Assembly(_, _, _)
         | ExprValue::Varnode(_, _)
+        | ExprValue::Context(_, _, _)
+        | ExprValue::BitRange(_, _, _)
         | ExprValue::Table(_, _)
         | ExprValue::ExeVar(_, _) => (),
         ExprValue::Param(_, param) => {
