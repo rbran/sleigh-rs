@@ -617,34 +617,28 @@ impl CpuBranch {
         &mut self,
         solved: &mut impl SolverStatus,
     ) -> Result<(), ExecutionError> {
+        let mut modified = false;
         if let Some(cond) = self.cond.as_mut() {
             cond.solve(solved)?;
             if cond.size().is_undefined() {
                 solved.iam_not_finished_location(cond.src());
             }
         }
-        if let Some(final_size) = self.exec_addr_size.get().final_value() {
-            if self
-                .dst
-                .size_mut().update_action(|size| size.set_final_value(final_size))
-                .unwrap(/*TODO*/)
-            {
-                solved.i_did_a_thing();
-            }
-        }
+        //correlate the addr execution size and the jmp dest addr size
+        let error = ExecutionError::VarSize(self.dst.src().clone());
+        modified |= FieldSize::all_same_size(&mut [
+            self.dst.size_mut(),
+            self.exec_addr_size.as_ref().into(),
+        ])
+        .ok_or_else(|| error)?;
+
         self.dst.solve(solved)?;
         if self.dst.size().is_undefined() {
             solved.iam_not_finished_location(self.dst.src());
         }
-        if let Some(final_size) = self.dst.size().final_value() {
-            let new_size = self.exec_addr_size
-                .get()
-                .set_final_value(final_size)
-                .unwrap(/*TODO*/);
-            if new_size != self.exec_addr_size.get() {
-                self.exec_addr_size.set(new_size);
-                solved.i_did_a_thing();
-            }
+
+        if modified {
+            solved.i_did_a_thing();
         }
         Ok(())
     }
