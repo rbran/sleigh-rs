@@ -691,18 +691,30 @@ impl ExprValue {
             semantic::varnode::VarnodeType::Memory(_) => {
                 Self::Varnode(src, value)
             }
-            semantic::varnode::VarnodeType::BitRange(x) => Self::BitRange(
-                src,
-                FieldSize::new_unsized().set_min(x.value_bits()).unwrap(),
-                value,
-            ),
-            semantic::varnode::VarnodeType::Context(x) => Self::Context(
-                src,
-                FieldSize::new_unsized()
-                    .set_min(x.bitrange.value_bits())
-                    .unwrap(),
-                value,
-            ),
+            semantic::varnode::VarnodeType::BitRange(x) => {
+                let size = FieldSize::new_unsized()
+                    .set_min(x.value_bits())
+                    .unwrap()
+                    .set_possible_min();
+                Self::BitRange(src, size, value)
+            }
+            semantic::varnode::VarnodeType::Context(x) => {
+                //if context meaning translate into regular varnode
+                if x.attach
+                    .borrow()
+                    .as_ref()
+                    .map(|meaning| meaning.is_variable())
+                    .unwrap_or(false)
+                {
+                    Self::Varnode(src, value)
+                } else {
+                    let size = FieldSize::new_unsized()
+                        .set_min(x.value_bits())
+                        .unwrap()
+                        .set_possible_min();
+                    Self::Context(src, size, value)
+                }
+            }
         }
     }
     pub fn src(&self) -> &InputSource {
@@ -753,6 +765,8 @@ impl ExprValue {
         solved: &mut impl SolverStatus,
     ) -> Result<(), ExecutionError> {
         match self {
+            //int, context, assembly and bitrange have the possible min, so it
+            //doesn't block the solve loop
             Self::Int(_, _, _)
             | Self::DisVar(_, _, _)
             | Self::Varnode(_, _)

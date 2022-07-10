@@ -175,7 +175,7 @@ impl Context {
             }
         }
     }
-    fn value_bits(&self) -> NonZeroTypeU {
+    pub fn value_bits(&self) -> NonZeroTypeU {
         match self.attach.borrow().as_ref() {
             Some(meaning) if meaning.size().is_some() => {
                 meaning.size().unwrap()
