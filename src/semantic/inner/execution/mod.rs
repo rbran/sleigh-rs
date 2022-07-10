@@ -33,11 +33,14 @@ pub enum ExportConst {
     //Int(IntTypeU),
     DisVar(InputSource, Rc<disassembly::Variable>),
     Assembly(InputSource, Rc<assembly::Assembly>),
+    Context(InputSource, Rc<Varnode>),
 }
 impl ExportConst {
     pub fn src(&self) -> &InputSource {
         match self {
-            Self::DisVar(src, _) | Self::Assembly(src, _) => src,
+            Self::DisVar(src, _)
+            | Self::Assembly(src, _)
+            | Self::Context(src, _) => src,
         }
     }
     pub fn convert(self) -> FinalExportConst {
@@ -46,6 +49,7 @@ impl ExportConst {
                 FinalExportConst::DisVar(variable.convert())
             }
             Self::Assembly(_, ass) => FinalExportConst::Assembly(ass),
+            Self::Context(_, ass) => FinalExportConst::Context(ass),
         }
     }
 }

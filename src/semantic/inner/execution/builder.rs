@@ -214,7 +214,8 @@ pub trait ExecutionBuilder<'a> {
             //Int(InputSource, FieldSize, IntTypeU) => todo!(),
             DisVar(src, _size, dis) => Ok(ExportConst::DisVar(src, dis)),
             Assembly(src, _size, ass) => Ok(ExportConst::Assembly(src, ass)),
-            _ => todo!("Error export invalid const"),
+            Context(src, _size, cont) => Ok(ExportConst::Context(src, cont)),
+            x => todo!("Error export invalid const {:#?}", x),
         }
     }
     fn new_export(

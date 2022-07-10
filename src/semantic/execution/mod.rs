@@ -236,6 +236,7 @@ impl MacroCall {
 pub enum ExportConst {
     DisVar(Rc<disassembly::Variable>),
     Assembly(Rc<assembly::Assembly>),
+    Context(Rc<Varnode>),
 }
 #[derive(Clone, Debug)]
 pub enum Export {
