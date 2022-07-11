@@ -16,6 +16,21 @@ const ARCH_FILES: &[&str] = &[
 //"/home/rbran/src/ghidra/Ghidra/Processors/Atmel/data/languages/avr8eind.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/8048/data/languages/8048.slaspec",
 
+//TODO: sometimes the dst addr is 32, other time 64
+//"/home/rbran/src/ghidra/Ghidra/Processors/PA-RISC/data/languages/pa-risc32be.slaspec",
+
+//TODO: try to assign a 32bits value into a 64bits varnode
+//"/home/rbran/src/ghidra/Ghidra/Processors/RISCV/data/languages/riscv.ilp32d.slaspec",
+//"/home/rbran/src/ghidra/Ghidra/Processors/RISCV/data/languages/riscv.lp64d.slaspec",
+
+//TODO: use value from non export table
+//"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32be.slaspec",
+//"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32le.slaspec",
+//"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32R6be.slaspec",
+//"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32R6le.slaspec",
+//"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips64be.slaspec",
+//"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips64le.slaspec",
+
 "/home/rbran/src/ghidra/Ghidra/Processors/ARM/data/languages/ARM4_be.slaspec",
 "/home/rbran/src/ghidra/Ghidra/Processors/ARM/data/languages/ARM4_le.slaspec",
 "/home/rbran/src/ghidra/Ghidra/Processors/ARM/data/languages/ARM4t_be.slaspec",
@@ -30,18 +45,6 @@ const ARCH_FILES: &[&str] = &[
 "/home/rbran/src/ghidra/Ghidra/Processors/ARM/data/languages/ARM7_le.slaspec",
 "/home/rbran/src/ghidra/Ghidra/Processors/ARM/data/languages/ARM8_be.slaspec",
 "/home/rbran/src/ghidra/Ghidra/Processors/ARM/data/languages/ARM8_le.slaspec",
-
-"/home/rbran/src/ghidra/Ghidra/Processors/PA-RISC/data/languages/pa-risc32be.slaspec",
-
-"/home/rbran/src/ghidra/Ghidra/Processors/RISCV/data/languages/riscv.ilp32d.slaspec",
-"/home/rbran/src/ghidra/Ghidra/Processors/RISCV/data/languages/riscv.lp64d.slaspec",
-
-"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32be.slaspec",
-"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32le.slaspec",
-"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32R6be.slaspec",
-"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32R6le.slaspec",
-"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips64be.slaspec",
-"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips64le.slaspec",
 
 "/home/rbran/src/ghidra/Ghidra/Processors/DATA/data/languages/data-be-64.slaspec",
 "/home/rbran/src/ghidra/Ghidra/Processors/DATA/data/languages/data-le-64.slaspec",
