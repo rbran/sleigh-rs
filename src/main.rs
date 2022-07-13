@@ -23,13 +23,16 @@ const ARCH_FILES: &[&str] = &[
 //"/home/rbran/src/ghidra/Ghidra/Processors/RISCV/data/languages/riscv.ilp32d.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/RISCV/data/languages/riscv.lp64d.slaspec",
 
+//TODO: unclear assign size
+//"/home/rbran/src/ghidra/Ghidra/Processors/V850/data/languages/V850.slaspec",
+
 //TODO: use value from non export table
-//"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32be.slaspec",
-//"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32le.slaspec",
-//"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32R6be.slaspec",
-//"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32R6le.slaspec",
-//"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips64be.slaspec",
-//"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips64le.slaspec",
+"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32be.slaspec",
+"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32le.slaspec",
+"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32R6be.slaspec",
+"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32R6le.slaspec",
+"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips64be.slaspec",
+"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips64le.slaspec",
 
 "/home/rbran/src/ghidra/Ghidra/Processors/ARM/data/languages/ARM4_be.slaspec",
 "/home/rbran/src/ghidra/Ghidra/Processors/ARM/data/languages/ARM4_le.slaspec",
@@ -48,8 +51,6 @@ const ARCH_FILES: &[&str] = &[
 
 "/home/rbran/src/ghidra/Ghidra/Processors/DATA/data/languages/data-be-64.slaspec",
 "/home/rbran/src/ghidra/Ghidra/Processors/DATA/data/languages/data-le-64.slaspec",
-
-"/home/rbran/src/ghidra/Ghidra/Processors/V850/data/languages/V850.slaspec",
 
 "/home/rbran/src/ghidra/Ghidra/Processors/SuperH4/data/languages/SuperH4_be.slaspec",
 "/home/rbran/src/ghidra/Ghidra/Processors/SuperH4/data/languages/SuperH4_le.slaspec",

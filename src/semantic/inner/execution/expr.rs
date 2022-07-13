@@ -509,27 +509,39 @@ impl ExprElement {
                 input.solve(solved)?;
             }
 
-            Self::Op(
-                src,
-                size,
-                Unary::Zext | Unary::Sext | Unary::SignTrunc,
-                input,
-            ) => {
+            Self::Op(src, size, Unary::Zext | Unary::Sext, value) => {
                 let error = || ExecutionError::VarSize(src.clone());
-                //input size need to be bigger or eq to the input size
+                //output size need to be bigger or eq to the value size
                 modified |= size
-                    .update_action(|size| size.set_min(input.size().min()))
+                    .update_action(|size| size.set_min(value.size().min()))
                     .ok_or_else(error)?;
                 //and vise-versa
-                modified |= input
+                modified |= value
                     .size_mut()
                     .update_action(|size| size.set_max(size.max()))
                     .ok_or_else(error)?;
 
-                if size.is_undefined() || input.size().is_undefined() {
+                if size.is_undefined() || value.size().is_undefined() {
                     solved.iam_not_finished_location(src);
                 }
-                input.solve(solved)?;
+                value.solve(solved)?;
+            }
+            Self::Op(src, size, Unary::SignTrunc, value) => {
+                let error = || ExecutionError::VarSize(src.clone());
+                //output size need to be smaller or equal then the value size
+                modified |= size
+                    .update_action(|size| size.set_max(value.size().min()))
+                    .ok_or_else(error)?;
+                //and vise-versa
+                modified |= value
+                    .size_mut()
+                    .update_action(|size| size.set_min(size.max()))
+                    .ok_or_else(error)?;
+
+                if size.is_undefined() || value.size().is_undefined() {
+                    solved.iam_not_finished_location(src);
+                }
+                value.solve(solved)?;
             }
             Self::Op(
                 src,
