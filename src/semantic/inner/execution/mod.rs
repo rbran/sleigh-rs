@@ -34,6 +34,8 @@ pub enum ExportConst {
     DisVar(InputSource, Rc<disassembly::Variable>),
     Assembly(InputSource, Rc<assembly::Assembly>),
     Context(InputSource, Rc<Varnode>),
+    //TODO: re-export from a table that also export const
+    //Table(InputSource, Rc<Table>),
 }
 impl ExportConst {
     pub fn src(&self) -> &InputSource {

@@ -215,6 +215,7 @@ pub trait ExecutionBuilder<'a> {
             DisVar(src, _size, dis) => Ok(ExportConst::DisVar(src, dis)),
             Assembly(src, _size, ass) => Ok(ExportConst::Assembly(src, ass)),
             Context(src, _size, cont) => Ok(ExportConst::Context(src, cont)),
+            //TODO: re-export from a table that also export const
             x => todo!("Error export invalid const {:#?}", x),
         }
     }
