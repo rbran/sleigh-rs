@@ -48,18 +48,12 @@ const ARCH_FILES: &[&str] = &[
 //"/home/rbran/src/ghidra/Ghidra/Processors/SuperH/data/languages/sh-1.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/SuperH/data/languages/sh-2.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/SuperH/data/languages/sh-2a.slaspec",
-
-//TODO: Table export reference from diferent address spaces
 //"/home/rbran/src/ghidra/Ghidra/Processors/M8C/data/languages/m8c.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/8051/data/languages/80251.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/8051/data/languages/80390.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/8051/data/languages/8051.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/8051/data/languages/mx51.slaspec",
-
-//TODO: Table export reference from diferent address spaces
-//"/home/rbran/src/ghidra/Ghidra/Processors/PIC/data/languages/pic12c5xx.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/PIC/data/languages/pic16.slaspec",
-//"/home/rbran/src/ghidra/Ghidra/Processors/PIC/data/languages/pic16c5x.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/PIC/data/languages/pic16f.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/PIC/data/languages/pic17c7xx.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/PIC/data/languages/pic18.slaspec",
@@ -158,6 +152,10 @@ const ARCH_FILES: &[&str] = &[
 "/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy64_be.slaspec",
 "/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy64_le.slaspec",
 "/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy64_be_harvard.slaspec",
+
+"/home/rbran/src/ghidra/Ghidra/Processors/PIC/data/languages/pic12c5xx.slaspec",
+"/home/rbran/src/ghidra/Ghidra/Processors/PIC/data/languages/pic16c5x.slaspec",
+
 ];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

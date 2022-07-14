@@ -215,7 +215,20 @@ pub trait ExecutionBuilder<'a> {
             DisVar(src, _size, dis) => Ok(ExportConst::DisVar(src, dis)),
             Assembly(src, _size, ass) => Ok(ExportConst::Assembly(src, ass)),
             Context(src, _size, cont) => Ok(ExportConst::Context(src, cont)),
-            //TODO: re-export from a table that also export const
+            Table(src, table) => match *table.export().borrow() {
+                Some(ExecutionExport::Const(_export)) => {
+                    Ok(ExportConst::Table(src, Rc::clone(&table)))
+                }
+                //TODO more specific error
+                //a const export can only use a table that also export const
+                Some(_) => Err(ExecutionError::InvalidRef(
+                    self.sleigh().input_src(input),
+                )),
+                //to constructors are available yet, can't use this table
+                None => Err(ExecutionError::InvalidRef(
+                    self.sleigh().input_src(input),
+                )),
+            },
             x => todo!("Error export invalid const {:#?}", x),
         }
     }

@@ -397,20 +397,14 @@ impl ExprElement {
         let mut modified = false;
         match self {
             Self::Value(value) => value.solve(solved)?,
-            Self::Reference(src, size, ReferencedValue::Table(_src, table)) => {
-                let error = || ExecutionError::VarSize(src.clone());
+            Self::Reference(src, _size, ReferencedValue::Table(_src, table)) => {
+                let _error = || ExecutionError::VarSize(src.clone());
                 //if the table reference is return space references
                 //(like varnode) update the output size with the addr size
                 match table.export().borrow().as_ref().unwrap(/*TODO*/) {
-                    ExecutionExport::Reference(_, space) => {
-                        modified |= size
-                            .update_action(|size| {
-                                size.intersection(space.memory().addr_size())
-                            })
-                            .ok_or_else(error)?;
-                    }
+                    ExecutionExport::Reference(_) => (/*TODO*/),
                     ExecutionExport::None
-                    | ExecutionExport::DissasemblyValue(_)
+                    | ExecutionExport::Const(_)
                     | ExecutionExport::Value(_)
                     | ExecutionExport::Multiple(_) => (/*TODO*/),
                 }

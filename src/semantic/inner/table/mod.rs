@@ -76,14 +76,14 @@ impl Table {
         if let Some(execution) = constructor.execution() {
             let mut export = self.export.borrow_mut();
             if let Some(export) = export.as_mut() {
-                //if this table exports, the new constructor need to be compatible
-                *export = export
-                    .clone()
-                    .combine(execution.return_type().clone())
-                    .ok_or(
+                //if this table exports, the new constructor need to be
+                //compatible
+                *export = export.combine(*execution.return_type()).ok_or_else(
+                    || {
                         ExecutionError::InvalidExport
-                            .to_table(constructor.src.clone()),
-                    )?;
+                            .to_table(constructor.src.clone())
+                    },
+                )?;
             } else {
                 //first constructor will define the table export type
                 *export = Some(execution.return_type().clone());

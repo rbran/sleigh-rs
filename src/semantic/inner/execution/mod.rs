@@ -34,15 +34,15 @@ pub enum ExportConst {
     DisVar(InputSource, Rc<disassembly::Variable>),
     Assembly(InputSource, Rc<assembly::Assembly>),
     Context(InputSource, Rc<Varnode>),
-    //TODO: re-export from a table that also export const
-    //Table(InputSource, Rc<Table>),
+    Table(InputSource, Rc<Table>),
 }
 impl ExportConst {
     pub fn src(&self) -> &InputSource {
         match self {
             Self::DisVar(src, _)
             | Self::Assembly(src, _)
-            | Self::Context(src, _) => src,
+            | Self::Context(src, _)
+            | Self::Table(src, _) => src,
         }
     }
     pub fn convert(self) -> FinalExportConst {
@@ -52,6 +52,7 @@ impl ExportConst {
             }
             Self::Assembly(_, ass) => FinalExportConst::Assembly(ass),
             Self::Context(_, ass) => FinalExportConst::Context(ass),
+            Self::Table(_, table) => FinalExportConst::Table(table.convert()),
         }
     }
 }
@@ -79,17 +80,16 @@ impl Export {
             .update_action(|size| {
                 size.intersection(space.space.memory().addr_size())
             })
-            .unwrap();
+            .unwrap(/*TODO*/);
         Self::Reference(addr, space)
     }
     pub fn return_type(&self) -> ExecutionExport {
         match self {
-            Export::Value(value) => ExecutionExport::Multiple(value.size()),
-            Export::Reference(_addr, space) => ExecutionExport::Reference(
-                *space.output_size(),
-                Rc::clone(&space.space),
-            ),
-            Export::Const(size, _) => ExecutionExport::DissasemblyValue(*size),
+            Export::Value(value) => ExecutionExport::Value(value.size()),
+            Export::Reference(_addr, space) => {
+                ExecutionExport::Reference(*space.output_size())
+            }
+            Export::Const(size, _) => ExecutionExport::Const(*size),
         }
     }
     pub fn src(&self) -> &InputSource {
@@ -210,7 +210,7 @@ impl MemWrite {
             let modified = self.right.size_mut().update_action(|size| {
                 size.set_max(write_size)?.set_possible_value(write_size)
             });
-            if modified.unwrap() {
+            if modified.unwrap(/*TODO*/) {
                 solved.i_did_a_thing();
             }
         } else {
@@ -807,7 +807,7 @@ impl Variable {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub enum ExecutionExport {
     //don't return
     #[default]
@@ -815,12 +815,11 @@ pub enum ExecutionExport {
     //type can't be defined yet.
     //Undefined(FieldSize),
     //value that is known at Dissassembly time
-    DissasemblyValue(FieldSize),
+    Const(FieldSize),
     //value that can be know at execution time
     Value(FieldSize),
-    //References/registers and other mem locations, all with the same size and
-    //same address space
-    Reference(FieldSize, Rc<Space>),
+    //References/registers and other mem locations, all with the same size
+    Reference(FieldSize),
     //multiple source, can by any kind of return, value or address,
     //but all with the same size
     Multiple(FieldSize),
@@ -834,9 +833,9 @@ impl ExecutionExport {
         match self {
             ExecutionExport::None => None,
             //       ExecutionExport::Undefined(size)
-            ExecutionExport::DissasemblyValue(size)
+            ExecutionExport::Const(size)
             | ExecutionExport::Value(size)
-            | ExecutionExport::Reference(size, _)
+            | ExecutionExport::Reference(size)
             | ExecutionExport::Multiple(size) => Some(size),
         }
     }
@@ -844,9 +843,9 @@ impl ExecutionExport {
         match self {
             ExecutionExport::None => None,
             //      ExecutionExport::Undefined(size)
-            ExecutionExport::DissasemblyValue(size)
+            ExecutionExport::Const(size)
             | ExecutionExport::Value(size)
-            | ExecutionExport::Reference(size, _)
+            | ExecutionExport::Reference(size)
             | ExecutionExport::Multiple(size) => Some(size),
         }
     }
@@ -854,6 +853,17 @@ impl ExecutionExport {
         match (self, other) {
             //if both return nothing, the result is to return nothing
             (Self::None, Self::None) => Some(Self::None),
+            //two const values, keep the type
+            (Self::Const(one), Self::Const(other)) => {
+                one.intersection(other).map(Self::Const)
+            }
+            //const and value, become value
+            (Self::Const(con), Self::Value(value))
+            | (Self::Value(value), Self::Const(con)) => {
+                con.intersection(value).map(Self::Value)
+            }
+            //const can't be combined with anything else
+            (Self::Const(_), _) | (_, Self::Const(_)) => None,
             //one return nothing and the other return something is invalid
             (Self::None, _) | (_, Self::None) => None,
             //if one is multiple, it consumes any other value type
@@ -864,19 +874,10 @@ impl ExecutionExport {
             (Self::Value(one), Self::Value(other)) => {
                 one.intersection(other).map(Self::Value)
             }
-            //two dissassembly values, keep the type
-            (Self::DissasemblyValue(one), Self::DissasemblyValue(other)) => {
-                one.intersection(other).map(Self::DissasemblyValue)
-            }
             //two references from the same address space, keep the same type
-            (Self::Reference(one, space1), Self::Reference(other, space2))
-                if Rc::as_ptr(&space1) == Rc::as_ptr(&space2) =>
-            {
-                one.intersection(other)
-                    .map(|size| Self::Reference(size, space1))
+            (Self::Reference(one), Self::Reference(other)) => {
+                one.intersection(other).map(Self::Reference)
             }
-            //two references from the diff address space, is invalid
-            (Self::Reference(_, _), Self::Reference(_, _)) => None,
             //any other combination is is just multiple
             (one, other) => one
                 .size()
