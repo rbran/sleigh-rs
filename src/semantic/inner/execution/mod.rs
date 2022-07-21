@@ -158,8 +158,29 @@ impl MemWrite {
         mut addr: Expr,
         mem: AddrDereference,
         src: InputSource,
-        right: Expr,
+        mut right: Expr,
     ) -> Self {
+        //HACK: unexplained exeptions:
+        //if the mem size is 1byte and value produced by right is 1bit, auto
+        //zext it
+        if mem
+            .size
+            .final_value()
+            .map(|size| size.get() == 8)
+            .unwrap_or(false)
+            && right
+                .size()
+                .final_value()
+                .map(|size| size.get() == 1)
+                .unwrap_or(false)
+        {
+            right = Expr::Value(ExprElement::new_op(
+                right.src().clone(),
+                Unary::Zext,
+                right,
+            ))
+        }
+
         //addr expr is the addr to access the space, so it need to be space
         //addr size
         addr.size_mut().set(mem.space.memory().addr_size());
