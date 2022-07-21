@@ -210,7 +210,9 @@ impl MemWrite {
             let modified = self.right.size_mut().update_action(|size| {
                 size.set_max(write_size)?.set_possible_value(write_size)
             });
-            if modified.unwrap(/*TODO*/) {
+            if modified
+                .ok_or_else(|| ExecutionError::VarSize(self.mem.src.clone()))?
+            {
                 solved.i_did_a_thing();
             }
         } else {
@@ -761,6 +763,7 @@ pub struct Variable {
     pub name: Rc<str>,
     //pub scope: RefCell<VariableScope>,
     pub size: Cell<FieldSize>,
+    //location of the variable declaration
     pub src: InputSource,
     me: Weak<Self>,
 

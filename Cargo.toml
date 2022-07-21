@@ -2,7 +2,6 @@
 edition = "2021"
 name = "sleigh-rs"
 version = "0.1.0"
-debug = true
 
 [profile.release]
 debug = true

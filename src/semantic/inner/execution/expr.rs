@@ -397,7 +397,11 @@ impl ExprElement {
         let mut modified = false;
         match self {
             Self::Value(value) => value.solve(solved)?,
-            Self::Reference(src, _size, ReferencedValue::Table(_src, table)) => {
+            Self::Reference(
+                src,
+                _size,
+                ReferencedValue::Table(_src, table),
+            ) => {
                 let _error = || ExecutionError::VarSize(src.clone());
                 //if the table reference is return space references
                 //(like varnode) update the output size with the addr size

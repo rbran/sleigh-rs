@@ -135,7 +135,7 @@ pub trait ExecutionBuilder<'a> {
                 }
                 block::execution::Statement::Assignment(x) => {
                     let assignment = self.new_assignment(x)?;
-                    self.insert_statement(Statement::Assignment(assignment));
+                    self.insert_statement(assignment);
                 }
                 block::execution::Statement::MemWrite(x) => {
                     let assignment = self.new_mem_write(x)?;
@@ -328,11 +328,11 @@ pub trait ExecutionBuilder<'a> {
     fn new_assignment(
         &mut self,
         input: block::execution::assignment::Assignment<'a>,
-    ) -> Result<Assignment, ExecutionError> {
-        let right = self.new_expr(input.right)?;
+    ) -> Result<Statement, ExecutionError> {
+        let mut right = self.new_expr(input.right)?;
         let var = self.write_scope(input.ident).ok();
         let src = self.sleigh().input_src(input.ident);
-        let (var, op) = match (var, input.local) {
+        match (var, input.local) {
             //variable don't exists, create it
             (None, _) => {
                 //the var size is defined if ByteRangeLsb is present
@@ -354,24 +354,47 @@ pub trait ExecutionBuilder<'a> {
                     Some(_) => todo!("create var with this op?"),
                     None => (),
                 }
-                (WriteValue::ExeVar(src, new_var), None)
+                let src = self.sleigh().input_src(input.ident);
+                Ok(Statement::Assignment(Assignment::new(
+                    WriteValue::ExeVar(src.clone(), new_var),
+                    None,
+                    src,
+                    right,
+                )))
             }
             //variable exists, with local is error
-            (Some(_), true) => {
-                return Err(ExecutionError::InvalidVarDeclare(src));
-            }
+            (Some(_), true) => Err(ExecutionError::InvalidVarDeclare(src)),
             //variable exists, just return it
-            (Some(var), false) => (
-                var,
-                input
+            (Some(var), false) => {
+                let op = input
                     .op
                     .map(|op| self.new_assignment_op(op))
-                    .transpose()?
-                    .flatten(),
-            ),
-        };
-        let src = self.sleigh().input_src(input.ident);
-        Ok(Assignment::new(var, op, src, right))
+                    .transpose()?;
+                match var {
+                    //Assign to varnode is actually a mem write
+                    WriteValue::Varnode(var_src, var) => {
+                        let var = var.memory();
+                        let mem = AddrDereference::new(
+                            Rc::clone(&var.space),
+                            var.value_size(),
+                            var_src.clone(),
+                        );
+                        let addr = Expr::Value(ExprElement::Value(
+                            ExprValue::new_int(var_src, var.offset),
+                        ));
+                        right.size_mut().update_action(|size| {
+                            size.intersection(var.value_size())
+                        });
+                        Ok(Statement::MemWrite(MemWrite::new(
+                            addr, mem, src, right,
+                        )))
+                    }
+                    var => Ok(Statement::Assignment(Assignment::new(
+                        var, op, src, right,
+                    ))),
+                }
+            }
+        }
     }
     fn new_mem_write(
         &mut self,
@@ -386,19 +409,19 @@ pub trait ExecutionBuilder<'a> {
     fn new_assignment_op(
         &self,
         input: block::execution::assignment::OpLeft,
-    ) -> Result<Option<Truncate>, ExecutionError> {
+    ) -> Result<Truncate, ExecutionError> {
         use block::execution::assignment::OpLeft;
         //TODO genertic error here
         let error = ExecutionError::BitRangeZero;
         let ass = match input {
             OpLeft::BitRange(range) => {
                 let size = NonZeroTypeU::new(range.n_bits).ok_or(error)?;
-                Some(Truncate::new(range.lsb_bit, size))
+                Truncate::new(range.lsb_bit, size)
             }
-            OpLeft::ByteRangeMsb(msb) => Some(Truncate::new_msb(msb.value)),
+            OpLeft::ByteRangeMsb(msb) => Truncate::new_msb(msb.value),
             OpLeft::ByteRangeLsb(lsb) => {
                 let size = NonZeroTypeU::new(lsb.value).ok_or(error)?;
-                Some(Truncate::new_lsb(size))
+                Truncate::new_lsb(size)
             }
         };
         Ok(ass)

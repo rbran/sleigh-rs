@@ -198,10 +198,10 @@ pub struct VarnodeMemory {
 }
 
 impl VarnodeMemory {
-    fn value_size(&self) -> FieldSize {
+    pub fn value_size(&self) -> FieldSize {
         FieldSize::new_bytes(self.size)
     }
-    fn value_bytes(&self) -> NonZeroTypeU {
+    pub fn value_bytes(&self) -> NonZeroTypeU {
         self.size
     }
     fn value_bits(&self) -> NonZeroTypeU {
