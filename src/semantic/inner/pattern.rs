@@ -1,22 +1,43 @@
 use std::rc::Rc;
 
-use crate::semantic;
 use crate::semantic::assembly::Assembly;
 use crate::semantic::inner::table::Table;
 use crate::semantic::inner::GlobalScope;
 use crate::semantic::pattern::{ConstraintValue, PatternError};
 use crate::semantic::table::DisassemblyError;
 use crate::semantic::varnode::{Varnode, VarnodeType};
+use crate::{semantic, InputSource};
 
 use crate::syntax::block;
 use crate::syntax::block::pattern::{CmpOp, Ellipsis, Op};
 
+use super::assembly::Token;
 use super::disassembly::{ExprBuilder, ReadScope};
 use super::Sleigh;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Constrait {
+    Defined(bool),
+    Conditional,
+    #[default]
+    Free,
+}
+
+#[derive(Clone, Debug)]
+pub struct PatternConstrait {
+    token: Token,
+    bits: Vec<Constraint>,
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct Pattern {
     pub blocks: Vec<Block>,
+}
+
+impl Pattern {
+    pub fn src(&self) -> &InputSource {
+        self.blocks.first().unwrap(/*TODO*/).src()
+    }
 }
 
 impl TryFrom<Pattern> for semantic::pattern::Pattern {
@@ -34,21 +55,8 @@ impl TryFrom<Pattern> for semantic::pattern::Pattern {
 
 #[derive(Clone, Debug)]
 pub struct Block {
-    first: Element,
-    rest: Vec<(Op, Element)>,
-}
-
-impl TryFrom<Block> for semantic::pattern::Block {
-    type Error = PatternError;
-    fn try_from(mut value: Block) -> Result<Self, Self::Error> {
-        let first = value.first.try_into()?;
-        let rest = value
-            .rest
-            .drain(..)
-            .map(|(op, ele)| ele.try_into().map(|ele| (op, ele)))
-            .collect::<Result<_, _>>()?;
-        Ok(semantic::pattern::Block { first, rest })
-    }
+    op: Option<Op>,
+    elements: Vec<Element>,
 }
 
 impl Block {
@@ -56,14 +64,29 @@ impl Block {
         sleigh: &Sleigh,
         mut input: block::pattern::Block,
     ) -> Result<Self, PatternError> {
-        Ok(Self {
-            first: Element::new(sleigh, input.first)?,
-            rest: input
-                .rest
-                .drain(..)
-                .map(|(op, ele)| Element::new(sleigh, ele).map(|x| (op, x)))
-                .collect::<Result<_, _>>()?,
-        })
+        let op = input.op;
+        let elements = input
+            .elements
+            .drain(..)
+            .map(|ele| Element::new(sleigh, ele))
+            .collect::<Result<_, _>>()?;
+        Ok(Block { op, elements })
+    }
+    pub fn src(&self) -> &InputSource {
+        self.elements.first().unwrap(/*TODO*/).src()
+    }
+}
+
+impl TryFrom<Block> for semantic::pattern::Block {
+    type Error = PatternError;
+    fn try_from(mut value: Block) -> Result<Self, Self::Error> {
+        let op = value.op;
+        let elements = value
+            .elements
+            .drain(..)
+            .map(|ele| ele.try_into())
+            .collect::<Result<_, _>>()?;
+        Ok(semantic::pattern::Block { op, elements })
     }
 }
 
@@ -91,11 +114,15 @@ impl Element {
             ellipsis: input.ellipsis,
         })
     }
+    pub fn src(&self) -> &InputSource {
+        self.field.src()
+    }
 }
 
 #[derive(Clone, Debug)]
 pub enum Field {
     Field {
+        src: InputSource,
         field: Reference,
         constraint: Option<Constraint>,
     },
@@ -105,7 +132,9 @@ impl TryFrom<Field> for semantic::pattern::Field {
     type Error = PatternError;
     fn try_from(value: Field) -> Result<Self, Self::Error> {
         match value {
-            Field::Field { field, constraint } => {
+            Field::Field {
+                field, constraint, ..
+            } => {
                 let field = field.into();
                 let constraint = constraint.map(|x| x.into());
                 Ok(Self::Field { field, constraint })
@@ -122,6 +151,7 @@ impl Field {
         use block::pattern::Field::*;
         Ok(match input {
             Field { field, constraint } => Self::Field {
+                src: sleigh.input_src(field),
                 field: sleigh.get_pattern_field(field)?,
                 constraint: constraint
                     .map(|x| Constraint::new(sleigh, x))
@@ -129,6 +159,12 @@ impl Field {
             },
             SubPattern(x) => Self::SubPattern(Pattern::new(sleigh, x)?),
         })
+    }
+    pub fn src(&self) -> &InputSource {
+        match self {
+            Field::Field { src, .. } => src,
+            Field::SubPattern(sub) => sub.src(),
+        }
     }
 }
 
@@ -256,17 +292,29 @@ impl Pattern {
             //self is empty, just parse the input
             (None, _) => input.blocks.drain(..),
             //self exists, merge last block with the first of the input
-            (Some(last), _) => {
-                let mut drain = input.blocks.drain(..);
-                //len != 0 so first is never None
-                let block::pattern::Block { first, mut rest } =
-                    drain.next().unwrap();
-                //blocks are merged with AND op
-                last.rest.push((Op::And, Element::new(sleigh, first)?));
-                for (op, ele) in rest.drain(..) {
-                    last.rest.push((op, Element::new(sleigh, ele)?));
+            (
+                Some(Block {
+                    op: op_last,
+                    elements: elements_last,
+                }),
+                _,
+            ) => {
+                let mut input = input.blocks.drain(..);
+                //extend the last block with the first block from the with
+                let block::pattern::Block {
+                    op: op_first,
+                    elements: elements_first,
+                } = input.next().unwrap();
+                if *op_last == Some(Op::Or) || op_first == Some(Op::Or) {
+                    return Err(PatternError::InvalidMixOp(
+                        elements_last.first().unwrap(/*TODO*/).src().clone(),
+                    ));
                 }
-                drain
+                for ele in elements_first {
+                    let ele = Element::new(sleigh, ele)?;
+                    elements_last.push(ele);
+                }
+                input
             }
         };
         //parse the input

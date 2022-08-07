@@ -1,7 +1,7 @@
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::combinator::{map, map_res, opt, value};
-use nom::multi::{many0, separated_list0};
+use nom::multi::separated_list0;
 use nom::sequence::{
     delimited, pair, preceded, separated_pair, terminated, tuple,
 };
@@ -125,24 +125,28 @@ impl<'a> Element<'a> {
     }
 }
 
+//NOTE I'll not allow to mix `&` and `|` in the same level
 #[derive(Clone, Debug)]
 pub struct Block<'a> {
-    pub first: Element<'a>,
-    pub rest: Vec<(Op, Element<'a>)>,
+    pub op: Option<Op>,
+    pub elements: Vec<Element<'a>>,
 }
 
 impl<'a> Block<'a> {
     pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
-        map(
-            pair(
-                Element::parse,
-                many0(pair(
-                    preceded(empty_space0, Op::parse),
-                    preceded(empty_space0, Element::parse),
-                )),
-            ),
-            |(first, rest)| Block { first, rest },
-        )(input)
+        let mut op = None;
+        let (input, elements) = separated_list0(
+            preceded(empty_space0, |input| match op {
+                Some(Op::Or) => value((), tag("|"))(input),
+                Some(Op::And) => value((), tag("&"))(input),
+                None => Op::parse(input).map(|(input, new_op)| {
+                    op = Some(new_op);
+                    (input, ())
+                }),
+            }),
+            preceded(empty_space0, Element::parse),
+        )(input)?;
+        Ok((input, Self { op, elements }))
     }
 }
 

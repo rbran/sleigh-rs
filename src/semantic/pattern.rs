@@ -16,6 +16,8 @@ pub enum PatternError {
     InvalidRef(InputSource),
     #[error("Missing Ref {0}")]
     MissingRef(InputSource),
+    #[error("Unable to merge Blocks mixing & and | {0}")]
+    InvalidMixOp(InputSource),
 
     #[error("Invalid assignment Error")]
     ConstraintExpr(DisassemblyError),
@@ -29,8 +31,8 @@ pub struct Pattern {
 
 #[derive(Clone, Debug)]
 pub struct Block {
-    pub first: Element,
-    pub rest: Vec<(Op, Element)>,
+    pub op: Option<Op>,
+    pub elements: Vec<Element>,
 }
 
 #[derive(Clone, Debug)]
