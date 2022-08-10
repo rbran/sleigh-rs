@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use crate::base::IntTypeU;
 use crate::semantic::assembly::Assembly;
 use crate::semantic::inner::table::Table;
 use crate::semantic::inner::GlobalScope;
@@ -11,33 +12,14 @@ use crate::{semantic, InputSource};
 use crate::syntax::block;
 use crate::syntax::block::pattern::{CmpOp, Ellipsis, Op};
 
-use super::assembly::Token;
 use super::disassembly::{ExprBuilder, ReadScope};
 use super::Sleigh;
 
-#[derive(Clone, Copy, Debug, Default)]
-pub enum Constrait {
-    Defined(bool),
-    Conditional,
-    #[default]
-    Free,
-}
-
-#[derive(Clone, Debug)]
-pub struct PatternConstrait {
-    token: Token,
-    bits: Vec<Constraint>,
-}
+use bitvec::prelude::*;
 
 #[derive(Clone, Debug, Default)]
 pub struct Pattern {
     pub blocks: Vec<Block>,
-}
-
-impl Pattern {
-    pub fn src(&self) -> &InputSource {
-        self.blocks.first().unwrap(/*TODO*/).src()
-    }
 }
 
 impl TryFrom<Pattern> for semantic::pattern::Pattern {
@@ -56,6 +38,7 @@ impl TryFrom<Pattern> for semantic::pattern::Pattern {
 #[derive(Clone, Debug)]
 pub struct Block {
     op: Option<Op>,
+    min_size: Option<IntTypeU>,
     elements: Vec<Element>,
 }
 
@@ -69,11 +52,94 @@ impl Block {
             .elements
             .drain(..)
             .map(|ele| Element::new(sleigh, ele))
-            .collect::<Result<_, _>>()?;
-        Ok(Block { op, elements })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut min_size = None;
+        for ele in elements.iter() {
+            let new_size = ele.field.min_size();
+            match (&mut min_size, new_size) {
+                (_, None) => (),
+                (None, new_size) => min_size = new_size,
+                (Some(min_size), Some(new_size)) if *min_size == new_size => (),
+                (Some(_min_size), Some(_new_size)) => {
+                    /*if *_min_size != _new_size*/
+                    //TODO error here
+                    return Err(PatternError::InvalidRef(ele.src().clone()));
+                }
+            }
+        }
+        Ok(Block {
+            op,
+            elements,
+            min_size,
+        })
     }
     pub fn src(&self) -> &InputSource {
         self.elements.first().unwrap(/*TODO*/).src()
+    }
+    pub fn constrain(&self, constraint: &mut BitSlice) {
+        if matches!(&self.op, Some(Op::Or)) {
+            let mut out: Option<BitVec> = None; //bitvec![0; constraint.len()];
+            for ele in self.elements.iter() {
+                let and_this = match &ele.field {
+                    Field::Field {
+                        field: Reference::Assembly(ass),
+                        constraint: Some(Constraint { op: CmpOp::Eq, .. }),
+                        ..
+                    } => {
+                        if let Some(field) = ass.field() {
+                            let mut and_this = bitvec![0; constraint.len()];
+                            field.bit_range.clone().into_iter().for_each(
+                                |bit| {
+                                    and_this.set(bit.try_into().unwrap(), true)
+                                },
+                            );
+                            Some(and_this)
+                        } else {
+                            None
+                        }
+                    }
+                    Field::SubPattern(sub) => {
+                        let mut and_this = bitvec![0; constraint.len()];
+                        sub.constrain(&mut and_this);
+                        Some(and_this)
+                    }
+                    //TODO: what todo with a table?
+                    _ => None,
+                };
+                match (&mut out, and_this) {
+                    (_, None) => (),
+                    (None, Some(and_this)) => out = Some(and_this),
+                    (Some(out), Some(and_this)) => {
+                        for (mut old, new) in out.iter_mut().zip(and_this.iter())
+                        {
+                            old.set(*old && *new);
+                        }
+                    }
+                }
+            }
+        } else {
+            for ele in self.elements.iter() {
+                match &ele.field {
+                    Field::Field {
+                        field: Reference::Assembly(ass),
+                        constraint: Some(Constraint { op: CmpOp::Eq, .. }),
+                        ..
+                    } => {
+                        if let Some(field) = ass.field() {
+                            field.bit_range.clone().into_iter().for_each(
+                                |bit| {
+                                    constraint
+                                        .set(bit.try_into().unwrap(), true)
+                                },
+                            );
+                        }
+                    }
+                    Field::SubPattern(sub) => sub.constrain(constraint),
+                    //TODO: what todo with a table?
+                    _ => (),
+                }
+            }
+        }
     }
 }
 
@@ -164,6 +230,23 @@ impl Field {
         match self {
             Field::Field { src, .. } => src,
             Field::SubPattern(sub) => sub.src(),
+        }
+    }
+    pub fn min_size(&self) -> Option<IntTypeU> {
+        match self {
+            Field::Field {
+                field: Reference::Assembly(ass),
+                ..
+            } => ass.field().map(|field| field.token.size),
+            Field::Field {
+                field: Reference::Table(_),
+                ..
+            } => {
+                //TODO verify that table is min_size or bigger
+                None
+            }
+            Field::Field { .. } => None,
+            Field::SubPattern(sub) => Some(sub.min_size()),
         }
     }
 }
@@ -271,13 +354,12 @@ impl Pattern {
         sleigh: &Sleigh,
         mut input: block::pattern::Pattern,
     ) -> Result<Self, PatternError> {
-        Ok(Self {
-            blocks: input
-                .blocks
-                .drain(..)
-                .map(|x| Block::new(sleigh, x))
-                .collect::<Result<_, _>>()?,
-        })
+        let blocks = input
+            .blocks
+            .drain(..)
+            .map(|x| Block::new(sleigh, x))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { blocks })
     }
     pub fn extend(
         &mut self,
@@ -292,27 +374,39 @@ impl Pattern {
             //self is empty, just parse the input
             (None, _) => input.blocks.drain(..),
             //self exists, merge last block with the first of the input
-            (
-                Some(Block {
-                    op: op_last,
-                    elements: elements_last,
-                }),
-                _,
-            ) => {
+            (Some(last_block), _) => {
                 let mut input = input.blocks.drain(..);
-                //extend the last block with the first block from the with
+                //extend the last block with the first block from the with block
                 let block::pattern::Block {
                     op: op_first,
                     elements: elements_first,
                 } = input.next().unwrap();
-                if *op_last == Some(Op::Or) || op_first == Some(Op::Or) {
+                if last_block.op == Some(Op::Or) || op_first == Some(Op::Or) {
                     return Err(PatternError::InvalidMixOp(
-                        elements_last.first().unwrap(/*TODO*/).src().clone(),
+                        last_block.elements.first().unwrap(/*TODO*/).src().clone(),
                     ));
                 }
                 for ele in elements_first {
                     let ele = Element::new(sleigh, ele)?;
-                    elements_last.push(ele);
+                    let new_size = ele.field.min_size();
+                    //TODO this is somewhat duplicated code
+                    match (&mut last_block.min_size, new_size) {
+                        (_, None) => (),
+                        (None, new_size) => last_block.min_size = new_size,
+                        (Some(min_size), Some(new_size))
+                            if *min_size == new_size =>
+                        {
+                            ()
+                        }
+                        (Some(_min_size), Some(_new_size)) => {
+                            /*if *_min_size != _new_size*/
+                            //TODO error here
+                            return Err(PatternError::InvalidRef(
+                                ele.src().clone(),
+                            ));
+                        }
+                    }
+                    last_block.elements.push(ele);
                 }
                 input
             }
@@ -327,4 +421,33 @@ impl Pattern {
     //pub fn new(input: block::pattern::Pattern) -> Result<Self, PatternError> {
     //    todo!()
     //}
+    pub fn src(&self) -> &InputSource {
+        self.blocks.first().unwrap(/*TODO*/).src()
+    }
+    pub fn min_size(&self) -> IntTypeU {
+        self.blocks
+            .iter()
+            .map(|block| block.min_size.unwrap_or(0))
+            .sum()
+    }
+    pub fn constrain(&self, constraint: &mut BitSlice) {
+        let mut current = constraint;
+        for block in self.blocks.iter() {
+            //TODO unwrap_or(0) is the same that skip, what about context
+            //constrain?
+            let size: usize = block.min_size.unwrap_or(0).try_into().unwrap();
+            //TODO use split_at_mut here
+            block.constrain(&mut current[..size]);
+            current = &mut current[size..];
+        }
+    }
+    //TODO instead of a bit-vec where 1 is constrained and 0 not, should we
+    //use a BitVec of Free/Set(1)/Set(0)? This way we can detect conflicts in
+    //the constrain, such `c0102=3 & c0203=0`
+    pub fn pattern_constrait(&self) -> BitVec {
+        let size = self.min_size();
+        let mut value = bitvec![0; size.try_into().unwrap()];
+        self.constrain(&mut value);
+        value
+    }
 }

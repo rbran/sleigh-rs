@@ -33,7 +33,7 @@ impl From<DisplayElement> for semantic::display::Element {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Display(Vec<DisplayElement>);
+pub struct Display(pub Vec<DisplayElement>);
 
 impl From<Display> for semantic::display::Display {
     fn from(mut value: Display) -> Self {

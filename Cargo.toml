@@ -9,3 +9,4 @@ debug = true
 [dependencies]
 nom = "7"
 thiserror = "1"
+bitvec = "1"

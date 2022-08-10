@@ -18,6 +18,8 @@ use super::execution::{Execution, ExecutionBuilder};
 use super::pattern::Pattern;
 use super::{FieldSize, GlobalScope, Sleigh, SolverStatus, WithBlock};
 
+use bitvec::prelude::*;
+
 #[derive(Clone)]
 pub struct Table {
     me: Weak<Self>,
@@ -183,6 +185,7 @@ pub struct Constructor {
     //pub table: Weak<Table>,
     pub display: Display,
     pub pattern: Pattern,
+    pub pattern_constraint: BitVec,
     pub disassembly: Disassembly,
     pub execution: Option<Execution>,
     pub src: InputSource,
@@ -195,9 +198,11 @@ impl Constructor {
         execution: Option<Execution>,
         src: InputSource,
     ) -> Self {
+        let pattern_constraint = pattern.pattern_constrait();
         Self {
             display,
             pattern,
+            pattern_constraint,
             disassembly,
             execution,
             src,

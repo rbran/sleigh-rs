@@ -110,6 +110,9 @@ pub type FinalReadScope = semantic::disassembly::ReadScope;
 pub trait ReadScope: std::fmt::Debug {
     fn as_read(&self) -> Rc<dyn ReadScope>;
     fn convert(&self) -> FinalReadScope;
+    fn value(&self) -> Option<IntTypeU> {
+        None
+    }
 }
 impl ReadScope for IntTypeU {
     fn as_read(&self) -> Rc<dyn ReadScope> {
@@ -117,6 +120,9 @@ impl ReadScope for IntTypeU {
     }
     fn convert(&self) -> FinalReadScope {
         FinalReadScope::Integer(*self)
+    }
+    fn value(&self) -> Option<IntTypeU> {
+        Some(*self)
     }
 }
 impl ReadScope for Varnode {
