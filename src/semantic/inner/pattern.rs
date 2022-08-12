@@ -78,67 +78,32 @@ impl Block {
     }
     pub fn constrain(&self, constraint: &mut BitSlice) {
         if matches!(&self.op, Some(Op::Or)) {
-            let mut out: Option<BitVec> = None; //bitvec![0; constraint.len()];
-            for ele in self.elements.iter() {
-                let and_this = match &ele.field {
-                    Field::Field {
-                        field: Reference::Assembly(ass),
-                        constraint: Some(Constraint { op: CmpOp::Eq, .. }),
-                        ..
-                    } => {
-                        if let Some(field) = ass.field() {
-                            let mut and_this = bitvec![0; constraint.len()];
-                            field.bit_range.clone().into_iter().for_each(
-                                |bit| {
-                                    and_this.set(bit.try_into().unwrap(), true)
-                                },
-                            );
-                            Some(and_this)
-                        } else {
-                            None
-                        }
-                    }
-                    Field::SubPattern(sub) => {
-                        let mut and_this = bitvec![0; constraint.len()];
-                        sub.constrain(&mut and_this);
-                        Some(and_this)
-                    }
-                    //TODO: what todo with a table?
-                    _ => None,
-                };
-                match (&mut out, and_this) {
-                    (_, None) => (),
-                    (None, Some(and_this)) => out = Some(and_this),
-                    (Some(out), Some(and_this)) => {
-                        for (mut old, new) in out.iter_mut().zip(and_this.iter())
-                        {
-                            old.set(*old && *new);
-                        }
-                    }
+            let mut elements = self.elements.iter();
+            let mut out = if let Some(first) = elements.next() {
+                let mut ele_out = bitvec![0; constraint.len()];
+                first.field.constraint(&mut ele_out);
+                ele_out
+            } else {
+                unreachable!(
+                    "Block with Or operator but no elements is invalid"
+                )
+            };
+
+            let mut ele_out = bitvec![0; constraint.len()];
+            for ele in elements {
+                ele_out.set_elements(0);
+                ele.field.constraint(&mut ele_out);
+                for (mut out, ele) in out.iter_mut().zip(ele_out.iter()) {
+                    *out = *out & *ele;
                 }
+            }
+            for (mut out, ele) in constraint.iter_mut().zip(out.iter()) {
+                *out = *out | *ele;
             }
         } else {
-            for ele in self.elements.iter() {
-                match &ele.field {
-                    Field::Field {
-                        field: Reference::Assembly(ass),
-                        constraint: Some(Constraint { op: CmpOp::Eq, .. }),
-                        ..
-                    } => {
-                        if let Some(field) = ass.field() {
-                            field.bit_range.clone().into_iter().for_each(
-                                |bit| {
-                                    constraint
-                                        .set(bit.try_into().unwrap(), true)
-                                },
-                            );
-                        }
-                    }
-                    Field::SubPattern(sub) => sub.constrain(constraint),
-                    //TODO: what todo with a table?
-                    _ => (),
-                }
-            }
+            self.elements
+                .iter()
+                .for_each(|ele| ele.field.constraint(constraint));
         }
     }
 }
@@ -247,6 +212,26 @@ impl Field {
             }
             Field::Field { .. } => None,
             Field::SubPattern(sub) => Some(sub.min_size()),
+        }
+    }
+    fn constraint(&self, constraint: &mut BitSlice) {
+        match self {
+            Field::Field {
+                field: Reference::Assembly(ass),
+                constraint: Some(Constraint { op: CmpOp::Eq, .. }),
+                ..
+            } => {
+                if let Some(field) = ass.field() {
+                    field.bit_range.clone().into_iter().for_each(|bit| {
+                        constraint.set(bit.try_into().unwrap(), true)
+                    });
+                }
+            }
+            //TODO: in some cases, in the `CmpOp::L*` is possible to restrict
+            //some bits. Do it?
+            Field::SubPattern(sub) => sub.constrain(constraint),
+            //TODO: what todo with a table?
+            _ => (),
         }
     }
 }
@@ -433,12 +418,9 @@ impl Pattern {
     pub fn constrain(&self, constraint: &mut BitSlice) {
         let mut current = constraint;
         for block in self.blocks.iter() {
-            //TODO unwrap_or(0) is the same that skip, what about context
-            //constrain?
-            let size: usize = block.min_size.unwrap_or(0).try_into().unwrap();
-            //TODO use split_at_mut here
-            block.constrain(&mut current[..size]);
-            current = &mut current[size..];
+            block.constrain(current);
+            current =
+                &mut current[block.min_size.unwrap_or(0).try_into().unwrap()..];
         }
     }
     //TODO instead of a bit-vec where 1 is constrained and 0 not, should we
