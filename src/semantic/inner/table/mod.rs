@@ -15,7 +15,7 @@ use super::disassembly::{Disassembly, DisassemblyBuilder};
 use super::display::Display;
 use super::execution::ExecutionExport;
 use super::execution::{Execution, ExecutionBuilder};
-use super::pattern::Pattern;
+use super::pattern::{Pattern, PatternConstraint};
 use super::{FieldSize, GlobalScope, Sleigh, SolverStatus, WithBlock};
 
 use bitvec::prelude::*;
@@ -91,7 +91,18 @@ impl Table {
                 *export = Some(execution.return_type().clone());
             }
         }
-        constructors.push(constructor);
+        let pos = constructors.iter().enumerate().find_map(|(i, x)| {
+            x.pattern_constraint
+                .contains(&constructor.pattern_constraint)
+                .then_some(i)
+        });
+        //insert constructors in the correct order accordingly with the rules of
+        //`7.8.1. Matching`
+        if let Some(pos) = pos {
+            constructors.insert(pos, constructor);
+        } else {
+            constructors.push(constructor);
+        }
         Ok(())
     }
     pub fn export(&self) -> &RefCell<Option<ExecutionExport>> {
@@ -185,7 +196,7 @@ pub struct Constructor {
     //pub table: Weak<Table>,
     pub display: Display,
     pub pattern: Pattern,
-    pub pattern_constraint: BitVec,
+    pub pattern_constraint: PatternConstraint,
     pub disassembly: Disassembly,
     pub execution: Option<Execution>,
     pub src: InputSource,

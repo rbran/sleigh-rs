@@ -18,6 +18,32 @@ use super::Sleigh;
 use bitvec::prelude::*;
 
 #[derive(Clone, Debug, Default)]
+pub struct PatternConstraint(BitVec);
+
+impl PatternConstraint {
+    //7.8.1. Matching
+    //one pattern contains the other if all the cases that match the contained,
+    //also match the pattern.
+    //eg: `a` contains `b` if all cases that match `b` also match `a`. In other
+    //words `b` is a special case of `a`.
+    //NOTE the opose don't need to be true.
+    pub fn contains(&self, other: &Self) -> bool {
+        if self.0.len() != other.0.len() {
+            return false
+        }
+        self.0
+            .iter()
+            .zip(other.0.iter())
+            .all(|(a, b)| match (*a, *b) {
+                (true, true) => true,
+                (true, false) => false,
+                (false, true) => true,
+                (false, false) => true,
+            })
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct Pattern {
     pub blocks: Vec<Block>,
 }
@@ -426,10 +452,10 @@ impl Pattern {
     //TODO instead of a bit-vec where 1 is constrained and 0 not, should we
     //use a BitVec of Free/Set(1)/Set(0)? This way we can detect conflicts in
     //the constrain, such `c0102=3 & c0203=0`
-    pub fn pattern_constrait(&self) -> BitVec {
+    pub fn pattern_constrait(&self) -> PatternConstraint {
         let size = self.min_size();
         let mut value = bitvec![0; size.try_into().unwrap()];
         self.constrain(&mut value);
-        value
+        PatternConstraint(value)
     }
 }
