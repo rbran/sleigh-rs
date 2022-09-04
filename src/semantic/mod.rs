@@ -24,6 +24,8 @@ use crate::base::NonZeroTypeU;
 use crate::preprocessor::PreProcOutput;
 use crate::semantic::inner::{SolvedLocation, SolverStatus};
 use crate::InputSource;
+use crate::Table;
+use crate::Token;
 use crate::{PcodeMacro, Space, UserFunction, Varnode};
 
 use self::disassembly::DisassemblyError;
@@ -80,6 +82,25 @@ pub enum GlobalScope {
 }
 
 impl GlobalScope {
+    pub fn unwrap_token_field(&self) -> Option<&Rc<assembly::Assembly>> {
+        match self {
+            GlobalScope::Assembly(x)
+                if matches!(
+                    &x.assembly_type,
+                    assembly::AssemblyType::Field(_)
+                ) =>
+            {
+                Some(x)
+            }
+            _ => None,
+        }
+    }
+    pub fn unwrap_token(&self) -> Option<&Rc<assembly::Token>> {
+        match self {
+            GlobalScope::Token(x) => Some(x),
+            _ => None,
+        }
+    }
     pub fn unwrap_space(&self) -> Option<&Rc<space::Space>> {
         match self {
             GlobalScope::Space(x) => Some(x),
@@ -95,6 +116,12 @@ impl GlobalScope {
     pub fn unwrap_pcode_macro(&self) -> Option<&Rc<pcode_macro::PcodeMacro>> {
         match self {
             GlobalScope::PcodeMacro(x) => Some(x),
+            _ => None,
+        }
+    }
+    pub fn unwrap_table(&self) -> Option<&Rc<table::Table>> {
+        match self {
+            GlobalScope::Table(x) => Some(x),
             _ => None,
         }
     }
@@ -324,15 +351,24 @@ impl Sleigh {
             if solved.we_finished() && !solved.we_did_a_thing() {
                 break;
             }
-            if !solved.we_did_a_thing() || i > 10 {
+            if i > 100 {
+                //TODO return an error, but for now force the conversion,
+                //so we can find where the error occour
+                //break;
+                panic!("Too many tries, unable to solve tables")
+            }
+            if !solved.we_did_a_thing() {
                 //print the location that where unable to solve
                 //TODO change solve functions to use <T: SolverStatus + ?Sized>
                 let mut solved = SolvedLocation::default();
                 for table in tables.iter() {
                     table.solve(&mut solved)?;
                 }
-                for location in solved.unfinished_locations() {
-                    println!("Unable to solve at {}", location);
+                for (location, file, line) in solved.unfinished_locations() {
+                    println!(
+                        "Unable to solve at {}\n\tat {}:{}",
+                        location, file, line
+                    );
                 }
                 //TODO return an error, but for now force the conversion,
                 //so we can find where the error occour
@@ -340,6 +376,7 @@ impl Sleigh {
                 panic!("Unable to solve the table")
             }
         }
+        println!("Solved Tables");
         for table in tables.drain(..).map(|x| x.convert()) {
             global_scope
                 .insert(Rc::clone(&table.name), GlobalScope::Table(table));
@@ -389,6 +426,26 @@ impl Sleigh {
         self.global_scope
             .values()
             .filter_map(|x| x.unwrap_pcode_macro())
+            .map(Rc::clone)
+    }
+    pub fn tables<'a>(&'a self) -> impl Iterator<Item = Rc<Table>> + 'a {
+        self.global_scope
+            .values()
+            .filter_map(|x| x.unwrap_table())
+            .map(Rc::clone)
+    }
+    pub fn tokens<'a>(&'a self) -> impl Iterator<Item = Rc<Token>> + 'a {
+        self.global_scope
+            .values()
+            .filter_map(|x| x.unwrap_token())
+            .map(Rc::clone)
+    }
+    pub fn token_fields<'a>(
+        &'a self,
+    ) -> impl Iterator<Item = Rc<assembly::Assembly>> + 'a {
+        self.global_scope
+            .values()
+            .filter_map(|x| x.unwrap_token_field())
             .map(Rc::clone)
     }
 }

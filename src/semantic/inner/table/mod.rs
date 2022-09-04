@@ -2,8 +2,10 @@ pub mod disassembly;
 pub mod execution;
 
 use std::cell::RefCell;
+use std::ops::ControlFlow;
 use std::rc::{Rc, Weak};
 
+use crate::semantic::inner::pattern::PatternWalker;
 use crate::semantic::table::{ExecutionError, TableErrorSub, ToTableError};
 use crate::semantic::{self, TableError};
 use crate::syntax::block;
@@ -15,10 +17,8 @@ use super::disassembly::{Disassembly, DisassemblyBuilder};
 use super::display::Display;
 use super::execution::ExecutionExport;
 use super::execution::{Execution, ExecutionBuilder};
-use super::pattern::{Pattern, PatternConstraint};
+use super::pattern::{Pattern, PatternConstraint, PatternLen};
 use super::{FieldSize, GlobalScope, Sleigh, SolverStatus, WithBlock};
-
-use bitvec::prelude::*;
 
 #[derive(Clone)]
 pub struct Table {
@@ -38,13 +38,22 @@ pub struct Table {
     //Some(ExecutionExport::None) mean that this table doesn't export
     export: RefCell<Option<ExecutionExport>>,
 
-    empty: RefCell<bool>,
+    pattern_len: RefCell<PatternLen>,
+
+    //used to differ empty tables and ones that got converted
+    converted: RefCell<bool>,
     result: Rc<semantic::table::Table>,
 }
 
 impl std::fmt::Debug for Table {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Table {}, returning: {:?}", self.name, self.export,)
+        write!(
+            f,
+            "Table {}, pattern_len: {:?}, returning: {:?}",
+            self.name,
+            self.pattern_len(),
+            self.export
+        )
     }
 }
 
@@ -55,9 +64,10 @@ impl Table {
             name: Rc::clone(&name),
             constructors: RefCell::new(vec![]),
             result: Rc::new(semantic::table::Table::new_empty(name)),
-            empty: RefCell::new(true),
+            converted: RefCell::new(false),
             //it does not export, unless a exporting constructor is added
             export: RefCell::default(),
+            pattern_len: RefCell::default(),
             //export_time: RefCell::default(),
             me: Weak::clone(me),
         })
@@ -70,9 +80,39 @@ impl Table {
     }
     pub fn add_constructor(
         &self,
-        constructor: Constructor,
+        mut constructor: Constructor,
     ) -> Result<(), TableError> {
-        let mut constructors = self.constructors.borrow_mut();
+        //HACK: Find constructors that the pattern points to this table
+        //in a (recursive)
+        //TODO: this should be part of a bigger recursive identification,
+        //one that is able to also identify indirect/incremental recursive.
+        struct RecFind(*const Table);
+        impl PatternWalker for RecFind {
+            fn extension(&mut self, table: &Table) -> ControlFlow<(), ()> {
+                if Weak::as_ptr(&table.me) == self.0 {
+                    unimplemented!("Non Self Recursive with empty body")
+                } else {
+                    ControlFlow::Continue(())
+                }
+            }
+            fn table(&mut self, table: &Table) -> ControlFlow<(), ()> {
+                if Weak::as_ptr(&table.me) == self.0 {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            }
+        }
+        let self_ptr = Weak::as_ptr(&self.me);
+        let mut find = RecFind(self_ptr);
+        if find.start(&constructor.pattern).is_break() {
+            if constructor.pattern.blocks.len() == 1 {
+                constructor.pattern.len = PatternLen::Recursive;
+            } else {
+                unimplemented!("Non Self Recursive with empty body")
+            }
+        }
+
         //all the constructor need to export or none can export
         //if this constructor is not `unimpl` update/verify the return type
         if let Some(execution) = constructor.execution() {
@@ -91,18 +131,7 @@ impl Table {
                 *export = Some(execution.return_type().clone());
             }
         }
-        let pos = constructors.iter().enumerate().find_map(|(i, x)| {
-            x.pattern_constraint
-                .contains(&constructor.pattern_constraint)
-                .then_some(i)
-        });
-        //insert constructors in the correct order accordingly with the rules of
-        //`7.8.1. Matching`
-        if let Some(pos) = pos {
-            constructors.insert(pos, constructor);
-        } else {
-            constructors.push(constructor);
-        }
+        self.constructors.borrow_mut().push(constructor);
         Ok(())
     }
     pub fn export(&self) -> &RefCell<Option<ExecutionExport>> {
@@ -115,11 +144,22 @@ impl Table {
     where
         T: SolverStatus + Default,
     {
-        self.constructors
-            .borrow_mut()
-            .iter_mut()
-            .map(|constructor| constructor.solve(solved))
-            .collect::<Result<(), _>>()?;
+        //FUTURE: convert into iterator with try_reduce
+        //solve all the pattern len
+        {
+            let mut constructors = self.constructors.borrow_mut();
+            let mut len_iter = constructors
+                .iter_mut()
+                .map(|cons| cons.solve(solved).map(|_| cons.pattern.len()));
+            if let Some(len) = len_iter.next() {
+                let mut len = len?;
+                for len_iter in len_iter {
+                    let len_iter = len_iter?;
+                    len = len.combine(len_iter)
+                }
+                *self.pattern_len.borrow_mut() = len;
+            }
+        }
 
         //TODO update the FieldSize::all_same_size to use iterators and use it
         //here
@@ -165,7 +205,7 @@ impl Table {
                 .update_action(|size| size.intersection(*new_size))
                 .unwrap();
             if size.is_undefined() {
-                solved.iam_not_finished_location(&src);
+                solved.iam_not_finished_location(&src, file!(), line!());
             }
         }
         //update the export size
@@ -174,19 +214,58 @@ impl Table {
         }
         Ok(())
     }
+    pub fn pattern_len(&self) -> PatternLen {
+        *self.pattern_len.borrow()
+    }
     pub fn convert(&self) -> Rc<semantic::table::Table> {
-        let empty = *self.empty.borrow();
-        if empty {
-            let constructors = self
-                .constructors
-                .borrow_mut()
-                .drain(..)
-                .map(|x| x.convert())
-                .collect();
-            *self.empty.borrow_mut() = true;
-            let mut result = self.result.constructors.borrow_mut();
-            *result = constructors;
+        let converted = *self.converted.borrow();
+        if converted {
+            return self.reference();
         }
+        //TODO better sorting method
+        //put the constructors in the correct order
+        let mut constructors = self.constructors.borrow_mut();
+        let mut constructors: Vec<(Constructor, PatternConstraint)> =
+            constructors
+                .drain(..)
+                .map(|constructor| {
+                    let patt = constructor.pattern.pattern_constrait();
+                    (constructor, patt)
+                })
+                .collect();
+        let mut new_constructors: Vec<(Constructor, PatternConstraint)> =
+            vec![];
+        for (constructor, pattern) in constructors.drain(..) {
+            let pos = new_constructors.iter().enumerate().find_map(
+                |(i, (_con, pat))| pat.contains(&pattern).then_some(i),
+            );
+            //insert constructors in the correct order accordingly with the rules of
+            //`7.8.1. Matching`
+            if let Some(pos) = pos {
+                new_constructors.insert(pos, (constructor, pattern));
+            } else {
+                new_constructors.push((constructor, pattern));
+            }
+        }
+
+        let constructors = new_constructors
+            .drain(..)
+            .map(|(x, _)| x.convert())
+            .collect();
+        *self.converted.borrow_mut() = true;
+        let mut constructors_result = self.result.constructors.borrow_mut();
+        *constructors_result = constructors;
+        let mut export_result = self.result.export.borrow_mut();
+        //TODO convert unwrap to Result
+        *export_result = self
+            .export
+            .borrow()
+            .unwrap_or_default()
+            .convert()
+            .unwrap_or_else(|| {
+                dbg!(&self);
+                unreachable!()
+            });
         self.reference()
     }
 }
@@ -196,7 +275,6 @@ pub struct Constructor {
     //pub table: Weak<Table>,
     pub display: Display,
     pub pattern: Pattern,
-    pub pattern_constraint: PatternConstraint,
     pub disassembly: Disassembly,
     pub execution: Option<Execution>,
     pub src: InputSource,
@@ -209,11 +287,9 @@ impl Constructor {
         execution: Option<Execution>,
         src: InputSource,
     ) -> Self {
-        let pattern_constraint = pattern.pattern_constrait();
         Self {
             display,
             pattern,
-            pattern_constraint,
             disassembly,
             execution,
             src,
@@ -229,7 +305,7 @@ impl Constructor {
     where
         T: SolverStatus + Default,
     {
-        self.disassembly.solve(solved).to_table(self.src.clone())?;
+        self.pattern.solve(solved).to_table(self.src.clone())?;
         if let Some(execution) = &mut self.execution {
             execution.solve(solved).to_table(self.src.clone())?;
         }
@@ -240,12 +316,14 @@ impl Constructor {
         let pattern = self.pattern.try_into().unwrap();
         let disassembly = self.disassembly.convert();
         let execution = self.execution.map(|x| x.convert());
+        let src = self.src;
 
         semantic::table::Constructor {
             pattern,
             display,
             disassembly,
             execution,
+            src,
         }
     }
 }
@@ -269,6 +347,7 @@ impl<'a> Sleigh<'a> {
                 )?,
         };
 
+        //TODO improve the new/extend interface for pattern
         let mut pattern = with_block
             .as_ref()
             .map(|with_block| with_block.pattern.clone())

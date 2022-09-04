@@ -394,11 +394,16 @@ impl<'a> FieldSizeMut for FieldSizeCell<'a> {
 }
 
 pub trait SolverStatus<T: SolverStatus = Self> {
-    fn iam_not_finished_location(&mut self, _location: &InputSource);
+    fn iam_not_finished_location(
+        &mut self,
+        location: &InputSource,
+        file: &'static str,
+        line: u32,
+    );
     fn i_did_a_thing(&mut self);
     fn we_finished(&self) -> bool;
     fn we_did_a_thing(&self) -> bool;
-    fn unfinished_locations(&self) -> &[InputSource];
+    fn unfinished_locations(&self) -> &[(InputSource, &'static str, u32)];
     fn combine(&mut self, other: &Self);
 }
 
@@ -409,7 +414,12 @@ pub struct Solved {
 }
 
 impl SolverStatus for Solved {
-    fn iam_not_finished_location(&mut self, _location: &InputSource) {
+    fn iam_not_finished_location(
+        &mut self,
+        _location: &InputSource,
+        _file: &'static str,
+        _line: u32,
+    ) {
         self.finished = false;
     }
     fn i_did_a_thing(&mut self) {
@@ -421,7 +431,7 @@ impl SolverStatus for Solved {
     fn we_did_a_thing(&self) -> bool {
         self.did_a_thing
     }
-    fn unfinished_locations(&self) -> &[InputSource] {
+    fn unfinished_locations(&self) -> &[(InputSource, &'static str, u32)] {
         &[]
     }
     fn combine(&mut self, other: &Self) {
@@ -442,13 +452,18 @@ impl Default for Solved {
 #[derive(Clone, Debug, Default)]
 pub struct SolvedLocation {
     solved: Solved,
-    locations: Vec<InputSource>,
+    locations: Vec<(InputSource, &'static str, u32)>,
 }
 
 impl SolverStatus for SolvedLocation {
-    fn iam_not_finished_location(&mut self, location: &InputSource) {
-        self.solved.iam_not_finished_location(location);
-        self.locations.push(location.clone());
+    fn iam_not_finished_location(
+        &mut self,
+        location: &InputSource,
+        file: &'static str,
+        line: u32,
+    ) {
+        self.solved.iam_not_finished_location(location, file, line);
+        self.locations.push((location.clone(), file, line));
     }
     fn i_did_a_thing(&mut self) {
         self.solved.i_did_a_thing();
@@ -459,7 +474,7 @@ impl SolverStatus for SolvedLocation {
     fn we_did_a_thing(&self) -> bool {
         self.solved.we_did_a_thing()
     }
-    fn unfinished_locations(&self) -> &[InputSource] {
+    fn unfinished_locations(&self) -> &[(InputSource, &'static str, u32)] {
         &self.locations
     }
     fn combine(&mut self, other: &Self) {

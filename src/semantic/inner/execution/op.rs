@@ -26,7 +26,7 @@ impl AddrDereference {
     }
     pub fn solve(&self, solved: &mut impl SolverStatus) {
         if !self.size.is_final() {
-            solved.iam_not_finished_location(&self.src)
+            solved.iam_not_finished_location(&self.src, file!(), line!())
         }
     }
     pub fn convert(self) -> FinalAddrDereference {

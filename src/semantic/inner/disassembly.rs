@@ -11,7 +11,7 @@ use crate::syntax::block;
 use crate::InputSource;
 
 use super::assembly::Assembly;
-use super::{SolverStatus, Table};
+use super::Table;
 
 pub trait ExprBuilder<'a> {
     fn read_scope(
@@ -321,13 +321,6 @@ pub struct Disassembly {
 }
 
 impl Disassembly {
-    pub fn solve(
-        &self,
-        _solved: &mut impl SolverStatus,
-    ) -> Result<(), DisassemblyError> {
-        //TODO check for table export eval time
-        Ok(())
-    }
     pub fn variable(&self, name: &str) -> Option<&Rc<Variable>> {
         self.vars.get(name)
     }

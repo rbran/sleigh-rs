@@ -125,7 +125,11 @@ impl Export {
                 addr.solve(solved)?;
                 deref.solve(solved);
                 if addr.size().is_undefined() {
-                    solved.iam_not_finished_location(addr.src());
+                    solved.iam_not_finished_location(
+                        addr.src(),
+                        file!(),
+                        line!(),
+                    );
                 }
                 Ok(())
             }
@@ -249,7 +253,7 @@ impl MemWrite {
         }
 
         if self.addr.size().is_undefined() || self.right.size().is_undefined() {
-            solved.iam_not_finished_location(self.right.src())
+            solved.iam_not_finished_location(self.right.src(), file!(), line!())
         }
 
         Ok(())
@@ -359,7 +363,7 @@ impl Assignment {
         }
 
         if self.var.size().is_undefined() || self.right.size().is_undefined() {
-            solved.iam_not_finished_location(self.right.src())
+            solved.iam_not_finished_location(self.right.src(), file!(), line!())
         }
 
         Ok(())
@@ -391,7 +395,7 @@ impl WriteValue {
                 *value.export().borrow().as_ref().unwrap().size().unwrap()
             }
             Self::ExeVar(_, var) => var.size().get(),
-            Self::Assembly(_, ass) => ass.value_size(),
+            Self::Assembly(_, ass) => ass.value_len(),
             Self::Param(_, param) => param.size().get(),
         }
     }
@@ -402,7 +406,7 @@ impl WriteValue {
             }
             Self::Table(_, value) => value.export().into(),
             Self::ExeVar(_, var) => var.size().into(),
-            Self::Assembly(_, ass) => ass.value_size().into(),
+            Self::Assembly(_, ass) => ass.value_len().into(),
             Self::Param(_, param) => param.size().into(),
         }
     }
@@ -501,7 +505,11 @@ impl MacroCall {
             if let Some(params_size) = params_size {
                 self.instance = self.function.try_specialize(&params_size);
                 if self.instance.is_none() {
-                    solved.iam_not_finished_location(&self.function.src)
+                    solved.iam_not_finished_location(
+                        &self.function.src,
+                        file!(),
+                        line!(),
+                    )
                 } else {
                     solved.i_did_a_thing();
                 }
@@ -596,7 +604,7 @@ impl LocalGoto {
         if let Some(cond) = self.cond.as_mut() {
             cond.solve(solved)?;
             if cond.size().is_undefined() {
-                solved.iam_not_finished_location(cond.src());
+                solved.iam_not_finished_location(cond.src(), file!(), line!());
             }
         }
         Ok(())
@@ -650,7 +658,7 @@ impl CpuBranch {
         if let Some(cond) = self.cond.as_mut() {
             cond.solve(solved)?;
             if cond.size().is_undefined() {
-                solved.iam_not_finished_location(cond.src());
+                solved.iam_not_finished_location(cond.src(), file!(), line!());
             }
         }
         //correlate the addr execution size and the jmp dest addr size
@@ -663,7 +671,7 @@ impl CpuBranch {
 
         self.dst.solve(solved)?;
         if self.dst.size().is_undefined() {
-            solved.iam_not_finished_location(self.dst.src());
+            solved.iam_not_finished_location(self.dst.src(), file!(), line!());
         }
 
         if modified {
@@ -813,7 +821,7 @@ impl Variable {
         solved: &mut T,
     ) -> Result<(), ExecutionError> {
         if self.size.get().is_undefined() {
-            solved.iam_not_finished_location(&self.src)
+            solved.iam_not_finished_location(&self.src, file!(), line!())
         }
         Ok(())
     }
@@ -910,6 +918,27 @@ impl ExecutionExport {
                 .map(Self::Multiple),
         }
     }
+    //TODO from Option into a Result
+    pub fn convert(&self) -> Option<crate::semantic::table::ExecutionExport> {
+        use crate::semantic::table;
+        let result = match self {
+            Self::None => table::ExecutionExport::None,
+            Self::Const(len) if !len.is_undefined() => {
+                table::ExecutionExport::Const(len.possible_value().unwrap())
+            }
+            Self::Value(len) if !len.is_undefined() => {
+                table::ExecutionExport::Value(len.possible_value().unwrap())
+            }
+            Self::Reference(len) if !len.is_undefined() => {
+                table::ExecutionExport::Reference(len.possible_value().unwrap())
+            }
+            Self::Multiple(len) if !len.is_undefined() => {
+                table::ExecutionExport::Multiple(len.possible_value().unwrap())
+            }
+            _ => return None,
+        };
+        Some(result)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1001,7 +1030,7 @@ impl Execution {
             solved.i_did_a_thing();
         }
         if return_size.is_undefined() {
-            solved.iam_not_finished_location(&self.src);
+            solved.iam_not_finished_location(&self.src, file!(), line!());
         }
         Ok(())
     }

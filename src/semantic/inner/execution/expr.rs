@@ -124,7 +124,7 @@ impl Expr {
                 Expr::Value(Ele::Value(Value::Int(_, _, right))),
             ) => {
                 solved.i_did_a_thing();
-                solved.iam_not_finished_location(&src);
+                solved.iam_not_finished_location(&src, file!(), line!());
                 let value = op.execute(left, right).ok_or_else(|| {
                     //TODO better error
                     ExecutionError::InvalidExport
@@ -159,7 +159,7 @@ impl Expr {
                     .unwrap_or(true) =>
             {
                 solved.i_did_a_thing();
-                solved.iam_not_finished_location(&src);
+                solved.iam_not_finished_location(&src, file!(), line!());
                 let size = out_size.final_value().unwrap();
                 Expr::Value(ExprElement::Truncate(
                     src.clone(),
@@ -185,7 +185,7 @@ impl Expr {
                 .unwrap_or(false) =>
             {
                 solved.i_did_a_thing();
-                solved.iam_not_finished_location(&src);
+                solved.iam_not_finished_location(&src, file!(), line!());
                 let size = out_size.final_value().unwrap();
                 //take the value from self, and put on the new self
                 //safe because the self is overwriten after
@@ -223,7 +223,7 @@ impl Expr {
                 ])
                 .ok_or_else(error)?;
                 if out_size.is_undefined() {
-                    solved.iam_not_finished_location(&src)
+                    solved.iam_not_finished_location(&src, file!(), line!());
                 }
                 Expr::Op(src, out_size, op, Box::new(left), Box::new(right))
             }
@@ -238,7 +238,7 @@ impl Expr {
                 ])
                 .ok_or_else(error)?;
                 if out_size.is_undefined() {
-                    solved.iam_not_finished_location(&src);
+                    solved.iam_not_finished_location(&src, file!(), line!());
                 }
                 Expr::Op(src, out_size, op, Box::new(left), Box::new(right))
             }
@@ -247,7 +247,7 @@ impl Expr {
             //is always value false/true, 0/1
             (left, Binary::And | Binary::Xor | Binary::Or, right) => {
                 if out_size.is_undefined() {
-                    solved.iam_not_finished_location(&src);
+                    solved.iam_not_finished_location(&src, file!(), line!());
                 }
                 Expr::Op(src, out_size, op, Box::new(left), Box::new(right))
             }
@@ -285,7 +285,7 @@ impl Expr {
                 ])
                 .ok_or_else(error)?;
                 if left.size().is_undefined() || right.size().is_undefined() {
-                    solved.iam_not_finished_location(&src);
+                    solved.iam_not_finished_location(&src, file!(), line!());
                 }
                 Expr::Op(src, out_size, op, Box::new(left), Box::new(right))
             }
@@ -439,7 +439,7 @@ impl ExprElement {
                 //so we are are not finished only, if the truncate size is
                 //unknown and value size is also unknown
                 if !value.size().is_final() && !size.is_final() {
-                    solved.iam_not_finished_location(&src);
+                    solved.iam_not_finished_location(&src, file!(), line!());
                 }
                 value.solve(solved)?;
             }
@@ -477,7 +477,7 @@ impl ExprElement {
                         input.size_mut().update_action(set_min).unwrap();
                 }
                 if size.is_undefined() {
-                    solved.iam_not_finished_location(src);
+                    solved.iam_not_finished_location(&src, file!(), line!());
                 }
                 input.solve(solved)?;
             }
@@ -502,7 +502,7 @@ impl ExprElement {
                     }
                 }
                 if size.is_undefined() {
-                    solved.iam_not_finished_location(src);
+                    solved.iam_not_finished_location(&src, file!(), line!());
                 }
                 input.solve(solved)?;
             }
@@ -520,7 +520,7 @@ impl ExprElement {
                     .ok_or_else(error)?;
 
                 if size.is_undefined() || value.size().is_undefined() {
-                    solved.iam_not_finished_location(src);
+                    solved.iam_not_finished_location(&src, file!(), line!());
                 }
                 value.solve(solved)?;
             }
@@ -537,7 +537,7 @@ impl ExprElement {
                     .ok_or_else(error)?;
 
                 if size.is_undefined() || value.size().is_undefined() {
-                    solved.iam_not_finished_location(src);
+                    solved.iam_not_finished_location(&src, file!(), line!());
                 }
                 value.solve(solved)?;
             }
@@ -549,19 +549,23 @@ impl ExprElement {
             ) => {
                 //input and output can have any size
                 if size.is_undefined() || input.size().is_undefined() {
-                    solved.iam_not_finished_location(src);
+                    solved.iam_not_finished_location(src, file!(), line!());
                 }
                 input.solve(solved)?;
             }
             Self::Op(src, size, Unary::FloatNan, input) => {
                 if size.is_undefined() {
-                    solved.iam_not_finished_location(src);
+                    solved.iam_not_finished_location(src, file!(), line!());
                 }
                 input.solve(solved)?;
             }
             Self::UserCall(size, call) => {
                 if size.is_undefined() {
-                    solved.iam_not_finished_location(call.src());
+                    solved.iam_not_finished_location(
+                        call.src(),
+                        file!(),
+                        line!(),
+                    );
                 }
                 call.params
                     .iter_mut()
@@ -688,7 +692,7 @@ impl ExprValue {
         src: InputSource,
         value: Rc<assembly::Assembly>,
     ) -> Self {
-        Self::Assembly(src, value.value_size(), value)
+        Self::Assembly(src, value.value_len(), value)
     }
     pub fn new_varnode(src: InputSource, value: Rc<Varnode>) -> Self {
         match &value.varnode_type {
@@ -780,7 +784,7 @@ impl ExprValue {
             //inst_start/inst_next could be updated externally
             Self::Assembly(src, size, ass) => {
                 if size
-                    .update_action(|size| size.intersection(ass.value_size()))
+                    .update_action(|size| size.intersection(ass.value_len()))
                     .ok_or_else(|| ExecutionError::VarSize(src.clone()))?
                 {
                     solved.i_did_a_thing();

@@ -53,6 +53,9 @@ pub struct Memory {
 }
 
 impl Memory {
+    pub fn addr_len(&self) -> NonZeroTypeU {
+        self.addr_size
+    }
     pub fn addr_size(&self) -> FieldSize {
         FieldSize::new_bytes(self.addr_size)
     }

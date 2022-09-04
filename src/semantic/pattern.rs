@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
+use crate::base::IntTypeU;
 use crate::{from_error, InputSource};
 
 use super::assembly::Assembly;
@@ -24,41 +25,148 @@ pub enum PatternError {
 }
 from_error!(PatternError, DisassemblyError, ConstraintExpr);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PatternLen {
+    Defined(IntTypeU),
+    Range {
+        min: IntTypeU,
+        max: Option<IntTypeU>,
+    },
+}
+
 #[derive(Clone, Debug)]
 pub struct Pattern {
-    pub blocks: Vec<Block>,
+    len: PatternLen,
+    blocks: Vec<Block>,
+}
+
+impl Pattern {
+    pub fn new(len: PatternLen, blocks: Vec<Block>) -> Self {
+        Self { len, blocks }
+    }
+    pub fn len(&self) -> PatternLen {
+        self.len
+    }
+    pub fn blocks(&self) -> &[Block] {
+        &self.blocks
+    }
 }
 
 #[derive(Clone, Debug)]
-pub struct Block {
-    pub op: Option<Op>,
-    pub elements: Vec<Element>,
-}
-
-#[derive(Clone, Debug)]
-pub struct Element {
-    pub field: Field,
-    pub ellipsis: Option<Ellipsis>,
-}
-#[derive(Clone, Debug)]
-pub enum Field {
-    Field {
-        field: Reference,
-        constraint: Option<Constraint>,
+pub enum Block {
+    //block with multiple elements unified with ORs
+    Or {
+        len: IntTypeU,
+        fields: Vec<FieldOr>,
     },
-    SubPattern(Pattern),
+    //block with multiple elements unified with ANDs
+    And {
+        len: IntTypeU,
+        fields: Vec<FieldAnd>,
+    },
+    //And block but with one or more sub tables that extend the size
+    Expansive {
+        //left/right len need to be smaller then extension min_len
+        left_len: IntTypeU,
+        left: Vec<FieldAnd>,
+        //extension can also be Pattern, but I'll forbiden for now
+        extension: Rc<Table>,
+        right_len: IntTypeU,
+        right: Vec<FieldAnd>,
+    },
+}
+
+//Field used in Or Expressions
+#[derive(Clone, Debug)]
+pub enum FieldOr {
+    Constraint {
+        src: InputSource,
+        assembly: Rc<Assembly>,
+        constraint: Constraint,
+    },
+    SubPattern(SubPattern),
 }
 #[derive(Clone, Debug)]
-pub enum Reference {
-    Assembly(Rc<Assembly>),
-    Varnode(Rc<Varnode>),
-    Table(Rc<Table>),
+pub enum FieldAnd {
+    Constraint {
+        field: ConstraintVariable,
+        constraint: Constraint,
+    },
+    Field(Reference),
+    SubPattern(SubPattern),
 }
 
 #[derive(Clone, Debug)]
 pub struct Constraint {
-    pub op: CmpOp,
-    pub value: ConstraintValue,
+    op: CmpOp,
+    value: ConstraintField,
+}
+
+impl Constraint {
+    pub fn new(op: CmpOp, value: ConstraintField) -> Self {
+        Self { op, value }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ConstraintVariable {
+    Assembly {
+        src: InputSource,
+        assembly: Rc<Assembly>,
+    },
+    Varnode {
+        src: InputSource,
+        varnode: Rc<Varnode>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub enum Reference {
+    Assembly {
+        src: InputSource,
+        assembly: Rc<Assembly>,
+    },
+    Varnode {
+        src: InputSource,
+        varnode: Rc<Varnode>,
+    },
+    //tables that extend are not allowed here
+    Table {
+        src: InputSource,
+        table: Rc<Table>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct SubPattern {
+    src: InputSource,
+    blocks: Vec<SubBlock>,
+    //sub_pattern need to have a defined len
+    len: IntTypeU,
+}
+impl SubPattern {
+    pub fn new(
+        src: InputSource,
+        blocks: Vec<SubBlock>,
+        //sub_pattern need to have a defined len
+        len: IntTypeU,
+    ) -> Self {
+        Self { src, blocks, len }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum SubBlock {
+    //block with multiple elements unified with ORs
+    Or {
+        len: IntTypeU,
+        fields: Vec<FieldOr>,
+    },
+    //block with multiple elements unified with ANDs
+    And {
+        len: IntTypeU,
+        fields: Vec<FieldAnd>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -68,7 +176,7 @@ pub enum ExprScope {
 }
 
 #[derive(Clone, Debug)]
-pub struct ConstraintValue {
+pub struct ConstraintField {
     pub expr: disassembly::Expr,
 }
 

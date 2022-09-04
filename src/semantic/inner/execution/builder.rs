@@ -168,17 +168,26 @@ pub trait ExecutionBuilder<'a> {
             }
         }
         //find the return type for this execution
-        let return_type = self
-            .execution()
-            .blocks()
-            //only blocks with no next block can export
-            .filter(|block| block.next.borrow().is_none())
-            //if the last statement is export, convert to export size
-            .filter_map(|block| match block.statements.borrow().last() {
-                Some(Statement::Export(exp)) => Some(exp.return_type()),
-                _ => None,
-            })
-            .try_reduce(|acc, item| acc.combine(item));
+        let return_type = {
+            let mut iter = self
+                .execution()
+                .blocks()
+                //only blocks with no next block can export
+                .filter(|block| block.next.borrow().is_none())
+                //if the last statement is export, convert to export size
+                .filter_map(|block| match block.statements.borrow().last() {
+                    Some(Statement::Export(exp)) => Some(exp.return_type()),
+                    _ => None,
+                });
+            //FUTURE: replace this with try_reduce:
+            //`.try_reduce(|acc, item| acc.combine(item));`
+            match iter.next() {
+                Some(first) => iter
+                    .try_fold(first, |acc, item| acc.combine(item))
+                    .map(|x| Some(x)),
+                None => Some(None),
+            }
+        };
         self.execution_mut().return_value = match return_type {
             //short circuit, AKA invalid combination of return types
             None => return Err(ExecutionError::InvalidExport),

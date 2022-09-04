@@ -1,6 +1,3 @@
-//Those features should be stabilized before this project is finished
-#![feature(iterator_try_reduce)]
-
 use std::ops::{Bound, RangeBounds};
 use std::path::Path;
 use std::rc::Rc;
@@ -15,8 +12,11 @@ use preprocessor::preprocess;
 
 use syntax::parse_syntax;
 
+pub use semantic::assembly::{Assembly, Token};
+pub use semantic::pattern::Pattern;
 pub use semantic::pcode_macro::PcodeMacro;
 pub use semantic::space::Space;
+pub use semantic::table::{Constructor, Table};
 pub use semantic::user_function::UserFunction;
 pub use semantic::varnode::Varnode;
 pub use semantic::Sleigh;
@@ -30,7 +30,7 @@ pub const IDENT_EPSILON: &str = "epsilon";
 pub const IDENT_CONST: &str = "const";
 pub const IDENT_UNIQUE: &str = "unique";
 
-//TODO delete this for the love ofaskdjfhaçsdjkfh
+//TODO delete this for the love of askdjfhaçsdjkfh
 pub static STATE: u32 = 0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

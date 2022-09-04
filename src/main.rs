@@ -119,6 +119,20 @@ const ARCH_FILES: &[&str] = &[
 //"/home/rbran/src/ghidra/Ghidra/Processors/Sparc/data/languages/SparcV9_32.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/Sparc/data/languages/SparcV9_64.slaspec",
 
+//TODO: How the nop instruction and NopByte incremental pattern recursive works?
+//"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_builder_be_align2.slaspec",
+//"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_builder_le_align2.slaspec",
+//"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_builder_le.slaspec",
+//"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_be_posStack.slaspec",
+//"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_builder_be.slaspec",
+//"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_wsz_be.slaspec",
+//"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_wsz_le.slaspec",
+//"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_be.slaspec",
+//"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_le.slaspec",
+//"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy64_be.slaspec",
+//"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy64_le.slaspec",
+//"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy64_be_harvard.slaspec",
+
 "/home/rbran/src/ghidra/Ghidra/Processors/ARM/data/languages/ARM4_be.slaspec",
 "/home/rbran/src/ghidra/Ghidra/Processors/ARM/data/languages/ARM4_le.slaspec",
 "/home/rbran/src/ghidra/Ghidra/Processors/ARM/data/languages/ARM4t_be.slaspec",
@@ -139,19 +153,6 @@ const ARCH_FILES: &[&str] = &[
 
 "/home/rbran/src/ghidra/Ghidra/Processors/SuperH4/data/languages/SuperH4_be.slaspec",
 "/home/rbran/src/ghidra/Ghidra/Processors/SuperH4/data/languages/SuperH4_le.slaspec",
-
-"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_builder_be_align2.slaspec",
-"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_builder_le_align2.slaspec",
-"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_builder_le.slaspec",
-"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_be_posStack.slaspec",
-"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_builder_be.slaspec",
-"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_wsz_be.slaspec",
-"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_wsz_le.slaspec",
-"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_be.slaspec",
-"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_le.slaspec",
-"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy64_be.slaspec",
-"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy64_le.slaspec",
-"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy64_be_harvard.slaspec",
 
 "/home/rbran/src/ghidra/Ghidra/Processors/PIC/data/languages/pic12c5xx.slaspec",
 "/home/rbran/src/ghidra/Ghidra/Processors/PIC/data/languages/pic16c5x.slaspec",

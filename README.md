@@ -16,4 +16,6 @@ designed to facilitate the reverse engineering process.
 * Implement the ordering or table constructors.
 * Verification of the Assembly pattern matching blocks.
 * Unit tests.
+* Discover: how to bit-constrain the table pattern for ordering in a expansive
+block that have ellipsis on the left and right.
 

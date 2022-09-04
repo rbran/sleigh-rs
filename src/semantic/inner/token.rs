@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use crate::base::NonZeroTypeU;
 use crate::semantic::{assembly, inner, PrintFmt, SemanticError};
 use crate::syntax::define;
 
@@ -10,15 +11,12 @@ impl<'a> Sleigh<'a> {
         &mut self,
         mut token: define::Token<'a>,
     ) -> Result<(), SemanticError> {
-        if token.size == 0 {
-            return Err(SemanticError::TokenInvalidSize);
-        }
-
         let token_name = Rc::from(token.name);
-        let token_size = token.size;
+        let size = NonZeroTypeU::new(token.size)
+            .ok_or(SemanticError::TokenInvalidSize)?;
         let token_ref = Rc::new(assembly::Token {
             name: Rc::clone(&token_name),
-            size: token_size,
+            size,
             endian: token.endian,
         });
         self.idents
@@ -30,7 +28,7 @@ impl<'a> Sleigh<'a> {
             .unwrap_or(Ok(()))?;
 
         for mut field in token.token_fields.drain(..) {
-            if field.start > field.end || field.end >= token_size {
+            if field.start > field.end || field.end >= size.get() {
                 return Err(SemanticError::TokenFieldInvalidSize);
             }
             let (mut signed, mut fmt) = (false, None);

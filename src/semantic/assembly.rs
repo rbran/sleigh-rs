@@ -81,9 +81,17 @@ impl Assembly {
             Epsilon | Start(_) | Next(_) => return None,
         }
     }
-    pub fn value_size(&self) -> FieldSize {
+    pub fn token_len(&self) -> IntTypeU {
         match &self.assembly_type {
-            AssemblyType::Field(x) => x.value_size(),
+            AssemblyType::Field(x) => x.token.size.get(),
+            AssemblyType::Epsilon
+            | AssemblyType::Next(_)
+            | AssemblyType::Start(_) => 0,
+        }
+    }
+    pub fn value_len(&self) -> FieldSize {
+        match &self.assembly_type {
+            AssemblyType::Field(x) => x.value_len(),
             AssemblyType::Epsilon => FieldSize::new_unsized(),
             AssemblyType::Next(size) | AssemblyType::Start(size) => size.get(),
         }
@@ -100,7 +108,7 @@ impl Assembly {
             }
         }
     }
-    pub fn max_size(&self) -> Option<NonZeroTypeU> {
+    pub fn max_len(&self) -> Option<NonZeroTypeU> {
         match &self.assembly_type {
             AssemblyType::Field(x) => match x.attach.borrow().as_ref() {
                 Some(meaning) => meaning.size(),
@@ -126,7 +134,7 @@ pub enum AssemblyType {
 pub struct Token {
     pub name: Rc<str>,
     /// The min size of the instruction this token require
-    pub size: IntTypeU,
+    pub size: NonZeroTypeU,
     /// Endian of the fields, None use the global endian
     pub endian: Option<Endian>,
     /////all the fields
@@ -143,7 +151,7 @@ pub struct Field {
 }
 
 impl Field {
-    fn value_size(&self) -> FieldSize {
+    fn value_len(&self) -> FieldSize {
         match self.attach.borrow().as_ref() {
             Some(meaning) if meaning.size().is_some() => {
                 //if associated with reg, it have the reg size

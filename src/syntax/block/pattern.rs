@@ -1,6 +1,6 @@
 use nom::branch::alt;
 use nom::bytes::complete::tag;
-use nom::combinator::{map, map_res, opt, value};
+use nom::combinator::{consumed, map, map_res, opt, value};
 use nom::multi::separated_list0;
 use nom::sequence::{
     delimited, pair, preceded, separated_pair, terminated, tuple,
@@ -152,6 +152,7 @@ impl<'a> Block<'a> {
 
 #[derive(Clone, Debug)]
 pub struct Pattern<'a> {
+    pub src: &'a str,
     pub blocks: Vec<Block<'a>>,
 }
 impl<'a> IntoIterator for Pattern<'a> {
@@ -166,11 +167,11 @@ impl<'a> IntoIterator for Pattern<'a> {
 impl<'a> Pattern<'a> {
     pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
         map(
-            separated_list0(
+            consumed(separated_list0(
                 tuple((empty_space0, tag(";"), empty_space0)),
                 Block::parse,
-            ),
-            |blocks| Pattern { blocks },
+            )),
+            |(src, blocks)| Pattern { src, blocks },
         )(input)
     }
 }

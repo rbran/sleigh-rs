@@ -255,6 +255,7 @@ impl PreProcOutput {
     ) -> Option<InputSource> {
         let output_offset = self.output.as_ptr() as usize;
         let find_offset = find.as_ptr() as usize;
+        assert!(find_offset >= output_offset);
         let output_position = find_offset - output_offset;
         self.src
             .binary_search_by(|(range, _)| match (range.start, range.end) {
