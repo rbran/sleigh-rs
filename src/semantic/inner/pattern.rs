@@ -9,7 +9,7 @@ use crate::semantic::pattern::{ConstraintField, PatternError};
 use crate::semantic::table::DisassemblyError;
 use crate::semantic::varnode::{Varnode, VarnodeType};
 use crate::syntax::block;
-use crate::{semantic, InputSource};
+use crate::{semantic, InputSource, Token};
 
 use super::disassembly::{ExprBuilder, ReadScope};
 use super::{Sleigh, SolverStatus};
@@ -639,6 +639,30 @@ impl Block {
         }
     }
 }
+#[derive(Default)]
+struct TokenFinder(Option<Rc<Token>>);
+impl PatternWalker for TokenFinder {
+    fn assembly(&mut self, assembly: &Rc<Assembly>) -> ControlFlow<(), ()> {
+        let this_token = assembly.field().map(|field| &field.token);
+        match (&mut self.0, this_token) {
+            (_, None) => ControlFlow::Continue(()),
+            (None, Some(this_token)) => {
+                self.0 = Some(Rc::clone(this_token));
+                ControlFlow::Continue(())
+            }
+            (Some(token), Some(this_token))
+                if Rc::as_ptr(&token) == Rc::as_ptr(this_token) =>
+            {
+                ControlFlow::Continue(())
+            }
+            (Some(_token), Some(_this_token))
+                /*if Rc::as_ptr(&_token) != Rc::as_ptr(_this_token)*/ =>
+            {
+                ControlFlow::Break(())
+            }
+        }
+    }
+}
 
 impl TryFrom<Block> for semantic::pattern::Block {
     type Error = PatternError;
@@ -912,6 +936,7 @@ pub enum ConstraintVariable {
         src: InputSource,
         varnode: Rc<Varnode>,
     },
+    //TODO Table with const export?
 }
 impl ConstraintVariable {
     pub fn src(&self) -> &InputSource {
@@ -1186,6 +1211,11 @@ impl SubBlock {
 impl TryFrom<SubBlock> for semantic::pattern::SubBlock {
     type Error = PatternError;
     fn try_from(value: SubBlock) -> Result<Self, Self::Error> {
+        let mut token = TokenFinder::default();
+        if token.sub_block(&value).is_break() {
+            todo!("Error here, unreachable?");
+        }
+        let token = token.0;
         match value {
             SubBlock::Or { len, mut fields } => {
                 let len = len.unwrap(/*TODO*/);
@@ -1193,7 +1223,7 @@ impl TryFrom<SubBlock> for semantic::pattern::SubBlock {
                     .drain(..)
                     .map(|field| field.try_into())
                     .collect::<Result<_, _>>()?;
-                Ok(Self::Or { len, fields })
+                Ok(Self::Or { len, fields, token })
             }
             SubBlock::And { len, mut fields } => {
                 let len = len.unwrap(/*TODO*/);
@@ -1201,7 +1231,7 @@ impl TryFrom<SubBlock> for semantic::pattern::SubBlock {
                     .drain(..)
                     .map(|field| field.try_into())
                     .collect::<Result<_, _>>()?;
-                Ok(Self::And { len, fields })
+                Ok(Self::And { len, fields, token })
             }
         }
     }
@@ -1236,7 +1266,7 @@ impl ConstraintField {
         input: block::pattern::ConstraintValue<'a>,
     ) -> Result<Self, PatternError> {
         let builder = DisassemblyBuilder { sleigh };
-        let expr = builder.new_expr(input.expr)?;
+        let expr = builder.new_expr(input.expr)?.convert();
         Ok(Self { expr })
     }
 }
@@ -1296,16 +1326,29 @@ pub trait PatternWalker<B = ()> {
     }
     fn field_or(&mut self, field: &FieldOr) -> ControlFlow<B, ()> {
         match field {
-            FieldOr::Constraint { .. } => ControlFlow::Continue(()),
+            FieldOr::Constraint { assembly, .. } => self.assembly(assembly),
             FieldOr::SubPattern(sub_pattern) => self.sub_pattern(sub_pattern),
         }
     }
     fn field_and(&mut self, field: &FieldAnd) -> ControlFlow<B, ()> {
         match field {
-            FieldAnd::Constraint { .. } => ControlFlow::Continue(()),
+            FieldAnd::Constraint {
+                field: ConstraintVariable::Assembly { assembly, .. },
+                ..
+            } => self.assembly(assembly),
+            FieldAnd::Constraint {
+                field: ConstraintVariable::Varnode { varnode, .. },
+                ..
+            } => self.varnode(varnode),
             FieldAnd::Field(field) => self.reference(field),
             FieldAnd::SubPattern(sub_pattern) => self.sub_pattern(sub_pattern),
         }
+    }
+    fn assembly(&mut self, _assembly: &Rc<Assembly>) -> ControlFlow<B, ()> {
+        ControlFlow::Continue(())
+    }
+    fn varnode(&mut self, _varnode: &Rc<Varnode>) -> ControlFlow<B, ()> {
+        ControlFlow::Continue(())
     }
     fn extension(&mut self, _table: &Table) -> ControlFlow<B, ()> {
         ControlFlow::Continue(())
@@ -1318,9 +1361,8 @@ pub trait PatternWalker<B = ()> {
     }
     fn reference(&mut self, reference: &Reference) -> ControlFlow<B, ()> {
         match reference {
-            Reference::Assembly { .. } | Reference::Varnode { .. } => {
-                ControlFlow::Continue(())
-            }
+            Reference::Assembly { assembly, .. } => self.assembly(assembly),
+            Reference::Varnode { varnode, .. } => self.varnode(varnode),
             Reference::Table { table, .. } => self.table(table),
         }
     }

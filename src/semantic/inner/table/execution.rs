@@ -86,8 +86,7 @@ impl<'a, 'b, 'c> ExecutionBuilder<'a> for Builder<'a, 'b, 'c> {
                     Varnode(x) => {
                         Ok(ExprValue::new_varnode(src(), Rc::clone(x)))
                     }
-                    //only if this table have at least one constructor that
-                    //export any kind of value
+                    //only if table export some kind of value
                     Table(table)
                         if table
                             .export()

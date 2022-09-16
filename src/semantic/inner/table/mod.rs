@@ -63,7 +63,7 @@ impl Table {
         Rc::new_cyclic(|me| Self {
             name: Rc::clone(&name),
             constructors: RefCell::new(vec![]),
-            result: Rc::new(semantic::table::Table::new_empty(name)),
+            result: Rc::new(semantic::table::Table::new_dummy(name)),
             converted: RefCell::new(false),
             //it does not export, unless a exporting constructor is added
             export: RefCell::default(),
@@ -248,24 +248,27 @@ impl Table {
             }
         }
 
+        *self.converted.borrow_mut() = true;
+        let export =
+            self.export.borrow().unwrap_or_default().convert().unwrap();
+        let pattern_len = self.pattern_len().try_into().unwrap(/*TODO*/);
         let constructors = new_constructors
             .drain(..)
             .map(|(x, _)| x.convert())
             .collect();
-        *self.converted.borrow_mut() = true;
-        let mut constructors_result = self.result.constructors.borrow_mut();
-        *constructors_result = constructors;
-        let mut export_result = self.result.export.borrow_mut();
-        //TODO convert unwrap to Result
-        *export_result = self
-            .export
-            .borrow()
-            .unwrap_or_default()
-            .convert()
-            .unwrap_or_else(|| {
-                dbg!(&self);
-                unreachable!()
-            });
+
+        //TODO is this really safe?
+        //There are strong pointers to table, but there are no references to the
+        //internal data, so modify `cosntructors/export/pattern_len` should be
+        //safe
+        unsafe {
+            let ptr = Rc::as_ptr(&self.result);
+            let ptr: *mut semantic::table::Table = std::mem::transmute(ptr);
+            (*ptr).constructors = constructors;
+            (*ptr).export = export;
+            (*ptr).pattern_len = pattern_len;
+        }
+
         self.reference()
     }
 }

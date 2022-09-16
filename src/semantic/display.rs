@@ -16,12 +16,19 @@ pub enum DisplayError {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Display {
-    pub(crate) elements: Vec<Element>,
+pub struct Display(Vec<Element>);
+
+impl Display {
+    pub fn new(elements: Vec<Element>) -> Self {
+        Self(elements)
+    }
+    pub fn elements(&self) -> &[Element] {
+        &self.0
+    }
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum Element {
+pub enum Element {
     Varnode(Rc<varnode::Varnode>),
     Assembly(Rc<assembly::Assembly>),
     Disassembly(Rc<disassembly::Variable>),

@@ -68,12 +68,12 @@ impl<'a> Display<'a> {
                 unreachable!()
             };
         }
-
         //trim spaces
         let start = find_not_whitespace(display.iter().enumerate());
         let mut display = match start {
             Some(start) => {
                 let end = find_not_whitespace(display.iter().enumerate().rev())
+                    .map(|x| x + 1)
                     .unwrap_or(display.len());
                 display.drain(start..end).collect()
             }

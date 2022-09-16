@@ -32,7 +32,10 @@ impl<'a> Constructor<'a> {
     pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
         map(
             consumed(tuple((
-                terminated(opt(ident), pair(empty_space0, tag(":"))),
+                terminated(
+                    opt(ident),
+                    pair(empty_space0, tag(":")),
+                ),
                 cut(Display::parse),
                 cut(preceded(empty_space0, Pattern::parse)),
                 //disassembly is optional

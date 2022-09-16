@@ -129,6 +129,10 @@ pub enum Assertation {
 
 #[derive(Clone, Debug, Default)]
 pub struct Disassembly {
+    //TODO disassembly need to be separated between before and after pattern
+    //match but for now it is just a flag that make everything before or
+    //after if there is an inst_next on the execution.
+    pub pos: bool,
     pub vars: HashMap<Rc<str>, Rc<Variable>>,
     pub assertations: Vec<Assertation>,
 }

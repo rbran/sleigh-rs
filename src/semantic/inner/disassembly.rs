@@ -330,8 +330,40 @@ impl Disassembly {
             .iter()
             .map(|(name, var)| (Rc::clone(name), var.convert()))
             .collect();
-        let assertations =
+        let assertations: Vec<_> =
             self.assertations.drain(..).map(|x| x.convert()).collect();
-        FinalDisassembly { vars, assertations }
+        //TODO disassembly need to be separated between before and after pattern
+        //match but for now it is just a flag that make everything before or
+        //after if there is an inst_next on the execution.
+        let pos_match = assertations.iter().any(|asser| match asser {
+            semantic::disassembly::Assertation::Assignment(
+                semantic::disassembly::Assignment { left: _, right },
+            ) => right.rpn.iter().any(|ele| match ele {
+                semantic::disassembly::ExprElement::Value(
+                    semantic::disassembly::ReadScope::Assembly(ass),
+                ) => matches!(
+                    &ass.assembly_type,
+                    semantic::assembly::AssemblyType::Next(_)
+                ),
+                _ => false,
+            }),
+            semantic::disassembly::Assertation::GlobalSet(
+                semantic::disassembly::GlobalSet {
+                    address,
+                    context: _,
+                },
+            ) => match address {
+                semantic::disassembly::AddrScope::Assembly(ass) => matches!(
+                    &ass.assembly_type,
+                    semantic::assembly::AssemblyType::Next(_)
+                ),
+                _ => false,
+            },
+        });
+        FinalDisassembly {
+            pos: pos_match,
+            vars,
+            assertations,
+        }
     }
 }

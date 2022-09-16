@@ -37,9 +37,8 @@ pub struct Display(pub Vec<DisplayElement>);
 
 impl From<Display> for semantic::display::Display {
     fn from(mut value: Display) -> Self {
-        semantic::display::Display {
-            elements: value.0.drain(..).map(|x| x.into()).collect(),
-        }
+        let elements = value.0.drain(..).map(|x| x.into()).collect();
+        Self::new(elements)
     }
 }
 

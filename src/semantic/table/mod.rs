@@ -13,6 +13,7 @@ pub use super::display::{Display, DisplayError};
 use super::execution::Execution;
 pub use super::execution::ExecutionError;
 use super::inner;
+use super::pattern::PatternLen;
 pub use super::pattern::{Pattern, PatternError};
 
 //pub mod disassembly;
@@ -110,20 +111,25 @@ pub struct Constructor {
 #[derive(Clone, Debug)]
 pub struct Table {
     pub name: Rc<str>,
-    pub constructors: RefCell<Vec<Constructor>>,
-    pub export: RefCell<ExecutionExport>,
+    pub constructors: Vec<Constructor>,
+    pub export: ExecutionExport,
+    pub(crate) pattern_len: PatternLen,
 }
 
 impl Table {
+    pub(crate) fn new_dummy(name: Rc<str>) -> Self {
+        Self {
+            name,
+            constructors: vec![],
+            export: ExecutionExport::None,
+            pattern_len: PatternLen::Defined(0 /*TODO*/),
+        }
+    }
     pub fn is_root(&self) -> bool {
         self.name.as_ref() == IDENT_INSTRUCTION
     }
-    pub fn new_empty(name: Rc<str>) -> Self {
-        Self {
-            name,
-            constructors: RefCell::default(),
-            export: RefCell::default(),
-        }
+    pub fn pattern_len(&self) -> PatternLen {
+        todo!()
     }
 }
 

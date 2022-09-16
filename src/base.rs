@@ -73,11 +73,11 @@ pub(crate) fn string_inline<'a>(input: &str) -> IResult<&str, Option<String>> {
     ))(input)
 }
 
-pub(crate) type IntTypeS = i64;
-pub(crate) type IntTypeU = u64;
+pub type IntTypeS = i64;
+pub type IntTypeU = u64;
 //pub(crate) type NonZeroTypeS = core::num::NonZeroI64;
-pub(crate) type NonZeroTypeU = core::num::NonZeroU64;
-pub(crate) type FloatType = f64;
+pub type NonZeroTypeU = core::num::NonZeroU64;
+pub type FloatType = f64;
 
 #[derive(Clone, Debug)]
 pub enum Value<'a> {

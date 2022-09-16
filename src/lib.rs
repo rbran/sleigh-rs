@@ -13,7 +13,8 @@ use preprocessor::preprocess;
 use syntax::parse_syntax;
 
 pub use semantic::assembly::{Assembly, Token};
-pub use semantic::pattern::Pattern;
+pub use semantic::disassembly::Disassembly;
+pub use semantic::pattern::{Block, Pattern, SubBlock, SubPattern};
 pub use semantic::pcode_macro::PcodeMacro;
 pub use semantic::space::Space;
 pub use semantic::table::{Constructor, Table};
@@ -21,7 +22,7 @@ pub use semantic::user_function::UserFunction;
 pub use semantic::varnode::Varnode;
 pub use semantic::Sleigh;
 
-use base::{IntTypeU, NonZeroTypeU};
+pub use base::{IntTypeS, IntTypeU, NonZeroTypeU};
 
 pub const IDENT_INSTRUCTION: &str = "instruction";
 pub const IDENT_INST_START: &str = "inst_start";
@@ -35,9 +36,9 @@ pub static STATE: u32 = 0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputSource {
-    line: u32,
-    column: usize,
-    file: Rc<Path>,
+    pub line: u32,
+    pub column: usize,
+    pub file: Rc<Path>,
 }
 
 impl InputSource {
