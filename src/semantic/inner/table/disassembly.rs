@@ -1,36 +1,41 @@
 use std::rc::Rc;
 
+use crate::base::Value;
 use crate::semantic::inner::disassembly::{
-    AddrScope, Assertation, Disassembly, ReadScope, Variable, WriteScope,
+    AddrScope, Assertation, Assignment, Disassembly, ExprBuilder, GlobalSet,
+    ReadScope, Variable, WriteScope,
 };
 use crate::semantic::inner::{disassembly, Sleigh};
 use crate::semantic::varnode::{Varnode, VarnodeType};
 use crate::semantic::DisassemblyError;
+use crate::syntax::block;
+
+impl<'a> Sleigh<'a> {
+    pub(crate) fn table_disassembly(
+        &self,
+        disassembly: block::disassembly::Disassembly<'a>,
+    ) -> Result<Disassembly, DisassemblyError> {
+        let mut builder = Builder {
+            sleigh: self,
+            output: Disassembly::default(),
+        };
+        builder.build(disassembly)?;
+        Ok(builder.output)
+    }
+}
 
 #[derive(Debug)]
 pub struct Builder<'a, 'b> {
     sleigh: &'b Sleigh<'a>,
-    disassembly: &'b mut Disassembly,
+    output: Disassembly,
 }
 
 impl<'a, 'b> Builder<'a, 'b> {
-    pub fn new(
-        sleigh: &'b Sleigh<'a>,
-        disassembly: &'b mut Disassembly,
-    ) -> Self {
-        Self {
-            sleigh,
-            disassembly,
-        }
-    }
-}
-
-impl<'a, 'b> disassembly::DisassemblyBuilder<'a> for Builder<'a, 'b> {
     fn addr_scope(&self, name: &'a str) -> Result<AddrScope, DisassemblyError> {
         use super::GlobalScope::*;
         //get from local, otherwise get from global
         let src = self.sleigh.input_src(name);
-        self.disassembly
+        self.output
             .vars
             .get(name)
             .map(|local| Ok(AddrScope::Local(Rc::clone(local))))
@@ -52,8 +57,8 @@ impl<'a, 'b> disassembly::DisassemblyBuilder<'a> for Builder<'a, 'b> {
         name: &'a str,
     ) -> Result<Rc<dyn WriteScope>, DisassemblyError> {
         //if variable exists, return it
-        Ok(self
-            .disassembly
+        let var = self
+            .output
             .vars
             .get(name)
             .map(|var| var.as_write())
@@ -71,11 +76,12 @@ impl<'a, 'b> disassembly::DisassemblyBuilder<'a> for Builder<'a, 'b> {
                 //otherwise create the variable
                 let src = self.sleigh.input_src(name);
                 let var = Variable::new(name, src);
-                self.disassembly
+                self.output
                     .vars
                     .insert(Rc::clone(var.name()), Rc::clone(&var));
                 var.as_write()
-            }))
+            });
+        Ok(var)
     }
     fn context(&self, name: &'a str) -> Result<Rc<Varnode>, DisassemblyError> {
         let src = self.sleigh.input_src(name);
@@ -89,9 +95,50 @@ impl<'a, 'b> disassembly::DisassemblyBuilder<'a> for Builder<'a, 'b> {
         }
         Ok(varnode)
     }
-
-    fn insert_assertation(&mut self, ass: Assertation) {
-        self.disassembly.assertations.push(ass)
+    fn new_globalset(
+        &self,
+        input: block::disassembly::GlobalSet<'a>,
+    ) -> Result<GlobalSet, DisassemblyError> {
+        let address = match input.address {
+            Value::Number(_, int) => AddrScope::Int(int),
+            Value::Ident(ident) => self.addr_scope(ident)?,
+        };
+        let context = self.context(input.context)?;
+        Ok(GlobalSet { address, context })
+    }
+    fn new_assignment(
+        &mut self,
+        input: block::disassembly::Assignment<'a>,
+    ) -> Result<Assignment, DisassemblyError> {
+        let left = self.write_scope(input.left)?;
+        let right = self.new_expr(input.right)?;
+        Ok(Assignment { left, right })
+    }
+    fn new_assertation(
+        &mut self,
+        input: block::disassembly::Assertation<'a>,
+    ) -> Result<Assertation, DisassemblyError> {
+        match input {
+            block::disassembly::Assertation::GlobalSet(globalset) => self
+                .new_globalset(globalset)
+                .map(|global| Assertation::GlobalSet(global)),
+            block::disassembly::Assertation::Assignment(assignment) => self
+                .new_assignment(assignment)
+                .map(|ass| Assertation::Assignment(ass)),
+        }
+    }
+    fn build(
+        &mut self,
+        mut input: block::disassembly::Disassembly<'a>,
+    ) -> Result<(), DisassemblyError> {
+        input
+            .assertations
+            .drain(..)
+            .map(|input| {
+                self.new_assertation(input)
+                    .map(|ass| self.output.assertations.push(ass))
+            })
+            .collect::<Result<_, _>>()
     }
 }
 
@@ -102,7 +149,7 @@ impl<'a, 'b> disassembly::ExprBuilder<'a> for Builder<'a, 'b> {
     ) -> Result<Rc<dyn ReadScope>, DisassemblyError> {
         use super::GlobalScope::*;
         let src = self.sleigh.input_src(name);
-        self.disassembly
+        self.output
             .vars
             .get(name)
             .map(|local| Ok(local.as_read()))

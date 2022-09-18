@@ -69,7 +69,7 @@ impl<'a> Assertation<'a> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Syntax<'a> {
     assertations: Vec<Assertation<'a>>,
 }

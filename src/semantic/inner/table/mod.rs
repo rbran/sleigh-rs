@@ -9,16 +9,14 @@ use crate::semantic::inner::pattern::PatternWalker;
 use crate::semantic::table::{ExecutionError, TableErrorSub, ToTableError};
 use crate::semantic::{self, TableError};
 use crate::syntax::block;
-use crate::InputSource;
+use crate::{InputSource, IDENT_INSTRUCTION};
 
-use self::disassembly::Builder;
-
-use super::disassembly::{Disassembly, DisassemblyBuilder};
+use super::disassembly::Disassembly;
 use super::display::Display;
 use super::execution::ExecutionExport;
 use super::execution::{Execution, ExecutionBuilder};
 use super::pattern::{Pattern, PatternConstraint, PatternLen};
-use super::{FieldSize, GlobalScope, Sleigh, SolverStatus, WithBlock};
+use super::{FieldSize, GlobalScope, Sleigh, SolverStatus, WithBlockCurrent};
 
 #[derive(Clone)]
 pub struct Table {
@@ -71,6 +69,9 @@ impl Table {
             //export_time: RefCell::default(),
             me: Weak::clone(me),
         })
+    }
+    pub fn is_root(&self) -> bool {
+        self.name.as_ref() == IDENT_INSTRUCTION
     }
     pub fn me(&self) -> Rc<Self> {
         self.me.upgrade().unwrap()
@@ -334,43 +335,31 @@ impl Constructor {
 impl<'a> Sleigh<'a> {
     pub(crate) fn insert_table_constructor(
         &mut self,
-        with_block: &Option<WithBlock>,
+        with_block_current: &mut WithBlockCurrent<'a>,
         constructor: block::table::Constructor<'a>,
     ) -> Result<(), TableError> {
         let table_pos = self.input_src(constructor.src);
-        let is_root = constructor.is_root();
-        //if this is root table (instructions) check the with block table first,
-        //otherwise use the table directly
-        let table = match (is_root, with_block) {
-            (true, Some(block)) => Rc::clone(&block.table),
-            _ => self
-                .get_table_or_create_empty(constructor.table_name())
-                .ok_or(
-                    TableErrorSub::TableNameInvalid.to_table(table_pos.clone()),
-                )?,
-        };
+        let table_name =
+            with_block_current.table_name(constructor.table_name());
+        let table = self.get_table_or_create_empty(table_name).ok_or(
+            TableErrorSub::TableNameInvalid.to_table(table_pos.clone()),
+        )?;
 
-        //TODO improve the new/extend interface for pattern
-        let mut pattern = with_block
-            .as_ref()
-            .map(|with_block| with_block.pattern.clone())
-            .unwrap_or_default();
-        pattern
-            .extend(self, constructor.pattern)
+        let pattern = with_block_current
+            .pattern(constructor.pattern)
             .to_table(table_pos.clone())?;
+        let pattern =
+            Pattern::new(self, pattern).to_table(table_pos.clone())?;
 
-        let disassembly = {
-            let mut disassembly = with_block
-                .as_ref()
-                .map(|with_block| with_block.disassembly.clone())
-                .unwrap_or_default();
-            let mut builder = Builder::new(self, &mut disassembly);
-            if let Some(input) = constructor.dissasembly {
-                builder.extend(input).to_table(table_pos.clone())?;
-            }
-            disassembly
-        };
+        let disassembly =
+            with_block_current.disassembly(constructor.dissasembly);
+        let disassembly = disassembly
+            .map(|disassembly| self.table_disassembly(disassembly))
+            .transpose()
+            .to_table(table_pos.clone())?
+            .unwrap_or_default();
 
+        let is_root = table.is_root();
         let display =
             Display::new(constructor.display, self, &disassembly, is_root)
                 .to_table(table_pos.clone())?;

@@ -184,7 +184,7 @@ impl TryFrom<PatternLen> for semantic::pattern::PatternLen {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Pattern {
     pub len: PatternLen,
     //if the pattern the table it belongs
@@ -192,82 +192,17 @@ pub struct Pattern {
 }
 
 impl Pattern {
-    //TODO improve the new/extend interface
-    //fn new(
-    //    sleigh: &Sleigh,
-    //    mut input: block::pattern::Pattern,
-    //) -> Result<Self, PatternError> {
-    //    let mut new = Self::default();
-    //    new.blocks = input
-    //        .blocks
-    //        .drain(..)
-    //        .map(|x| Block::new(sleigh, x))
-    //        .collect::<Result<Vec<_>, _>>()?;
-    //    Ok(new)
-    //}
-    pub fn extend(
-        &mut self,
+    pub fn new(
         sleigh: &Sleigh,
         mut input: block::pattern::Pattern,
-    ) -> Result<(), PatternError> {
-        //the last block from self will be combined with the first from
-        //the input block with and & op
-        let last_block = self.blocks.pop();
-        let blocks = match (last_block, input.blocks.len()) {
-            //no input, do nothing
-            (_, 0) => return Ok(()),
-            //self is empty, just parse the input
-            (None, _) => input.blocks.drain(..),
-            //self exists, merge last block with the first of the input
-            (Some(last_block), _) => {
-                let mut blocks = input.blocks.drain(..);
-                //extend the last block with the first block from the with block
-                let first = match blocks.next() {
-                    Some(block::pattern::Block {
-                        op: Some(block::pattern::Op::Or),
-                        ..
-                    }) => {
-                        todo!("TODO Or extention/error")
-                    }
-                    None => unreachable!(),
-                    Some(block) => block,
-                };
-                let new_block = Block::new(sleigh, first)?;
-                match (last_block, new_block) {
-                    (Block::Or { .. }, _) | (_, Block::Or { .. }) => {
-                        todo!("TODO Or extention/error")
-                    }
-                    (Block::Expansive { .. }, _)
-                    | (_, Block::Expansive { .. }) => {
-                        todo!("TODO expansive extention/error")
-                    }
-                    (
-                        Block::And {
-                            fields: mut last_fields,
-                            ..
-                        },
-                        Block::And {
-                            fields: mut new_fields,
-                            ..
-                        },
-                    ) => {
-                        let len = None;
-                        last_fields.extend(new_fields.drain(..));
-                        self.blocks.push(Block::And {
-                            fields: last_fields,
-                            len,
-                        })
-                    }
-                }
-                blocks
-            }
-        };
-        //parse the input
-        for block in blocks {
-            let block = Block::new(sleigh, block)?;
-            self.blocks.push(block);
-        }
-        Ok(())
+    ) -> Result<Self, PatternError> {
+        let blocks = input
+            .blocks
+            .drain(..)
+            .map(|x| Block::new(sleigh, x))
+            .collect::<Result<Vec<_>, _>>()?;
+        let len = PatternLen::default();
+        Ok(Self { len, blocks })
     }
     pub fn src(&self) -> &InputSource {
         self.blocks.first().unwrap(/*TODO*/).src()
@@ -356,8 +291,11 @@ pub enum Block {
         len: Option<IntTypeU>,
         fields: Vec<FieldAnd>,
     },
-    //TODO Pass-Through block, just call a table with optional contexts.
-    //Can be both expansive and non-expansive
+    //Non expansive, and-bound, call to itself
+    //PassThrough {
+    //    self_table: Rc<Table>,
+    //    context: Vec<FieldAnd>,
+    //},
 
     //And block but with one or more sub tables that extend the size
     Expansive {

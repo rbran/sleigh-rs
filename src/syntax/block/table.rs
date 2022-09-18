@@ -1,5 +1,4 @@
 use crate::base::{empty_space0, ident};
-use crate::IDENT_INSTRUCTION;
 
 use nom::branch::alt;
 use nom::bytes::complete::tag;
@@ -15,7 +14,7 @@ use super::pattern::Pattern;
 #[derive(Clone, Debug)]
 pub struct Constructor<'a> {
     pub src: &'a str,
-    pub table_name: Option<&'a str>,
+    pub table_name: &'a str,
     pub display: Display<'a>,
     pub pattern: Pattern<'a>,
     pub dissasembly: Option<Disassembly<'a>>,
@@ -24,16 +23,14 @@ pub struct Constructor<'a> {
 
 impl<'a> Constructor<'a> {
     pub fn table_name(&self) -> &'a str {
-        self.table_name.unwrap_or(IDENT_INSTRUCTION)
-    }
-    pub fn is_root(&self) -> bool {
-        self.table_name() == IDENT_INSTRUCTION
+        &self.table_name
     }
     pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
         map(
             consumed(tuple((
                 terminated(
-                    opt(ident),
+                    //the ident or "" for the current position
+                    alt((ident, nom::bytes::complete::take(0usize))),
                     pair(empty_space0, tag(":")),
                 ),
                 cut(Display::parse),

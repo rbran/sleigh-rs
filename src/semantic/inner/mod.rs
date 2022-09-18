@@ -29,7 +29,7 @@ pub use self::pattern::{Block, Pattern};
 pub use self::pcode_macro::PcodeMacro;
 pub use self::table::{Constructor, Table};
 use self::user_function::UserFunction;
-pub use self::with_block::WithBlock;
+use self::with_block::WithBlockCurrent;
 
 pub use super::space::Space;
 pub use super::varnode::Varnode;
@@ -635,8 +635,8 @@ impl<'a> Sleigh<'a> {
     }
     fn process(
         &mut self,
-        with_block: Option<WithBlock>,
-        syntax: impl Iterator<Item = syntax::Assertation<'a>>,
+        with_block_current: &mut WithBlockCurrent<'a>,
+        syntax: syntax::Syntax<'a>,
     ) -> Result<(), SemanticError> {
         for assertation in syntax {
             use syntax::define::Define::*;
@@ -652,18 +652,14 @@ impl<'a> Sleigh<'a> {
                 Define(Token(x)) => self.create_token(x)?,
                 Attach(x) => self.create_attach(x)?,
                 TableConstructor(x) => {
-                    self.insert_table_constructor(&with_block, x)?
+                    self.insert_table_constructor(with_block_current, x)?
                 }
                 PcodeMacro(x) => self.create_pcode_macro(x)?,
-                WithBlock(block) => {
+                WithBlock(with_block) => {
                     //TODO remove this clone
-                    let body = block.body.clone();
-                    let with_block = crate::semantic::inner::WithBlock::new(
-                        self,
-                        &with_block,
-                        block,
-                    )?;
-                    self.process(Some(with_block), body.into_iter())?;
+                    let body = with_block_current.push(with_block);
+                    self.process(with_block_current, body)?;
+                    with_block_current.pop();
                 }
             }
         }
@@ -708,7 +704,7 @@ impl<'a> Sleigh<'a> {
             .idents
             .insert(Rc::clone(def.name()), GlobalScope::Table(def));
 
-        sleigh.process(None, syntax.into_iter())?;
+        sleigh.process(&mut WithBlockCurrent::default(), syntax)?;
         Ok(sleigh)
     }
 }

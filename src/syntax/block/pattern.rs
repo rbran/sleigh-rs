@@ -152,7 +152,6 @@ impl<'a> Block<'a> {
 
 #[derive(Clone, Debug)]
 pub struct Pattern<'a> {
-    pub src: &'a str,
     pub blocks: Vec<Block<'a>>,
 }
 impl<'a> IntoIterator for Pattern<'a> {
@@ -167,11 +166,11 @@ impl<'a> IntoIterator for Pattern<'a> {
 impl<'a> Pattern<'a> {
     pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
         map(
-            consumed(separated_list0(
+            separated_list0(
                 tuple((empty_space0, tag(";"), empty_space0)),
                 Block::parse,
-            )),
-            |(src, blocks)| Pattern { src, blocks },
+            ),
+            |blocks| Pattern { blocks },
         )(input)
     }
 }
