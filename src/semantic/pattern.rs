@@ -28,30 +28,25 @@ from_error!(PatternError, DisassemblyError, ConstraintExpr);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PatternLen {
     Defined(IntTypeU),
-    Range {
-        min: IntTypeU,
-        max: Option<IntTypeU>,
-    },
+    Range { min: IntTypeU, max: IntTypeU },
 }
 
 impl PatternLen {
     pub fn min(&self) -> IntTypeU {
         match self {
-            PatternLen::Defined(min) | PatternLen::Range { min, max: _ } => {
-                *min
-            }
+            Self::Defined(min) | Self::Range { min, max: _ } => *min,
         }
     }
-    pub fn max(&self) -> Option<IntTypeU> {
+    pub fn max(&self) -> IntTypeU {
         match self {
-            PatternLen::Defined(value) => Some(*value),
-            PatternLen::Range { min: _, max } => *max,
+            Self::Defined(value) => *value,
+            Self::Range { min: _, max } => *max,
         }
     }
     pub fn defined(&self) -> Option<IntTypeU> {
         match self {
-            PatternLen::Defined(value) => Some(*value),
-            PatternLen::Range { .. } => None,
+            Self::Defined(value) => Some(*value),
+            Self::Range { .. } => None,
         }
     }
 }
@@ -76,17 +71,20 @@ impl Pattern {
 
 #[derive(Clone, Debug)]
 pub enum Block {
-    //block with multiple elements unified with ORs
-    Or {
-        len: IntTypeU,
-        fields: Vec<FieldOr>,
-    },
-    //block with multiple elements unified with ANDs
+    ///block with multiple elements unified with ORs
+    Or { len: IntTypeU, fields: Vec<FieldOr> },
+    ///block with multiple elements unified with ANDs
     And {
         len: IntTypeU,
         fields: Vec<FieldAnd>,
     },
-    //And block but with one or more sub tables that extend the size
+    ///Non expansive, and-bound, call to itself
+    PassThrough {
+        len: PatternLen,
+        self_table: Rc<Table>,
+        fields: Vec<FieldAnd>,
+    },
+    ///And block but with one or more sub tables that extend the size
     Expansive {
         //left/right len need to be smaller then extension min_len
         left_len: IntTypeU,
@@ -101,10 +99,11 @@ pub enum Block {
 impl Block {
     pub fn len(&self) -> PatternLen {
         match self {
-            Block::And { len, .. } | Block::Or { len, .. } => {
+            Self::PassThrough { self_table, .. } => self_table.pattern_len(),
+            Self::And { len, .. } | Self::Or { len, .. } => {
                 PatternLen::Defined(*len)
             }
-            Block::Expansive { extension, .. } => extension.pattern_len(),
+            Self::Expansive { extension, .. } => extension.pattern_len(),
         }
     }
 }
@@ -264,7 +263,7 @@ pub trait PatternWalker<B = ()> {
             Block::Or { fields, .. } => {
                 fields.iter().try_for_each(|field| self.field_or(field))
             }
-            Block::And { fields, .. } => {
+            Block::PassThrough { fields, .. } | Block::And { fields, .. } => {
                 fields.iter().try_for_each(|field| self.field_and(field))
             }
             Block::Expansive {

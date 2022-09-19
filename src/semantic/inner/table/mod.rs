@@ -2,10 +2,8 @@ pub mod disassembly;
 pub mod execution;
 
 use std::cell::RefCell;
-use std::ops::ControlFlow;
 use std::rc::{Rc, Weak};
 
-use crate::semantic::inner::pattern::PatternWalker;
 use crate::semantic::table::{ExecutionError, TableErrorSub, ToTableError};
 use crate::semantic::{self, TableError};
 use crate::syntax::block;
@@ -15,7 +13,7 @@ use super::disassembly::Disassembly;
 use super::display::Display;
 use super::execution::ExecutionExport;
 use super::execution::{Execution, ExecutionBuilder};
-use super::pattern::{Pattern, PatternConstraint, PatternLen};
+use super::pattern::{Pattern, PatternConstraint, TablePatternLen};
 use super::{FieldSize, GlobalScope, Sleigh, SolverStatus, WithBlockCurrent};
 
 #[derive(Clone)]
@@ -36,7 +34,7 @@ pub struct Table {
     //Some(ExecutionExport::None) mean that this table doesn't export
     export: RefCell<Option<ExecutionExport>>,
 
-    pattern_len: RefCell<PatternLen>,
+    pattern_len: RefCell<TablePatternLen>,
 
     //used to differ empty tables and ones that got converted
     converted: RefCell<bool>,
@@ -81,39 +79,8 @@ impl Table {
     }
     pub fn add_constructor(
         &self,
-        mut constructor: Constructor,
+        constructor: Constructor,
     ) -> Result<(), TableError> {
-        //HACK: Find constructors that the pattern points to this table
-        //in a (recursive)
-        //TODO: this should be part of a bigger recursive identification,
-        //one that is able to also identify indirect/incremental recursive.
-        struct RecFind(*const Table);
-        impl PatternWalker for RecFind {
-            fn extension(&mut self, table: &Table) -> ControlFlow<(), ()> {
-                if Weak::as_ptr(&table.me) == self.0 {
-                    unimplemented!("Non Self Recursive with empty body")
-                } else {
-                    ControlFlow::Continue(())
-                }
-            }
-            fn table(&mut self, table: &Table) -> ControlFlow<(), ()> {
-                if Weak::as_ptr(&table.me) == self.0 {
-                    ControlFlow::Break(())
-                } else {
-                    ControlFlow::Continue(())
-                }
-            }
-        }
-        let self_ptr = Weak::as_ptr(&self.me);
-        let mut find = RecFind(self_ptr);
-        if find.start(&constructor.pattern).is_break() {
-            if constructor.pattern.blocks.len() == 1 {
-                constructor.pattern.len = PatternLen::Recursive;
-            } else {
-                unimplemented!("Non Self Recursive with empty body")
-            }
-        }
-
         //all the constructor need to export or none can export
         //if this constructor is not `unimpl` update/verify the return type
         if let Some(execution) = constructor.execution() {
@@ -153,12 +120,16 @@ impl Table {
                 .iter_mut()
                 .map(|cons| cons.solve(solved).map(|_| cons.pattern.len()));
             if let Some(len) = len_iter.next() {
-                let mut len = len?;
+                let mut len: TablePatternLen = len?.into();
                 for len_iter in len_iter {
-                    let len_iter = len_iter?;
+                    let len_iter: TablePatternLen = len_iter?.into();
                     len = len.combine(len_iter)
                 }
-                *self.pattern_len.borrow_mut() = len;
+                let mut pattern_len = self.pattern_len.borrow_mut();
+                if *pattern_len != len {
+                    solved.i_did_a_thing();
+                    *pattern_len = len;
+                }
             }
         }
 
@@ -215,7 +186,7 @@ impl Table {
         }
         Ok(())
     }
-    pub fn pattern_len(&self) -> PatternLen {
+    pub fn pattern_len(&self) -> TablePatternLen {
         *self.pattern_len.borrow()
     }
     pub fn convert(&self) -> Rc<semantic::table::Table> {
@@ -349,7 +320,7 @@ impl<'a> Sleigh<'a> {
             .pattern(constructor.pattern)
             .to_table(table_pos.clone())?;
         let pattern =
-            Pattern::new(self, pattern).to_table(table_pos.clone())?;
+            Pattern::new(self, pattern, &table).to_table(table_pos.clone())?;
 
         let disassembly =
             with_block_current.disassembly(constructor.dissasembly);

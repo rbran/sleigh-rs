@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::ops::ControlFlow;
 use std::rc::Rc;
 
@@ -46,51 +47,185 @@ impl PatternConstraint {
     }
 }
 
+//Describe a Block/Pattern possible len
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PatternLen {
+    //Size not calculated yet
     #[default]
     Unrestricted,
 
-    //self Recursive that don't add any body
-    Recursive,
-    //recursive with a min len
-    Min(IntTypeU),
+    //self-Recursive, non-incremental, basically unrestricted, but indicating
+    //to tables that this don't change the table.pattern_len len directly.
+    //Value is the root_size. The final len, will never be smaller then the
+    //root_size, but this is NOT the min len for the final pattern.
+    Recursive(Option<IntTypeU>),
 
-    //Non-Recursive related
+    //possible to have multiple sizes, resulted from one or more blocks calling
+    //a table with multiple constructors, with two or more having diferent sizes
     Range {
         min: IntTypeU,
         max: IntTypeU,
     },
+    //only one possible size
     Restricted(IntTypeU),
 }
 impl PatternLen {
-    pub fn min(&self) -> Option<IntTypeU> {
+    pub fn is_some(&self) -> bool {
+        !self.is_none()
+    }
+    pub fn is_none(&self) -> bool {
+        matches!(self, Self::Unrestricted | Self::Recursive(_))
+    }
+    pub fn single_len(&self) -> Option<IntTypeU> {
         match self {
-            Self::Unrestricted | Self::Recursive => None,
-            Self::Restricted(min)
-            | Self::Min(min)
-            | Self::Range { min, .. } => Some(*min),
+            Self::Restricted(value) => Some(*value),
+            Self::Unrestricted
+            | Self::Recursive(_)
+            | Self::Range { .. }
+            /*| Self::Recursive { .. }*/ => None,
         }
     }
+    pub fn add_value(self, add: IntTypeU) -> Self {
+        match self {
+            Self::Unrestricted => self,
+            //recursive block can't be concat at yet
+            Self::Recursive(_) => unimplemented!("Incremental Self-Recursive"),
+            Self::Restricted(value) => Self::Restricted(value + add),
+            Self::Range { min, max } => Self::Range {
+                min: min + add,
+                max: max + add,
+            },
+        }
+    }
+    pub fn add(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Unrestricted, _) | (_, Self::Unrestricted) => {
+                Self::Unrestricted
+            }
+            (Self::Recursive(_), _) | (_, Self::Recursive(_)) => {
+                unimplemented!("Incremental Self-Recursive")
+            }
+            (Self::Restricted(x), Self::Restricted(y)) => {
+                Self::Restricted(x + y)
+            }
+            (Self::Restricted(ix @ ax), Self::Range { min: iy, max: ay })
+            | (Self::Range { min: ix, max: ax }, Self::Restricted(iy @ ay))
+            | (
+                Self::Range { min: ix, max: ax },
+                Self::Range { min: iy, max: ay },
+            ) => {
+                let min = ix + iy;
+                let max = ax + ay;
+                Self::Range { min, max }
+            }
+        }
+    }
+}
+
+impl From<TablePatternLen> for PatternLen {
+    fn from(len: TablePatternLen) -> Self {
+        match len {
+            TablePatternLen::Unrestricted => PatternLen::Unrestricted,
+            TablePatternLen::Range { min, max } => {
+                PatternLen::Range { min, max }
+            }
+            TablePatternLen::Restricted(value) => PatternLen::Restricted(value),
+        }
+    }
+}
+impl From<PatternLen> for TablePatternLen {
+    fn from(len: PatternLen) -> Self {
+        match len {
+            PatternLen::Unrestricted => TablePatternLen::Unrestricted,
+            //PatternLen::Recursive(value) => TablePatternLen::Recursive {
+            //    min: value,
+            //    max: value,
+            //},
+            PatternLen::Recursive(None) => TablePatternLen::Unrestricted,
+            PatternLen::Restricted(len) |
+            PatternLen::Recursive(Some(len)) => 
+                TablePatternLen::Restricted(len),
+            PatternLen::Range { min, max } => {
+                TablePatternLen::Range { min, max }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TablePatternLen {
+    //if at least one constructor is Unrestricted, the result will be
+    //unrestricted
+    #[default]
+    Unrestricted,
+
+    //if at lease one constructor is Rescursive, min and max will be transformed
+    //into Range after all the the constructors are combined.
+    //Recursive {
+    //    min: IntTypeU,
+    //    max: IntTypeU,
+    //},
+    //NOTE thinking better, recursive and range act exacly the same way,
+    //just just use one for now.
+
+    //if at least two constructors have diferent lens, their len will be in this
+    //range
+    Range {
+        min: IntTypeU,
+        max: IntTypeU,
+    },
+    //if all constructors processed have this len.
+    Restricted(IntTypeU),
+}
+impl TablePatternLen {
+    //pub fn min(&self) -> Option<IntTypeU> {
+    //    match self {
+    //        Self::Unrestricted | Self::Recursive(_) => None,
+    //        Self::Restricted(min)
+    //        | Self::Min(min)
+    //        | Self::Range { min, .. } => Some(*min),
+    //    }
+    //}
     //pub fn max(&self) -> Option<IntTypeU> {
     //    match self {
     //        Self::Unrestricted | Self::Min(_) => None,
     //        Self::Restricted(max) | Self::Range { max, .. } => Some(*max),
     //    }
     //}
+    pub fn set_min(self, new_min: IntTypeU) -> Option<Self> {
+        match self {
+            Self::Unrestricted => None,
+            Self::Restricted(len) => Some(Self::Restricted(len.min(new_min))),
+            Self::Range { min, max } => {
+                match (new_min.cmp(&min), new_min.cmp(&max)) {
+                    //equal to max, so we restricted this len
+                    (_, Ordering::Equal) => Some(Self::Restricted(min)),
+                    //new min is smaller or equal then the range, nothing change
+                    (Ordering::Less | Ordering::Equal, _) => Some(self),
+                    //new_min is inside the range
+                    (Ordering::Greater, Ordering::Less) => {
+                        Some(Self::Range { min: new_min, max })
+                    }
+                    //new_min is greater then the range
+                    (_, Ordering::Greater) => None,
+                    //can only be reached if min > max, so invalid range
+                    (_, _) => unreachable!(),
+                }
+            }
+        }
+    }
     pub fn is_some(&self) -> bool {
         !self.is_none()
     }
     pub fn is_none(&self) -> bool {
-        matches!(self, Self::Unrestricted | Self::Recursive)
+        matches!(self, Self::Unrestricted)
     }
     pub fn single_len(&self) -> Option<IntTypeU> {
         match self {
             Self::Restricted(value) => Some(*value),
             Self::Unrestricted
-            | Self::Min(_)
             | Self::Range { .. }
-            | Self::Recursive => None,
+            /*| Self::Recursive { .. }*/ => None,
         }
     }
     pub fn combine(self, other: Self) -> Self {
@@ -99,12 +234,6 @@ impl PatternLen {
             (Self::Unrestricted, _) | (_, Self::Unrestricted) => {
                 Self::Unrestricted
             }
-            (Self::Recursive, other) | (other, Self::Recursive) => other,
-            (Self::Restricted(x), Self::Min(y))
-            | (Self::Min(x), Self::Restricted(y))
-            | (Self::Min(x), Self::Min(y))
-            | (Self::Min(x), Self::Range { min: y, .. })
-            | (Self::Range { min: x, .. }, Self::Min(y)) => Self::Min(x.min(y)),
             (Self::Restricted(x), Self::Restricted(y)) => match x.cmp(&y) {
                 Less => Self::Range { min: x, max: y },
                 Equal => Self::Restricted(x),
@@ -126,60 +255,17 @@ impl PatternLen {
             }
         }
     }
-    pub fn add_value(self, add: IntTypeU) -> Self {
-        match self {
-            Self::Unrestricted | Self::Recursive => self,
-            Self::Restricted(value) => Self::Restricted(value + add),
-            Self::Min(value) => Self::Min(value + add),
-            Self::Range { min, max } => Self::Range {
-                min: min + add,
-                max: max + add,
-            },
-        }
-    }
-    pub fn add(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Unrestricted, _) | (_, Self::Unrestricted) => {
-                Self::Unrestricted
-            }
-            (Self::Recursive, _) | (_, Self::Recursive) => Self::Recursive,
-            (Self::Restricted(x), Self::Min(y))
-            | (Self::Min(x), Self::Restricted(y))
-            | (Self::Min(x), Self::Min(y))
-            | (Self::Min(x), Self::Range { min: y, .. })
-            | (Self::Range { min: x, .. }, Self::Min(y)) => Self::Min(x + y),
-            (Self::Restricted(x), Self::Restricted(y)) => {
-                Self::Restricted(x + y)
-            }
-            (Self::Restricted(ix @ ax), Self::Range { min: iy, max: ay })
-            | (Self::Range { min: ix, max: ax }, Self::Restricted(iy @ ay))
-            | (
-                Self::Range { min: ix, max: ax },
-                Self::Range { min: iy, max: ay },
-            ) => {
-                let min = ix + iy;
-                let max = ax + ay;
-                Self::Range { min, max }
-            }
-        }
-    }
 }
 
-impl TryFrom<PatternLen> for semantic::pattern::PatternLen {
+impl TryFrom<TablePatternLen> for semantic::pattern::PatternLen {
     type Error = PatternError;
 
-    fn try_from(value: PatternLen) -> Result<Self, Self::Error> {
+    fn try_from(value: TablePatternLen) -> Result<Self, Self::Error> {
         match value {
-            PatternLen::Unrestricted => todo!(),
-            PatternLen::Recursive => {
-                todo!()
-            }
-            PatternLen::Min(min) => Ok(Self::Range { min, max: None }),
-            PatternLen::Range { min, max } => Ok(Self::Range {
-                min,
-                max: Some(max),
-            }),
-            PatternLen::Restricted(value) => Ok(Self::Defined(value)),
+            //TODO error here
+            TablePatternLen::Unrestricted => unreachable!(),
+            TablePatternLen::Range { min, max } => Ok(Self::Range { min, max }),
+            TablePatternLen::Restricted(value) => Ok(Self::Defined(value)),
         }
     }
 }
@@ -187,7 +273,6 @@ impl TryFrom<PatternLen> for semantic::pattern::PatternLen {
 #[derive(Clone, Debug)]
 pub struct Pattern {
     pub len: PatternLen,
-    //if the pattern the table it belongs
     pub blocks: Vec<Block>,
 }
 
@@ -195,13 +280,30 @@ impl Pattern {
     pub fn new(
         sleigh: &Sleigh,
         mut input: block::pattern::Pattern,
+        table: &Rc<Table>,
     ) -> Result<Self, PatternError> {
+        let mut recursive = false;
         let blocks = input
             .blocks
             .drain(..)
-            .map(|x| Block::new(sleigh, x))
+            .map(|x| {
+                let block = Block::new(sleigh, x, table);
+                recursive |= matches!(&block, Ok(Block::PassThrough { .. }));
+                block
+            })
             .collect::<Result<Vec<_>, _>>()?;
-        let len = PatternLen::default();
+        let len = if recursive {
+            //HACK: make this more elegant
+            //recursive is only allowed if it is a single block,
+            //AKA non-incremental
+            if blocks.len() != 1 {
+                //TODO error here
+                todo!("Implement invalid recursive error")
+            }
+            PatternLen::Recursive(blocks[0].root_len())
+        } else {
+            PatternLen::default()
+        };
         Ok(Self { len, blocks })
     }
     pub fn src(&self) -> &InputSource {
@@ -214,7 +316,6 @@ impl Pattern {
         if self.len.is_some() {
             return Ok(());
         }
-        //FUTURE: convert into iterator with try_reduce
         let mut blocks = self.blocks.iter_mut();
         let mut len = if let Some(block) = blocks.next() {
             block.solve(solved)?;
@@ -229,36 +330,29 @@ impl Pattern {
         if !len.is_none() {
             solved.iam_not_finished_location(self.src(), file!(), line!());
         }
-        if matches!(self.len, PatternLen::Recursive) {
-            if len.is_some() {
-                solved.i_did_a_thing();
-                self.len = len;
-            }
-        } else {
-            if len != self.len {
-                solved.i_did_a_thing();
-                self.len = len;
-            }
+        if len != self.len {
+            solved.i_did_a_thing();
+            self.len = len;
         }
         Ok(())
     }
     pub fn len(&self) -> PatternLen {
         self.len
     }
-    pub fn root_len(&self) -> IntTypeU {
+    pub fn root_len(&self) -> Option<IntTypeU> {
         self.blocks.iter().map(|block| block.root_len()).sum()
     }
     pub fn constrain(&self, constraint: &mut BitSlice) {
         let mut current = constraint;
         for block in self.blocks.iter() {
             block.constrain(current);
-            let block_len = block.root_len();
+            let block_len = block.root_len().unwrap();
             current = &mut current[block_len.try_into().unwrap()..];
         }
     }
     pub fn pattern_constrait(&self) -> PatternConstraint {
         //TODO unwrap into error
-        let size = self.root_len();
+        let size = self.root_len().unwrap();
         let mut value = bitvec![0; size.try_into().unwrap()];
         self.constrain(&mut value);
         PatternConstraint(value)
@@ -269,13 +363,15 @@ impl TryFrom<Pattern> for semantic::pattern::Pattern {
     type Error = PatternError;
 
     fn try_from(mut value: Pattern) -> Result<Self, Self::Error> {
-        let len = value.len.try_into().unwrap(/*TODO*/);
+        //TODO error here
+        let len: TablePatternLen = value.len.try_into().unwrap();
+        let len = len.try_into().unwrap();
         let blocks = value
             .blocks
             .drain(..)
             .map(|x| x.try_into())
             .collect::<Result<_, _>>()?;
-        Ok(semantic::pattern::Pattern::new(len, blocks))
+        Ok(Self::new(len, blocks))
     }
 }
 
@@ -292,10 +388,12 @@ pub enum Block {
         fields: Vec<FieldAnd>,
     },
     //Non expansive, and-bound, call to itself
-    //PassThrough {
-    //    self_table: Rc<Table>,
-    //    context: Vec<FieldAnd>,
-    //},
+    PassThrough {
+        len: PatternLen,
+        root_len: Option<IntTypeU>,
+        self_table: Rc<Table>,
+        fields: Vec<FieldAnd>,
+    },
 
     //And block but with one or more sub tables that extend the size
     Expansive {
@@ -366,16 +464,13 @@ fn process_and(
                 }
                 len
             }
-            FieldAnd::Field(Reference::Table { table, src }) => {
+            FieldAnd::Field(Reference::Table { table, src: _ }) => {
                 //on FieldAnd tables need to have a len smaller then the
                 //current block
                 match table.pattern_len() {
-                    PatternLen::Unrestricted => None,
-                    PatternLen::Range { max: value, .. }
-                    | PatternLen::Restricted(value) => Some(value),
-                    PatternLen::Recursive | PatternLen::Min(_) => {
-                        todo!("Invalid size at: {}", src)
-                    }
+                    TablePatternLen::Unrestricted => None,
+                    TablePatternLen::Range { max: value, .. }
+                    | TablePatternLen::Restricted(value) => Some(value),
                 }
             }
         };
@@ -395,6 +490,7 @@ impl Block {
     fn new(
         sleigh: &Sleigh,
         mut input: block::pattern::Block,
+        self_table: &Rc<Table>,
     ) -> Result<Self, PatternError> {
         let expansive = input
             .elements
@@ -423,6 +519,14 @@ impl Block {
                         };
                         match sleigh.get_pattern_field(field)? {
                             Reference::Table { src, table } => {
+                                if Rc::as_ptr(&table) == Rc::as_ptr(self_table)
+                                {
+                                    //TODO implement the expansive non-incremental
+                                    //with self-recursive
+                                    unimplemented!(
+                                        "Unable to expand with self recursive"
+                                    )
+                                }
                                 extension
                                     .replace(table)
                                     .map_or(Ok(()), |_| {
@@ -466,12 +570,36 @@ impl Block {
                     Self::Or { len, fields }
                 }
                 Some(block::pattern::Op::And) | None => {
+                    let mut recursive = false;
                     let fields: Vec<FieldAnd> = input
                         .elements
                         .drain(..)
-                        .map(|ele| FieldAnd::new(sleigh, ele.field))
+                        .filter_map(|ele| {
+                            let field = FieldAnd::new(sleigh, ele.field);
+                            let this_rec = matches!(
+                                &field,
+                                Ok(FieldAnd::Field(
+                                        Reference::Table{table, ..}
+                                )) if Rc::as_ptr(table) == Rc::as_ptr(self_table)
+                            );
+                            recursive |= this_rec;
+                            if this_rec {
+                                None
+                            } else {
+                                Some(field)
+                            }
+                        })
                         .collect::<Result<_, _>>()?;
-                    Self::And { len, fields }
+                    if recursive {
+                        Self::PassThrough {
+                            fields,
+                            self_table: Rc::clone(self_table),
+                            root_len: None,
+                            len: PatternLen::Recursive(None),
+                        }
+                    } else {
+                        Self::And { len, fields }
+                    }
                 }
             };
             Ok(new)
@@ -480,8 +608,10 @@ impl Block {
     pub fn src(&self) -> &InputSource {
         match self {
             Self::Or { fields, .. } => fields.last().unwrap(/*TODO*/).src(),
-            Self::And { fields, .. } => fields.last().unwrap(/*TODO*/).src(),
             Self::Expansive { left, .. } => left.last().unwrap(/*TODO*/).src(),
+            Self::PassThrough { fields, .. } | Self::And { fields, .. } => {
+                fields.last().unwrap(/*TODO*/).src()
+            }
         }
     }
     pub fn solve(
@@ -490,6 +620,31 @@ impl Block {
     ) -> Result<(), PatternError> {
         match self {
             Self::Or { len, fields } => process_or(len, fields, solved),
+            Self::PassThrough {
+                fields,
+                root_len,
+                len,
+                self_table,
+            } => {
+                process_and(root_len, fields, solved)?;
+                //if the table and root_len have a known value, combine the
+                //table len with the root_len being the min possible len.
+                let table_len = self_table.pattern_len();
+                let new_len: PatternLen = if let (true, Some(root_len)) =
+                    (table_len.is_some(), root_len.as_ref())
+                {
+                    //TODO error here
+                    table_len.set_min(*root_len).unwrap().into()
+                } else {
+                    //otherwise just return recursive
+                    PatternLen::Recursive(*root_len)
+                };
+                if *len != new_len {
+                    *len = new_len;
+                    solved.i_did_a_thing();
+                }
+                Ok(())
+            }
             Self::And { len, fields } => process_and(len, fields, solved),
             Self::Expansive {
                 left_len,
@@ -505,20 +660,22 @@ impl Block {
     }
     pub fn len(&self) -> PatternLen {
         match self {
-            Self::Expansive { extension, .. } => extension.pattern_len(),
+            Self::Expansive { extension, .. } => extension.pattern_len().into(),
+            Self::PassThrough { len, .. } => *len,
             Self::Or { len, .. } | Self::And { len, .. } => {
                 len.map(PatternLen::Restricted).unwrap_or_default()
             }
         }
     }
-    pub fn root_len(&self) -> IntTypeU {
+    pub fn root_len(&self) -> Option<IntTypeU> {
         match self {
-            Self::Or { len, .. } | Self::And { len, .. } => len.unwrap(),
+            Self::PassThrough { root_len, .. } => *root_len,
+            Self::Or { len, .. } | Self::And { len, .. } => *len,
             Self::Expansive {
                 left_len,
                 right_len,
                 ..
-            } => left_len.unwrap() + right_len.unwrap(),
+            } => left_len.zip(*right_len).map(|(x, y)| x + y),
         }
     }
     pub fn constrain(&self, constraint: &mut BitSlice) {
@@ -546,7 +703,12 @@ impl Block {
                     *out = *out | *ele;
                 }
             }
-            Self::And { len, fields } => {
+            Self::PassThrough {
+                root_len: len,
+                fields,
+                ..
+            }
+            | Self::And { len, fields } => {
                 if len.unwrap() > constraint.len().try_into().unwrap() {
                     panic!("Constraint is too small");
                 }
@@ -613,6 +775,26 @@ impl TryFrom<Block> for semantic::pattern::Block {
                     .map(|field| field.try_into())
                     .collect::<Result<_, _>>()?;
                 Ok(Self::Or { len, fields })
+            }
+            Block::PassThrough {
+                len,
+                root_len: _,
+                self_table,
+                mut fields,
+            } => {
+                let fields = fields
+                    .drain(..)
+                    .map(|field| field.try_into())
+                    .collect::<Result<_, _>>()?;
+                let self_table = self_table.reference();
+                //TODO error here
+                let len: TablePatternLen = len.try_into().unwrap();
+                let len = len.try_into()?;
+                Ok(Self::PassThrough {
+                    self_table,
+                    fields,
+                    len,
+                })
             }
             Block::And { len, mut fields } => {
                 let len = len.unwrap(/*TODO*/);
@@ -931,11 +1113,13 @@ impl Reference {
     }
     pub fn len(&self) -> PatternLen {
         match self {
-            Reference::Assembly { assembly, .. } => {
+            Self::Assembly { assembly, .. } => {
                 PatternLen::Restricted(assembly.token_len())
             }
-            Reference::Varnode { .. } => PatternLen::Restricted(0),
-            Reference::Table { table, .. } => table.pattern_len(),
+            Self::Varnode { .. } => PatternLen::Restricted(0),
+            Self::Table { table, .. } => {
+                table.pattern_len().try_into().unwrap()
+            }
         }
     }
 }
@@ -992,7 +1176,6 @@ impl SubPattern {
         if self.len.is_some() {
             return Ok(());
         }
-        //FUTURE: convert into iterator with try_reduce
         let mut blocks = self.blocks.iter_mut();
         let mut len = if let Some(block) = blocks.next() {
             block.solve(solved)?;
@@ -1247,7 +1430,7 @@ pub trait PatternWalker<B = ()> {
             Block::Or { fields, .. } => {
                 fields.iter().try_for_each(|field| self.field_or(field))
             }
-            Block::And { fields, .. } => {
+            Block::PassThrough { fields, .. } | Block::And { fields, .. } => {
                 fields.iter().try_for_each(|field| self.field_and(field))
             }
             Block::Expansive {
