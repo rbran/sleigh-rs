@@ -125,8 +125,8 @@ impl Assembly {
 #[derive(Clone, Debug)]
 pub enum AssemblyType {
     Field(Field),
-    Epsilon,                    //empty pattern
-                                //TODO: NonZeroU type and not FieldSize
+    Epsilon, //empty pattern
+    //TODO: NonZeroU type and not FieldSize
     Start(Rc<Cell<FieldSize>>), // Offset of the address of the current instruction.
     Next(Rc<Cell<FieldSize>>), // Offset of the address of the next instruction.
 }

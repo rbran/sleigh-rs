@@ -14,7 +14,7 @@ use syntax::parse_syntax;
 
 pub use semantic::assembly::{Assembly, Token};
 pub use semantic::disassembly::Disassembly;
-pub use semantic::pattern::{Block, Pattern, SubBlock, SubPattern};
+pub use semantic::pattern::{Block, Pattern, PatternLen};
 pub use semantic::pcode_macro::PcodeMacro;
 pub use semantic::space::Space;
 pub use semantic::table::{Constructor, Table};
@@ -23,6 +23,9 @@ pub use semantic::varnode::Varnode;
 pub use semantic::Sleigh;
 
 pub use base::{IntTypeS, IntTypeU, NonZeroTypeU};
+
+//constants used only for debug purposes, don't commit with a diferent value
+pub(crate) const DISABLE_EXECUTION_PARSING: bool = false;
 
 pub const IDENT_INSTRUCTION: &str = "instruction";
 pub const IDENT_INST_START: &str = "inst_start";

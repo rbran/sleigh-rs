@@ -312,6 +312,24 @@ impl Sleigh {
         root: &'a PreProcOutput,
     ) -> Result<Self, SemanticError> {
         let mut inner = inner::Sleigh::new(value, root)?;
+        //HACK: verify that indirect recursion don't happen
+        //NOTE we don't need to worry about direct (self) recursion.
+        //AKA `TableA` calling itself
+        for table in inner
+            .idents
+            .values()
+            .filter_map(|ident| ident.unwrap_table())
+        {
+            use std::ops::ControlFlow;
+            if let ControlFlow::Break(rec) = table.pattern_indirect_recursion()
+            {
+                unimplemented!(
+                    "Indirect recursion is not implemented at the moment {:?}",
+                    rec
+                );
+            }
+        }
+
         let mut tables = vec![];
         let mut pcode = vec![];
         let mut global_scope: HashMap<Rc<str>, GlobalScope> = inner
@@ -377,6 +395,7 @@ impl Sleigh {
             }
         }
         println!("Solved Tables");
+
         for table in tables.drain(..).map(|x| x.convert()) {
             global_scope
                 .insert(Rc::clone(&table.name), GlobalScope::Table(table));

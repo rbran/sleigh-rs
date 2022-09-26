@@ -1,4 +1,5 @@
 use crate::base::{empty_space0, ident};
+use crate::DISABLE_EXECUTION_PARSING;
 
 use nom::branch::alt;
 use nom::bytes::complete::tag;
@@ -57,13 +58,18 @@ impl<'a> Constructor<'a> {
                     )),
                 )),
             ))),
-            |(src, (table_name, display, pattern, dissasembly, semantic))| {
+            |(src, (table_name, display, pattern, dissasembly, execution))| {
+                let execution = if DISABLE_EXECUTION_PARSING {
+                    None
+                } else {
+                    execution
+                };
                 Self {
                     src,
                     table_name,
                     display,
                     pattern,
-                    execution: semantic,
+                    execution,
                     dissasembly,
                 }
             },

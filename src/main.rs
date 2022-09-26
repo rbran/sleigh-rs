@@ -1,30 +1,30 @@
 use sleigh_rs::file_to_sleigh;
 
 const ARCH_FILES: &[&str] = &[
-//TODO What is `export 0:0;`?
+////TODO What is `export 0:0;`?
 //"/home/rbran/src/ghidra/Ghidra/Processors/68000/data/languages/68040.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/68000/data/languages/68030.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/68000/data/languages/coldfire.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/68000/data/languages/68020.slaspec",
-
-//TODO: https://github.com/NationalSecurityAgency/ghidra/pull/4016R
+//
+////TODO: https://github.com/NationalSecurityAgency/ghidra/pull/4016R
 //"/home/rbran/src/ghidra/Ghidra/Processors/HCS12/data/languages/HCS12.slaspec",
-
-//TODO: disassembly pointing to non context varnode???
+//
+////TODO: disassembly pointing to non context varnode???
 //"/home/rbran/src/ghidra/Ghidra/Processors/Atmel/data/languages/avr32a.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/Atmel/data/languages/avr8xmega.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/Atmel/data/languages/avr8eind.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/8048/data/languages/8048.slaspec",
-
-//TODO: sometimes the dst addr is 32, other time 64
+//
+////TODO: sometimes the dst addr is 32, other time 64
 //"/home/rbran/src/ghidra/Ghidra/Processors/PA-RISC/data/languages/pa-risc32be.slaspec",
-
-//TODO: try to assign a 32bits value into a 64bits varnode
+//
+////TODO: try to assign a 32bits value into a 64bits varnode
 //"/home/rbran/src/ghidra/Ghidra/Processors/RISCV/data/languages/riscv.ilp32d.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/RISCV/data/languages/riscv.lp64d.slaspec",
-
-//TODO: bitrange auto adapt to an arbitrary size
-//TODO: Assign values with diferent sizes, eg 8bit value into 16bit variable
+//
+////TODO: bitrange auto adapt to an arbitrary size
+////TODO: Assign values with diferent sizes, eg 8bit value into 16bit variable
 //"/home/rbran/src/ghidra/Ghidra/Processors/V850/data/languages/V850.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/6502/data/languages/6502.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/6502/data/languages/65c02.slaspec",
@@ -64,21 +64,21 @@ const ARCH_FILES: &[&str] = &[
 //"/home/rbran/src/ghidra/Ghidra/Processors/PIC/data/languages/dsPIC33C.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/PIC/data/languages/dsPIC33E.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/PIC/data/languages/dsPIC33F.slaspec",
-
-//TODO: use value from non export table
+//
+////TODO: use value from non export table
 //"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32be.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32le.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32R6be.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips32R6le.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips64be.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/MIPS/data/languages/mips64le.slaspec",
-
-//TODO: re-export from a table that also export const
+//
+////TODO: re-export from a table that also export const
 //"/home/rbran/src/ghidra/Ghidra/Processors/AARCH64/data/languages/AARCH64.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/AARCH64/data/languages/AARCH64BE.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/AARCH64/data/languages/AARCH64_AppleSilicon.slaspec",
-
-//TODO: Cpool
+//
+////TODO: Cpool
 //"/home/rbran/src/ghidra/Ghidra/Processors/JVM/data/languages/JVM.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/Dalvik/data/languages/Dalvik_Base.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/Dalvik/data/languages/Dalvik_ODEX_KitKat.slaspec",
@@ -91,8 +91,8 @@ const ARCH_FILES: &[&str] = &[
 //"/home/rbran/src/ghidra/Ghidra/Processors/Dalvik/data/languages/Dalvik_DEX_Android10.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/Dalvik/data/languages/Dalvik_DEX_Android11.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/Dalvik/data/languages/Dalvik_DEX_Android12.slaspec",
-
-//TODO: AND-OP a 64bit value with a 32bit variable, outputing a 32bit value
+//
+////TODO: AND-OP a 64bit value with a 32bit variable, outputing a 32bit value
 //"/home/rbran/src/ghidra/Ghidra/Processors/PowerPC/data/languages/ppc_32_be.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/PowerPC/data/languages/ppc_32_le.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/PowerPC/data/languages/ppc_32_quicciii_be.slaspec",
@@ -107,19 +107,18 @@ const ARCH_FILES: &[&str] = &[
 //"/home/rbran/src/ghidra/Ghidra/Processors/PowerPC/data/languages/ppc_64_isa_altivec_le.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/PowerPC/data/languages/ppc_64_isa_altivec_vle_be.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/PowerPC/data/languages/ppc_64_isa_vle_be.slaspec",
-
-//TODO: Jmp into a 16bit address
+//
+////TODO: Jmp into a 16bit address
 //"/home/rbran/src/ghidra/Ghidra/Processors/x86/data/languages/x86.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/x86/data/languages/x86-64.slaspec",
-
-//TODO: jmp into 16/8bit address
+//
+////TODO: jmp into 16/8bit address
 //"/home/rbran/src/ghidra/Ghidra/Processors/8085/data/languages/8085.slaspec",
-
-//TODO: Op 32bits value with Int greater then 32bits
+//
+////TODO: Op 32bits value with Int greater then 32bits
 //"/home/rbran/src/ghidra/Ghidra/Processors/Sparc/data/languages/SparcV9_32.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/Sparc/data/languages/SparcV9_64.slaspec",
-
-//TODO: How the nop instruction and NopByte incremental pattern recursive works?
+//
 //"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_builder_be_align2.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_builder_le_align2.slaspec",
 //"/home/rbran/src/ghidra/Ghidra/Processors/Toy/data/languages/toy_builder_le.slaspec",

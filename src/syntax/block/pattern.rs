@@ -76,18 +76,21 @@ pub enum Field<'a> {
         field: &'a str,
         constraint: Option<Constraint<'a>>,
     },
-    SubPattern(Pattern<'a>),
+    SubPattern {
+        src: &'a str,
+        sub: Pattern<'a>,
+    },
 }
 impl<'a> Field<'a> {
     pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
         alt((
             map(
-                delimited(
+                consumed(delimited(
                     pair(tag("("), empty_space0),
                     Pattern::parse,
                     pair(empty_space0, tag(")")),
-                ),
-                |x| Field::SubPattern(x),
+                )),
+                |(src, sub)| Field::SubPattern { sub, src },
             ),
             map(
                 pair(ident, opt(preceded(empty_space0, Constraint::parse))),

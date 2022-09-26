@@ -4,7 +4,7 @@ use std::rc::Rc;
 use thiserror::Error;
 
 use crate::base::IntTypeU;
-use crate::{from_error, InputSource, Token};
+use crate::{from_error, InputSource};
 
 use super::assembly::Assembly;
 use super::disassembly::{DisassemblyError, Expr};
@@ -20,6 +20,13 @@ pub enum PatternError {
     #[error("Unable to merge Blocks mixing & and | {0}")]
     InvalidMixOp(InputSource),
 
+    #[error("Invalid Recursive at {0}")]
+    InvalidRecursive(InputSource),
+    #[error("In Or block, all elements need to have the same len")]
+    InvalidOrLen(InputSource),
+    #[error("Each patern can only have a single recursive")]
+    MultipleRecursives(InputSource),
+
     #[error("Invalid assignment Error")]
     ConstraintExpr(DisassemblyError),
 }
@@ -29,24 +36,31 @@ from_error!(PatternError, DisassemblyError, ConstraintExpr);
 pub enum PatternLen {
     Defined(IntTypeU),
     Range { min: IntTypeU, max: IntTypeU },
+    Min(IntTypeU),
 }
 
 impl PatternLen {
+    pub fn is_recursive(&self) -> bool {
+        matches!(self, Self::Min(_))
+    }
     pub fn min(&self) -> IntTypeU {
         match self {
-            Self::Defined(min) | Self::Range { min, max: _ } => *min,
+            Self::Min(min)
+            | Self::Defined(min)
+            | Self::Range { min, max: _ } => *min,
         }
     }
-    pub fn max(&self) -> IntTypeU {
+    pub fn max(&self) -> Option<IntTypeU> {
         match self {
-            Self::Defined(value) => *value,
-            Self::Range { min: _, max } => *max,
+            Self::Defined(value) => Some(*value),
+            Self::Range { min: _, max } => Some(*max),
+            Self::Min(_) => None,
         }
     }
     pub fn defined(&self) -> Option<IntTypeU> {
         match self {
             Self::Defined(value) => Some(*value),
-            Self::Range { .. } => None,
+            Self::Min(_) | Self::Range { .. } => None,
         }
     }
 }
@@ -58,14 +72,14 @@ pub struct Pattern {
 }
 
 impl Pattern {
-    pub fn new(len: PatternLen, blocks: Vec<Block>) -> Self {
-        Self { len, blocks }
-    }
-    pub fn len(&self) -> PatternLen {
-        self.len
+    pub(crate) fn new(blocks: Vec<Block>, len: PatternLen) -> Self {
+        Self { blocks, len }
     }
     pub fn blocks(&self) -> &[Block] {
         &self.blocks
+    }
+    pub fn len(&self) -> &PatternLen {
+        &self.len
     }
 }
 
@@ -75,37 +89,11 @@ pub enum Block {
     Or { len: IntTypeU, fields: Vec<FieldOr> },
     ///block with multiple elements unified with ANDs
     And {
-        len: IntTypeU,
-        fields: Vec<FieldAnd>,
-    },
-    ///Non expansive, and-bound, call to itself
-    PassThrough {
-        len: PatternLen,
-        self_table: Rc<Table>,
-        fields: Vec<FieldAnd>,
-    },
-    ///And block but with one or more sub tables that extend the size
-    Expansive {
-        //left/right len need to be smaller then extension min_len
-        left_len: IntTypeU,
+        left_len: PatternLen,
         left: Vec<FieldAnd>,
-        //extension can also be Pattern, but I'll forbiden for now
-        extension: Rc<Table>,
-        right_len: IntTypeU,
+        right_len: PatternLen,
         right: Vec<FieldAnd>,
     },
-}
-
-impl Block {
-    pub fn len(&self) -> PatternLen {
-        match self {
-            Self::PassThrough { self_table, .. } => self_table.pattern_len(),
-            Self::And { len, .. } | Self::Or { len, .. } => {
-                PatternLen::Defined(*len)
-            }
-            Self::Expansive { extension, .. } => extension.pattern_len(),
-        }
-    }
 }
 
 //Field used in Or Expressions
@@ -113,10 +101,13 @@ impl Block {
 pub enum FieldOr {
     Constraint {
         src: InputSource,
-        assembly: Rc<Assembly>,
+        field: ConstraintVariable,
         constraint: Constraint,
     },
-    SubPattern(SubPattern),
+    SubPattern {
+        src: InputSource,
+        sub: Pattern,
+    },
 }
 #[derive(Clone, Debug)]
 pub enum FieldAnd {
@@ -125,7 +116,10 @@ pub enum FieldAnd {
         constraint: Constraint,
     },
     Field(Reference),
-    SubPattern(SubPattern),
+    SubPattern {
+        src: InputSource,
+        sub: Pattern,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -170,51 +164,9 @@ pub enum Reference {
     },
     //tables that extend are not allowed here
     Table {
+        self_ref: bool,
         src: InputSource,
         table: Rc<Table>,
-    },
-}
-
-#[derive(Clone, Debug)]
-pub struct SubPattern {
-    src: InputSource,
-    blocks: Vec<SubBlock>,
-    //sub_pattern need to have a defined len
-    len: IntTypeU,
-}
-impl SubPattern {
-    pub fn new(
-        src: InputSource,
-        blocks: Vec<SubBlock>,
-        //sub_pattern need to have a defined len
-        len: IntTypeU,
-    ) -> Self {
-        Self { src, blocks, len }
-    }
-    pub fn src(&self) -> &InputSource {
-        &self.src
-    }
-    pub fn blocks(&self) -> &[SubBlock] {
-        &self.blocks
-    }
-    pub fn len(&self) -> IntTypeU {
-        self.len
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum SubBlock {
-    //block with multiple elements unified with ORs
-    Or {
-        token: Option<Rc<Token>>,
-        len: IntTypeU,
-        fields: Vec<FieldOr>,
-    },
-    //block with multiple elements unified with ANDs
-    And {
-        token: Option<Rc<Token>>,
-        len: IntTypeU,
-        fields: Vec<FieldAnd>,
     },
 }
 
@@ -252,7 +204,7 @@ pub enum Ellipsis {
 }
 
 pub trait PatternWalker<B = ()> {
-    fn start(&mut self, pattern: &Pattern) -> ControlFlow<B, ()> {
+    fn pattern(&mut self, pattern: &Pattern) -> ControlFlow<B, ()> {
         pattern
             .blocks
             .iter()
@@ -263,25 +215,23 @@ pub trait PatternWalker<B = ()> {
             Block::Or { fields, .. } => {
                 fields.iter().try_for_each(|field| self.field_or(field))
             }
-            Block::PassThrough { fields, .. } | Block::And { fields, .. } => {
-                fields.iter().try_for_each(|field| self.field_and(field))
-            }
-            Block::Expansive {
-                left,
-                extension,
-                right,
-                ..
-            } => {
+            Block::And { left, right, .. } => {
                 left.iter().try_for_each(|field| self.field_and(field))?;
-                right.iter().try_for_each(|field| self.field_and(field))?;
-                self.extension(extension)
+                right.iter().try_for_each(|field| self.field_and(field))
             }
         }
     }
     fn field_or(&mut self, field: &FieldOr) -> ControlFlow<B, ()> {
         match field {
-            FieldOr::Constraint { assembly, .. } => self.assembly(assembly),
-            FieldOr::SubPattern(sub_pattern) => self.sub_pattern(sub_pattern),
+            FieldOr::Constraint {
+                field: ConstraintVariable::Assembly { assembly, .. },
+                ..
+            } => self.assembly(assembly),
+            FieldOr::Constraint {
+                field: ConstraintVariable::Varnode { varnode, .. },
+                ..
+            } => self.varnode(varnode),
+            FieldOr::SubPattern { sub, .. } => self.pattern(sub),
         }
     }
     fn field_and(&mut self, field: &FieldAnd) -> ControlFlow<B, ()> {
@@ -295,7 +245,7 @@ pub trait PatternWalker<B = ()> {
                 ..
             } => self.varnode(varnode),
             FieldAnd::Field(field) => self.reference(field),
-            FieldAnd::SubPattern(sub_pattern) => self.sub_pattern(sub_pattern),
+            FieldAnd::SubPattern { sub, .. } => self.pattern(sub),
         }
     }
     fn assembly(&mut self, _assembly: &Rc<Assembly>) -> ControlFlow<B, ()> {
@@ -304,14 +254,8 @@ pub trait PatternWalker<B = ()> {
     fn varnode(&mut self, _varnode: &Rc<Varnode>) -> ControlFlow<B, ()> {
         ControlFlow::Continue(())
     }
-    fn extension(&mut self, _table: &Rc<Table>) -> ControlFlow<B, ()> {
-        ControlFlow::Continue(())
-    }
-    fn sub_pattern(&mut self, sub_pattern: &SubPattern) -> ControlFlow<B, ()> {
-        sub_pattern
-            .blocks
-            .iter()
-            .try_for_each(|block| self.sub_block(block))
+    fn extension(&mut self, table: &Rc<Table>) -> ControlFlow<B, ()> {
+        self.table(table)
     }
     fn reference(&mut self, reference: &Reference) -> ControlFlow<B, ()> {
         match reference {
@@ -322,15 +266,5 @@ pub trait PatternWalker<B = ()> {
     }
     fn table(&mut self, _table: &Rc<Table>) -> ControlFlow<B, ()> {
         ControlFlow::Continue(())
-    }
-    fn sub_block(&mut self, sub_block: &SubBlock) -> ControlFlow<B, ()> {
-        match sub_block {
-            SubBlock::Or { fields, .. } => {
-                fields.iter().try_for_each(|field| self.field_or(field))
-            }
-            SubBlock::And { fields, .. } => {
-                fields.iter().try_for_each(|field| self.field_and(field))
-            }
-        }
     }
 }

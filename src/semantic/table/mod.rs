@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use thiserror::Error;
@@ -19,6 +18,7 @@ pub use super::pattern::{Pattern, PatternError};
 //pub mod disassembly;
 //pub mod execution;
 
+//TODO not all table errors have a location
 #[derive(Clone, Debug, Error)]
 #[error("at {table_pos}\n{sub}")]
 pub struct TableError {
@@ -128,8 +128,8 @@ impl Table {
     pub fn is_root(&self) -> bool {
         self.name.as_ref() == IDENT_INSTRUCTION
     }
-    pub fn pattern_len(&self) -> PatternLen {
-        todo!()
+    pub fn pattern_len(&self) -> &PatternLen {
+        &self.pattern_len
     }
 }
 
@@ -137,11 +137,11 @@ impl<'a> TryFrom<inner::Constructor> for Constructor {
     type Error = TableError;
 
     fn try_from(value: inner::Constructor) -> Result<Self, Self::Error> {
-        let pattern = value.pattern.try_into().to_table(value.src.clone())?;
+        let src = value.src().clone();
+        let pattern = value.pattern.try_into().to_table(src.clone())?;
         let display = value.display.into();
         let execution = value.execution.map(|x| x.convert());
         let disassembly = value.disassembly.convert();
-        let src = value.src;
         Ok(Self {
             pattern,
             display,

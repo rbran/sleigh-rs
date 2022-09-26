@@ -1,19 +1,20 @@
 pub mod disassembly;
 pub mod execution;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::ops::ControlFlow;
 use std::rc::{Rc, Weak};
 
 use crate::semantic::table::{ExecutionError, TableErrorSub, ToTableError};
 use crate::semantic::{self, TableError};
 use crate::syntax::block;
-use crate::{InputSource, IDENT_INSTRUCTION};
+use crate::{InputSource, PatternLen, IDENT_INSTRUCTION};
 
 use super::disassembly::Disassembly;
 use super::display::Display;
 use super::execution::ExecutionExport;
 use super::execution::{Execution, ExecutionBuilder};
-use super::pattern::{Pattern, PatternConstraint, TablePatternLen};
+use super::pattern::{Pattern, PatternConstraint};
 use super::{FieldSize, GlobalScope, Sleigh, SolverStatus, WithBlockCurrent};
 
 #[derive(Clone)]
@@ -34,7 +35,10 @@ pub struct Table {
     //Some(ExecutionExport::None) mean that this table doesn't export
     export: RefCell<Option<ExecutionExport>>,
 
-    pattern_len: RefCell<TablePatternLen>,
+    //HACK: pattern indirect recursion helper
+    pattern_recursion_checked: RefCell<bool>,
+
+    pattern_len: Cell<Option<PatternLen>>,
 
     //used to differ empty tables and ones that got converted
     converted: RefCell<bool>,
@@ -43,13 +47,7 @@ pub struct Table {
 
 impl std::fmt::Debug for Table {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Table {}, pattern_len: {:?}, returning: {:?}",
-            self.name,
-            self.pattern_len(),
-            self.export
-        )
+        write!(f, "Table {}, returning: {:?}", self.name, self.export)
     }
 }
 
@@ -63,7 +61,9 @@ impl Table {
             converted: RefCell::new(false),
             //it does not export, unless a exporting constructor is added
             export: RefCell::default(),
-            pattern_len: RefCell::default(),
+            //HACK
+            pattern_recursion_checked: RefCell::new(false),
+            pattern_len: Cell::default(),
             //export_time: RefCell::default(),
             me: Weak::clone(me),
         })
@@ -108,31 +108,169 @@ impl Table {
     pub fn reference(&self) -> Rc<semantic::table::Table> {
         Rc::clone(&self.result)
     }
+    //HACK
+    pub fn pattern_indirect_recursion(&self) -> ControlFlow<Vec<Rc<Table>>> {
+        use semantic::inner::pattern::PatternWalker;
+        struct FindIndirectRecursion(*const Table);
+        impl PatternWalker<Vec<Rc<Table>>> for FindIndirectRecursion {
+            fn table(
+                &mut self,
+                table: &Rc<Table>,
+            ) -> ControlFlow<Vec<Rc<Table>>> {
+                if Rc::as_ptr(table) == self.0 {
+                    //we don't care about self reference, only indirect ones
+                    return ControlFlow::Continue(());
+                }
+                table.pattern_indirect_recursion()
+            }
+        }
+        //This borrow will detect the recursion, we hold the lock, while the
+        //sub patterns are checked, we are only unable to borrow, if the lock
+        //is hold by a previous interation.
+        let mut checked = if let Ok(checked) =
+            self.pattern_recursion_checked.try_borrow_mut()
+        {
+            //if this table was already checked, then we don't need to check
+            //again
+            if *checked {
+                return ControlFlow::Continue(());
+            }
+            checked
+        } else {
+            //unable to lock, this means that we got here though some kind of
+            //recursion
+            return ControlFlow::Break(vec![self.me()]);
+        };
+        let mut find = FindIndirectRecursion(Weak::as_ptr(&self.me));
+        let constructors = self.constructors.borrow();
+        for constructor in constructors.iter() {
+            find.pattern(&constructor.pattern)?;
+        }
+        //table verified all the leading branches, they never call recursives
+        *checked = true;
+        ControlFlow::Continue(())
+    }
+    pub fn pattern_len(&self) -> Option<PatternLen> {
+        self.pattern_len.get()
+    }
+    fn solve_pattern_len<T>(&self, solved: &mut T) -> Result<(), TableError>
+    where
+        T: SolverStatus + Default,
+    {
+        //if already solved, do nothing
+        if self.pattern_len.get().is_some() {
+            return Ok(());
+        };
+
+        //update all constructors
+        self.constructors
+            .borrow_mut()
+            .iter_mut()
+            .try_for_each(|constructor| constructor.solve_pattern(solved))?;
+
+        //TODO improve this to not require collect
+        //all the lens from constructors
+        let lens: Vec<_> = {
+            let constructors = self.constructors.borrow();
+            let lens: Result<Vec<_>, &InputSource> = constructors
+                .iter()
+                //get all the lens, returning none if is undefined len,
+                //in this case abort the whole len calculation
+                //indexs are 1/1
+                .map(|constructor| {
+                    constructor
+                        .pattern
+                        .len()
+                        .clone()
+                        .ok_or_else(|| constructor.src())
+                })
+                .collect();
+            match lens {
+                Ok(lens) => lens,
+                Err(src) => {
+                    //found one undefined len, unable to calculate the table pattern len
+                    //range for now
+                    solved.iam_not_finished_location(src, file!(), line!());
+                    return Ok(());
+                }
+            }
+        };
+        //the smallest possible table pattern_len, except from recursives
+        let min = lens.iter().filter_map(|len| len.min()).min();
+
+        //the biggest possible table pattern_len
+        //FUTURE use try_reduce instead
+        let max = {
+            let mut iter = lens.iter().map(|len| len.max());
+            if let Some(first) = iter.next().unwrap() {
+                iter.try_fold(first, |acc, len| len.map(|len| len.max(acc)))
+            } else {
+                None
+            }
+        };
+
+        match (min, max) {
+            //impossible to happen, only invalid logic can generate that
+            (None, Some(_)) => unreachable!(),
+            //no smallest, means that all constructors are recursives, what is
+            //invalid, because the pattern will never end to match
+            (None, None) => {
+                //TODO error here
+                panic!(
+                    "Table is composed exclusivelly of recursive patterns: {}",
+                    self.name()
+                );
+            }
+            //if there is no biggest, means at least one constructor
+            //will always result in a Min (recursive).
+            //if always recursive, len is Min(smallest_len)
+            (Some(min), None) => {
+                self.pattern_len.set(Some(PatternLen::Min(min)));
+                solved.i_did_a_thing();
+            }
+
+            //if both are Some, we can return a range
+            (Some(min), Some(max)) => {
+                let len = PatternLen::new_range(min, max);
+                self.pattern_len.set(Some(len));
+                solved.i_did_a_thing();
+            }
+        }
+
+        //with this table len solved, all constructors shold also be able to
+        //immediatelly solve all the sub-patterns, unable to do so can only
+        //be caused by an logic error.
+        let mut solved = super::Solved::default();
+        self.constructors.borrow_mut().iter_mut().try_for_each(
+            |constructor| constructor.solve_pattern(&mut solved),
+        )?;
+        if !solved.we_finished() {
+            unreachable!("Table pattern len solver have a logical error")
+        }
+        Ok(())
+    }
     pub fn solve<T>(&self, solved: &mut T) -> Result<(), TableError>
     where
         T: SolverStatus + Default,
     {
-        //FUTURE: convert into iterator with try_reduce
-        //solve all the pattern len
-        {
-            let mut constructors = self.constructors.borrow_mut();
-            let mut len_iter = constructors
-                .iter_mut()
-                .map(|cons| cons.solve(solved).map(|_| cons.pattern.len()));
-            if let Some(len) = len_iter.next() {
-                let mut len: TablePatternLen = len?.into();
-                for len_iter in len_iter {
-                    let len_iter: TablePatternLen = len_iter?.into();
-                    len = len.combine(len_iter)
-                }
-                let mut pattern_len = self.pattern_len.borrow_mut();
-                if *pattern_len != len {
-                    solved.i_did_a_thing();
-                    *pattern_len = len;
-                }
-            }
+        //empty table can't be solved
+        if self.constructors.borrow().is_empty() {
+            return Ok(());
         }
 
+        //TODO only solve, if necessary
+        //if self.fully_solved_already() {
+        //  return Ok(());
+        //}
+
+        self.solve_pattern_len(solved)?;
+
+        //TODO move this into solve_execution
+        //update all constructors
+        self.constructors
+            .borrow_mut()
+            .iter_mut()
+            .try_for_each(|constructor| constructor.solve_execution(solved))?;
         //TODO update the FieldSize::all_same_size to use iterators and use it
         //here
         //update all the constructors return size, if none/undefined return just
@@ -186,9 +324,6 @@ impl Table {
         }
         Ok(())
     }
-    pub fn pattern_len(&self) -> TablePatternLen {
-        *self.pattern_len.borrow()
-    }
     pub fn convert(&self) -> Rc<semantic::table::Table> {
         let converted = *self.converted.borrow();
         if converted {
@@ -223,7 +358,6 @@ impl Table {
         *self.converted.borrow_mut() = true;
         let export =
             self.export.borrow().unwrap_or_default().convert().unwrap();
-        let pattern_len = self.pattern_len().try_into().unwrap(/*TODO*/);
         let constructors = new_constructors
             .drain(..)
             .map(|(x, _)| x.convert())
@@ -238,7 +372,6 @@ impl Table {
             let ptr: *mut semantic::table::Table = std::mem::transmute(ptr);
             (*ptr).constructors = constructors;
             (*ptr).export = export;
-            (*ptr).pattern_len = pattern_len;
         }
 
         self.reference()
@@ -252,7 +385,7 @@ pub struct Constructor {
     pub pattern: Pattern,
     pub disassembly: Disassembly,
     pub execution: Option<Execution>,
-    pub src: InputSource,
+    src: InputSource,
 }
 impl Constructor {
     pub fn new(
@@ -276,11 +409,22 @@ impl Constructor {
     pub fn execution_mut(&mut self) -> Option<&mut Execution> {
         self.execution.as_mut()
     }
-    pub fn solve<T>(&mut self, solved: &mut T) -> Result<(), TableError>
+    pub fn src(&self) -> &InputSource {
+        &self.src
+    }
+    pub fn solve_pattern<T>(&mut self, solved: &mut T) -> Result<(), TableError>
     where
         T: SolverStatus + Default,
     {
-        self.pattern.solve(solved).to_table(self.src.clone())?;
+        self.pattern.solve(solved).to_table(self.src.clone())
+    }
+    pub fn solve_execution<T>(
+        &mut self,
+        solved: &mut T,
+    ) -> Result<(), TableError>
+    where
+        T: SolverStatus + Default,
+    {
         if let Some(execution) = &mut self.execution {
             execution.solve(solved).to_table(self.src.clone())?;
         }

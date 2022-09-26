@@ -1,4 +1,4 @@
-use crate::{syntax, IDENT_INSTRUCTION, semantic::table::PatternError};
+use crate::{semantic::table::PatternError, syntax, IDENT_INSTRUCTION};
 
 //multiple with_blocks are combined into this one during the processing
 #[derive(Clone, Debug, Default)]
@@ -99,7 +99,10 @@ impl<'a> WithBlockCurrent<'a> {
             let mut elements = first_block.elements;
             elements.extend(last_block.elements);
 
-            let merged_block = Block { op: Some(op), elements };
+            let merged_block = Block {
+                op: Some(op),
+                elements,
+            };
             x.blocks.push(merged_block);
             x.blocks.extend(y);
             Ok(x)
