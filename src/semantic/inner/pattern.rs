@@ -154,23 +154,23 @@ pub enum ConstructorPatternLen {
         non_grow: PatternLen,
     },
 
-    Basic(PatternLen),
+    Final(PatternLen),
 }
 impl ConstructorPatternLen {
     pub fn single_len(&self) -> Option<IntTypeU> {
         match self {
-            Self::Basic(basic) => basic.single_len(),
+            Self::Final(basic) => basic.single_len(),
             Self::NonGrowingRecursive(_) | Self::GrowingRecursive { .. } => {
                 None
             }
         }
     }
-    pub fn is_basic(&self) -> bool {
-        matches!(self, Self::Basic(_))
+    pub fn is_final(&self) -> bool {
+        matches!(self, Self::Final(_))
     }
     pub fn basic(&self) -> Option<PatternLen> {
         match self {
-            Self::Basic(basic) => Some(*basic),
+            Self::Final(basic) => Some(*basic),
             Self::NonGrowingRecursive(_) | Self::GrowingRecursive { .. } => {
                 None
             }
@@ -179,7 +179,7 @@ impl ConstructorPatternLen {
     ///if is some kind of recursive
     pub fn is_recursive(&self) -> bool {
         match self {
-            Self::Basic(basic) => basic.is_recursive(),
+            Self::Final(basic) => basic.is_recursive(),
             Self::NonGrowingRecursive(_) | Self::GrowingRecursive { .. } => {
                 true
             }
@@ -227,19 +227,19 @@ impl ConstructorPatternLen {
     //TODO replace Option with Result?
     pub fn add(self, other: Self) -> Option<Self> {
         let new_self = match (self, other) {
-            (Self::Basic(x), Self::Basic(y)) => Self::Basic(x.add(y)),
+            (Self::Final(x), Self::Final(y)) => Self::Final(x.add(y)),
             //NonGrowingRecursize concat with a basic block, result in a
             //GrowingRecursive
-            (Self::NonGrowingRecursive(non_grow), Self::Basic(basic))
-            | (Self::Basic(basic), Self::NonGrowingRecursive(non_grow)) => {
+            (Self::NonGrowingRecursive(non_grow), Self::Final(basic))
+            | (Self::Final(basic), Self::NonGrowingRecursive(non_grow)) => {
                 Self::GrowingRecursive {
                     grow: basic,
                     non_grow,
                 }
             }
             //Growing Recursive concat with a basic, just grows
-            (Self::GrowingRecursive { grow, non_grow }, Self::Basic(basic))
-            | (Self::Basic(basic), Self::GrowingRecursive { grow, non_grow }) => {
+            (Self::GrowingRecursive { grow, non_grow }, Self::Final(basic))
+            | (Self::Final(basic), Self::GrowingRecursive { grow, non_grow }) => {
                 Self::GrowingRecursive {
                     grow: grow.add(basic),
                     non_grow,
@@ -259,13 +259,13 @@ impl ConstructorPatternLen {
                 Self::GrowingRecursive { .. } | Self::NonGrowingRecursive(_),
                 Self::GrowingRecursive { .. } | Self::NonGrowingRecursive(_),
             ) => return None,
-            (Self::Basic(x), Self::Basic(y)) => Some(Self::Basic(x.greater(y))),
+            (Self::Final(x), Self::Final(y)) => Some(Self::Final(x.greater(y))),
             (
-                Self::Basic(x) | Self::NonGrowingRecursive(x),
-                Self::Basic(y) | Self::NonGrowingRecursive(y),
+                Self::Final(x) | Self::NonGrowingRecursive(x),
+                Self::Final(y) | Self::NonGrowingRecursive(y),
             ) => Some(Self::NonGrowingRecursive(x.greater(y))),
-            (Self::Basic(_), Self::GrowingRecursive { .. })
-            | (Self::GrowingRecursive { .. }, Self::Basic(_)) => {
+            (Self::Final(_), Self::GrowingRecursive { .. })
+            | (Self::GrowingRecursive { .. }, Self::Final(_)) => {
                 //This only happen if recursive block is in a sub-pattern
                 //what i think is not allowed
                 unimplemented!()
@@ -275,12 +275,12 @@ impl ConstructorPatternLen {
 }
 impl From<PatternLen> for ConstructorPatternLen {
     fn from(value: PatternLen) -> Self {
-        Self::Basic(value)
+        Self::Final(value)
     }
 }
 fn is_finished(len: &Option<ConstructorPatternLen>) -> bool {
     match len.as_ref() {
-        Some(len) => len.is_basic(),
+        Some(len) => len.is_final(),
         None => false,
     }
 }
@@ -326,7 +326,7 @@ impl Pattern {
     ) -> Result<(), PatternError> {
         let is_finished =
             |len: &Option<ConstructorPatternLen>| match len.as_ref() {
-                Some(len) => len.is_basic(),
+                Some(len) => len.is_final(),
                 None => false,
             };
         //if fully solved, do nothing
