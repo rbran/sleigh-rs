@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::rc::Rc;
 
@@ -154,23 +155,23 @@ pub enum ConstructorPatternLen {
         non_grow: PatternLen,
     },
 
-    Final(PatternLen),
+    Basic(PatternLen),
 }
 impl ConstructorPatternLen {
     pub fn single_len(&self) -> Option<IntTypeU> {
         match self {
-            Self::Final(basic) => basic.single_len(),
+            Self::Basic(basic) => basic.single_len(),
             Self::NonGrowingRecursive(_) | Self::GrowingRecursive { .. } => {
                 None
             }
         }
     }
-    pub fn is_final(&self) -> bool {
-        matches!(self, Self::Final(_))
+    pub fn is_basic(&self) -> bool {
+        matches!(self, Self::Basic(_))
     }
     pub fn basic(&self) -> Option<PatternLen> {
         match self {
-            Self::Final(basic) => Some(*basic),
+            Self::Basic(basic) => Some(*basic),
             Self::NonGrowingRecursive(_) | Self::GrowingRecursive { .. } => {
                 None
             }
@@ -179,7 +180,7 @@ impl ConstructorPatternLen {
     ///if is some kind of recursive
     pub fn is_recursive(&self) -> bool {
         match self {
-            Self::Final(basic) => basic.is_recursive(),
+            Self::Basic(basic) => basic.is_recursive(),
             Self::NonGrowingRecursive(_) | Self::GrowingRecursive { .. } => {
                 true
             }
@@ -227,19 +228,19 @@ impl ConstructorPatternLen {
     //TODO replace Option with Result?
     pub fn add(self, other: Self) -> Option<Self> {
         let new_self = match (self, other) {
-            (Self::Final(x), Self::Final(y)) => Self::Final(x.add(y)),
+            (Self::Basic(x), Self::Basic(y)) => Self::Basic(x.add(y)),
             //NonGrowingRecursize concat with a basic block, result in a
             //GrowingRecursive
-            (Self::NonGrowingRecursive(non_grow), Self::Final(basic))
-            | (Self::Final(basic), Self::NonGrowingRecursive(non_grow)) => {
+            (Self::NonGrowingRecursive(non_grow), Self::Basic(basic))
+            | (Self::Basic(basic), Self::NonGrowingRecursive(non_grow)) => {
                 Self::GrowingRecursive {
                     grow: basic,
                     non_grow,
                 }
             }
             //Growing Recursive concat with a basic, just grows
-            (Self::GrowingRecursive { grow, non_grow }, Self::Final(basic))
-            | (Self::Final(basic), Self::GrowingRecursive { grow, non_grow }) => {
+            (Self::GrowingRecursive { grow, non_grow }, Self::Basic(basic))
+            | (Self::Basic(basic), Self::GrowingRecursive { grow, non_grow }) => {
                 Self::GrowingRecursive {
                     grow: grow.add(basic),
                     non_grow,
@@ -259,13 +260,13 @@ impl ConstructorPatternLen {
                 Self::GrowingRecursive { .. } | Self::NonGrowingRecursive(_),
                 Self::GrowingRecursive { .. } | Self::NonGrowingRecursive(_),
             ) => return None,
-            (Self::Final(x), Self::Final(y)) => Some(Self::Final(x.greater(y))),
+            (Self::Basic(x), Self::Basic(y)) => Some(Self::Basic(x.greater(y))),
             (
-                Self::Final(x) | Self::NonGrowingRecursive(x),
-                Self::Final(y) | Self::NonGrowingRecursive(y),
+                Self::Basic(x) | Self::NonGrowingRecursive(x),
+                Self::Basic(y) | Self::NonGrowingRecursive(y),
             ) => Some(Self::NonGrowingRecursive(x.greater(y))),
-            (Self::Final(_), Self::GrowingRecursive { .. })
-            | (Self::GrowingRecursive { .. }, Self::Final(_)) => {
+            (Self::Basic(_), Self::GrowingRecursive { .. })
+            | (Self::GrowingRecursive { .. }, Self::Basic(_)) => {
                 //This only happen if recursive block is in a sub-pattern
                 //what i think is not allowed
                 unimplemented!()
@@ -275,12 +276,12 @@ impl ConstructorPatternLen {
 }
 impl From<PatternLen> for ConstructorPatternLen {
     fn from(value: PatternLen) -> Self {
-        Self::Final(value)
+        Self::Basic(value)
     }
 }
 fn is_finished(len: &Option<ConstructorPatternLen>) -> bool {
     match len.as_ref() {
-        Some(len) => len.is_final(),
+        Some(len) => len.is_basic(),
         None => false,
     }
 }
@@ -288,6 +289,7 @@ fn is_finished(len: &Option<ConstructorPatternLen>) -> bool {
 #[derive(Clone, Debug)]
 pub struct Pattern {
     len: Option<ConstructorPatternLen>,
+    products: FieldProducts,
     root_len: IntTypeU,
     blocks: Vec<Block>,
 }
@@ -304,12 +306,17 @@ impl Pattern {
             .map(|block| Block::new(sleigh, block, table))
             .collect::<Result<Vec<_>, _>>()?;
         let root_len = blocks.iter().map(Block::root_len).sum();
-        let len = None;
+        let len = blocks.is_empty().then(|| PatternLen::Defined(0).into());
+        let products = blocks
+            .iter()
+            .map(Block::produce)
+            .try_fold(FieldProducts::default(), FieldProducts::or)?;
 
         Ok(Self {
             root_len,
-            len,
             blocks,
+            products,
+            len,
         })
     }
     pub fn src(&self) -> &InputSource {
@@ -326,7 +333,7 @@ impl Pattern {
     ) -> Result<(), PatternError> {
         let is_finished =
             |len: &Option<ConstructorPatternLen>| match len.as_ref() {
-                Some(len) => len.is_final(),
+                Some(len) => len.is_basic(),
                 None => false,
             };
         //if fully solved, do nothing
@@ -374,6 +381,9 @@ impl Pattern {
         }
         Ok(())
     }
+    pub fn produce(&self) -> &FieldProducts {
+        &self.products
+    }
     pub fn root_len(&self) -> IntTypeU {
         self.root_len
     }
@@ -408,6 +418,7 @@ impl TryFrom<Pattern> for semantic::pattern::Pattern {
             len,
             root_len: _,
             mut blocks,
+            products: _,
         } = value;
         let blocks = blocks
             .drain(..)
@@ -425,6 +436,7 @@ pub enum Block {
         root_len: IntTypeU,
         len: Option<ConstructorPatternLen>,
         fields: Vec<FieldOr>,
+        products: FieldProducts,
     },
     //block with multiple elements unified with ANDs
     And {
@@ -434,6 +446,7 @@ pub enum Block {
         right_root_len: IntTypeU,
         right_len: Option<ConstructorPatternLen>,
         right: Vec<FieldAnd>,
+        products: FieldProducts,
     },
 }
 fn fields_and_solve(
@@ -535,10 +548,17 @@ impl Block {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 let root_len = fields.iter().map(FieldOr::root_len).sum();
+                let len =
+                    fields.is_empty().then(|| PatternLen::Defined(0).into());
+
+                let products = FieldProducts::or_field(
+                    fields.iter().map(FieldOr::produce),
+                );
                 Self::Or {
                     root_len,
-                    len: None,
                     fields,
+                    len,
+                    products,
                 }
             }
             Some(block::pattern::Op::And) | None => {
@@ -563,6 +583,9 @@ impl Block {
                     left.is_empty().then(|| PatternLen::Defined(0).into());
                 let right_len =
                     right.is_empty().then(|| PatternLen::Defined(0).into());
+                let products = FieldProducts::and_field(
+                    left.iter().chain(right.iter()).map(FieldAnd::produce),
+                )?;
                 Self::And {
                     left_root_len,
                     left_len,
@@ -570,6 +593,7 @@ impl Block {
                     right_root_len,
                     right_len,
                     right,
+                    products,
                 }
             }
         };
@@ -585,6 +609,13 @@ impl Block {
             Self::Or { fields, .. } => fields.last().unwrap(/*TODO*/).src(),
         }
     }
+    pub fn produce(&self) -> &FieldProducts {
+        match self {
+            Block::Or { products, .. } | Block::And { products, .. } => {
+                products
+            }
+        }
+    }
     pub fn solve<T: SolverStatus>(
         &mut self,
         solved: &mut T,
@@ -595,6 +626,7 @@ impl Block {
                 root_len: _,
                 len,
                 fields,
+                products: _,
             } => {
                 //if len is already solved, there is nothing todo
                 if is_finished(len) {
@@ -653,6 +685,7 @@ impl Block {
                 right_root_len: _,
                 right_len,
                 right,
+                products: _,
             } => {
                 //if one side is not solved, try to solve it
                 let mut try_solve =
@@ -784,6 +817,7 @@ impl TryFrom<Block> for semantic::pattern::Block {
                 root_len,
                 len: _,
                 mut fields,
+                products: _,
             } => {
                 let fields = fields
                     .drain(..)
@@ -801,6 +835,7 @@ impl TryFrom<Block> for semantic::pattern::Block {
                 right_root_len: _,
                 right_len,
                 mut right,
+                products: _,
             } => {
                 let left = left
                     .drain(..)
@@ -821,6 +856,12 @@ impl TryFrom<Block> for semantic::pattern::Block {
             }
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum FieldOrProduct<'a> {
+    Assembly(&'a Rc<Assembly>),
+    SubPattern(&'a FieldProducts),
 }
 
 //Field used in Or Expressions
@@ -876,6 +917,18 @@ impl FieldOr {
             Self::SubPattern { sub, .. } => sub.root_len(),
         }
     }
+    pub fn produce<'a>(&'a self) -> Option<FieldOrProduct<'a>> {
+        match self {
+            Self::Constraint {
+                src: _,
+                field,
+                constraint: _,
+            } => field.produce().map(FieldOrProduct::Assembly),
+            Self::SubPattern { src: _, sub } => {
+                Some(FieldOrProduct::SubPattern(sub.produce()))
+            }
+        }
+    }
     pub fn constrain(&self, constraint: &mut BitSlice) {
         match self {
             Self::Constraint {
@@ -922,6 +975,13 @@ impl TryFrom<FieldOr> for semantic::pattern::FieldOr {
 }
 
 #[derive(Clone, Debug)]
+pub enum FieldAndProduct<'a> {
+    Assembly(&'a Rc<Assembly>),
+    Token(&'a Rc<Token>),
+    Table(&'a Rc<Table>),
+    SubPattern(&'a FieldProducts),
+}
+#[derive(Clone, Debug)]
 pub enum FieldAnd {
     Constraint {
         field: ConstraintVariable,
@@ -963,6 +1023,23 @@ impl FieldAnd {
             }
         };
         Ok(field)
+    }
+    pub fn produce<'a>(&'a self) -> Option<FieldAndProduct<'a>> {
+        match self {
+            //if the constrain is assembly, only produce the token from it
+            Self::Constraint {
+                field,
+                constraint: _,
+            } => field
+                .produce()
+                .map(|ass| ass.field().map(|ass| &ass.token))
+                .flatten()
+                .map(FieldAndProduct::Token),
+            Self::Field(field) => field.produce(),
+            Self::SubPattern { src: _, sub } => {
+                Some(FieldAndProduct::SubPattern(sub.produce()))
+            }
+        }
     }
     pub fn src(&self) -> &InputSource {
         match self {
@@ -1026,6 +1103,201 @@ impl TryFrom<FieldAnd> for semantic::pattern::FieldAnd {
     }
 }
 
+//#[derive(Clone, Debug)]
+//pub enum FieldProduct {
+//    //value is not explicitly extracted, but the token that it belongs could
+//    //be used to extract other values
+//    Token(Rc<Token>),
+//    //value is explicitly extracted
+//    Assembly(Rc<Assembly>),
+//    //table is built, in some cases, or in all cases
+//    Table(Rc<Table>, bool),
+//}
+
+#[derive(Clone, Debug, Default)]
+pub struct FieldProducts {
+    tokens: HashMap<*const Token, (Rc<Token>, usize)>,
+    fields: HashMap<*const Assembly, Rc<Assembly>>,
+    tables: HashMap<*const Table, (Rc<Table>, bool)>,
+}
+
+impl<'a> From<FieldOrProduct<'a>> for FieldProducts {
+    fn from(value: FieldOrProduct<'a>) -> Self {
+        match value {
+            FieldOrProduct::Assembly(ass) => {
+                let mut value = Self::default();
+                //TODO maybe or blocks should only produce tokens
+                value
+                    .fields
+                    .entry(Rc::as_ptr(ass))
+                    .or_insert(Rc::clone(ass));
+                let token = &ass.field().unwrap().token;
+                value
+                    .tokens
+                    .entry(Rc::as_ptr(token))
+                    .or_insert((Rc::clone(token), 1));
+                value
+            }
+            FieldOrProduct::SubPattern(sub) => sub.clone(),
+        }
+    }
+}
+
+//ironicly the and-block need to be `or` and the or-block need to be `and`
+impl FieldProducts {
+    pub fn and(mut self, other: &FieldProducts) -> Self {
+        let mut new = Self::default();
+        //new will contain the ass/tokens that both have, but all the tables
+        //only set the always-produce to false, if only one contains
+        for (key, field) in self.fields.drain() {
+            if other.fields.contains_key(&key) {
+                new.fields.insert(key, field);
+            }
+        }
+        for (key, (field, field_num)) in self.tokens.drain() {
+            if let Some((_, other_num)) = other.tokens.get(&key) {
+                new.tokens.insert(key, (field, field_num + other_num));
+            }
+        }
+        for (key, (table, mut always)) in self.tables.drain() {
+            if always {
+                if let Some((_, other_always)) = other.tables.get(&key) {
+                    always &= other_always;
+                }
+            }
+            new.tables.insert(key, (table, always));
+        }
+        for (key, (table, _)) in other.tables.iter() {
+            new.tables.entry(*key).or_insert((Rc::clone(table), false));
+        }
+        new
+    }
+    //find fields produced in a `or` block
+    pub fn or_field<'a>(
+        mut fields: impl Iterator<Item = Option<FieldOrProduct<'a>>> + 'a,
+    ) -> Self {
+        let mut base: Self = if let Some(Some(first)) = fields.next() {
+            first.into()
+        } else {
+            return Self::default();
+        };
+        for field in fields {
+            let field = if let Some(field) = field {
+                field.into()
+            } else {
+                return Self::default();
+            };
+            match field {
+                FieldOrProduct::Assembly(ass) => {
+                    //TODO maybe or blocks should only produce tokens
+                    //ass/token need to be present in all orFields, or it can't
+                    //be produced, so remove all ass/token, but this one, if
+                    //exists.
+                    //any tables should be set to not-always-produce
+                    let token = &ass.field().unwrap().token;
+                    let token_ptr = Rc::as_ptr(token);
+                    let token = base.tokens.remove(&token_ptr);
+                    let ass_ptr = Rc::as_ptr(ass);
+                    let ass = base.fields.remove(&ass_ptr);
+                    base.tokens.clear();
+                    base.fields.clear();
+                    base.tables.values_mut().for_each(
+                        |(_table, always_produce)| *always_produce = false,
+                    );
+                    token.map(|token| base.tokens.insert(token_ptr, token));
+                    ass.map(|ass| base.fields.insert(ass_ptr, ass));
+                }
+                FieldOrProduct::SubPattern(sub) => base = base.and(sub),
+            }
+        }
+        base
+    }
+    pub fn or(mut self, other: &FieldProducts) -> Result<Self, PatternError> {
+        for (key, field) in other.fields.iter() {
+            match self.fields.entry(*key) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    //TODO return error, here, we need a src todo so
+                    todo!("Error field is dulicated on pattern {}", field.name);
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(Rc::clone(field));
+                }
+            }
+        }
+        for (key, (field, field_num)) in other.tokens.iter() {
+            let (_, num) =
+                self.tokens.entry(*key).or_insert((Rc::clone(field), 0));
+            *num += field_num;
+        }
+        for (key, (table, _)) in other.tables.iter() {
+            match self.tables.entry(*key) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    //TODO return error, here, we need a src todo so
+                    todo!("Error table is dulicated on pattern {}", table.name);
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert((Rc::clone(table), true));
+                }
+            }
+        }
+        Ok(self)
+    }
+    //find fields produced in a `and` block
+    pub fn and_field<'a>(
+        fields: impl Iterator<Item = Option<FieldAndProduct<'a>>> + 'a,
+    ) -> Result<Self, PatternError> {
+        fields.filter_map(|x| x).try_fold(
+            FieldProducts::default(),
+            |mut acc, field| match field {
+                //if the ass_field already exists, this is an error, otherwise
+                //just add
+                FieldAndProduct::Assembly(ass) => {
+                    let ptr = Rc::as_ptr(ass);
+                    match acc.fields.entry(ptr) {
+                        std::collections::hash_map::Entry::Occupied(_) => {
+                            //TODO return error, here, we need a src todo so
+                            todo!(
+                                "Error field is dulicated on pattern {}",
+                                ass.name
+                            );
+                        }
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert(Rc::clone(ass));
+                        }
+                    }
+                    Ok(acc)
+                }
+                //just add the token, if exists, increase the counter
+                FieldAndProduct::Token(token) => {
+                    let ptr = Rc::as_ptr(token);
+                    let (_, counter) =
+                        acc.tokens.entry(ptr).or_insert((Rc::clone(token), 0));
+                    *counter += 1;
+                    Ok(acc)
+                }
+                //table is add, if exists, return error
+                FieldAndProduct::Table(table) => {
+                    let ptr = Rc::as_ptr(table);
+                    match acc.tables.entry(ptr) {
+                        std::collections::hash_map::Entry::Occupied(_) => {
+                            //TODO return error, here, we need a src todo so
+                            todo!(
+                                "Error table is dulicated on pattern {}",
+                                table.name
+                            );
+                        }
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert((Rc::clone(table), true));
+                        }
+                    }
+                    Ok(acc)
+                }
+                FieldAndProduct::SubPattern(sub) => acc.or(sub),
+            },
+        )
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ConstraintVariable {
     Assembly {
@@ -1050,6 +1322,12 @@ impl ConstraintVariable {
                 assembly.token_len()
             }
             ConstraintVariable::Varnode { .. } => 0,
+        }
+    }
+    pub fn produce(&self) -> Option<&Rc<Assembly>> {
+        match self {
+            Self::Assembly { src: _, assembly } => Some(assembly),
+            Self::Varnode { .. } => None,
         }
     }
 }
@@ -1097,6 +1375,19 @@ impl Reference {
             Self::Assembly { assembly, .. } => assembly.token_len(),
             Self::Varnode { .. } => 0,
             Self::Table { .. } => 0,
+        }
+    }
+    pub fn produce<'a>(&'a self) -> Option<FieldAndProduct<'a>> {
+        match self {
+            Self::Assembly { src: _, assembly } => {
+                Some(FieldAndProduct::Assembly(assembly))
+            }
+            Self::Varnode { .. } => None,
+            Self::Table {
+                table,
+                src: _,
+                self_ref: _,
+            } => Some(FieldAndProduct::Table(table)),
         }
     }
 }
