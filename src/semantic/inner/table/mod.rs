@@ -463,13 +463,13 @@ impl<'a> Sleigh<'a> {
         let pattern = with_block_current
             .pattern(constructor.pattern)
             .to_table(table_pos.clone())?;
-        let pattern =
+        let mut pattern =
             Pattern::new(self, pattern, &table).to_table(table_pos.clone())?;
 
         let disassembly =
             with_block_current.disassembly(constructor.dissasembly);
         let disassembly = disassembly
-            .map(|disassembly| self.table_disassembly(disassembly))
+            .map(|disassembly| self.table_disassembly(&mut pattern, disassembly))
             .transpose()
             .to_table(table_pos.clone())?
             .unwrap_or_default();

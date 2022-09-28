@@ -5,7 +5,7 @@ use crate::semantic::inner::disassembly::{
     AddrScope, Assertation, Assignment, Disassembly, ExprBuilder, GlobalSet,
     ReadScope, Variable, WriteScope,
 };
-use crate::semantic::inner::{disassembly, Sleigh};
+use crate::semantic::inner::{disassembly, Pattern, Sleigh};
 use crate::semantic::varnode::{Varnode, VarnodeType};
 use crate::semantic::DisassemblyError;
 use crate::syntax::block;
@@ -13,10 +13,12 @@ use crate::syntax::block;
 impl<'a> Sleigh<'a> {
     pub(crate) fn table_disassembly(
         &self,
+        pattern: &mut Pattern,
         disassembly: block::disassembly::Disassembly<'a>,
     ) -> Result<Disassembly, DisassemblyError> {
         let mut builder = Builder {
             sleigh: self,
+            pattern,
             output: Disassembly::default(),
         };
         builder.build(disassembly)?;
@@ -27,11 +29,15 @@ impl<'a> Sleigh<'a> {
 #[derive(Debug)]
 pub struct Builder<'a, 'b> {
     sleigh: &'b Sleigh<'a>,
+    pattern: &'a mut Pattern,
     output: Disassembly,
 }
 
 impl<'a, 'b> Builder<'a, 'b> {
-    fn addr_scope(&self, name: &'a str) -> Result<AddrScope, DisassemblyError> {
+    fn addr_scope(
+        &mut self,
+        name: &'a str,
+    ) -> Result<AddrScope, DisassemblyError> {
         use super::GlobalScope::*;
         //get from local, otherwise get from global
         let src = self.sleigh.input_src(name);
@@ -83,7 +89,10 @@ impl<'a, 'b> Builder<'a, 'b> {
             });
         Ok(var)
     }
-    fn context(&self, name: &'a str) -> Result<Rc<Varnode>, DisassemblyError> {
+    fn context(
+        &mut self,
+        name: &'a str,
+    ) -> Result<Rc<Varnode>, DisassemblyError> {
         let src = self.sleigh.input_src(name);
         let varnode = self
             .sleigh
@@ -96,7 +105,7 @@ impl<'a, 'b> Builder<'a, 'b> {
         Ok(varnode)
     }
     fn new_globalset(
-        &self,
+        &mut self,
         input: block::disassembly::GlobalSet<'a>,
     ) -> Result<GlobalSet, DisassemblyError> {
         let address = match input.address {
@@ -144,7 +153,7 @@ impl<'a, 'b> Builder<'a, 'b> {
 
 impl<'a, 'b> disassembly::ExprBuilder<'a> for Builder<'a, 'b> {
     fn read_scope(
-        &self,
+        &mut self,
         name: &'b str,
     ) -> Result<Rc<dyn ReadScope>, DisassemblyError> {
         use super::GlobalScope::*;
@@ -159,7 +168,16 @@ impl<'a, 'b> disassembly::ExprBuilder<'a> for Builder<'a, 'b> {
                     .get_global(name)
                     .ok_or(DisassemblyError::MissingRef(src.clone()))?
                 {
-                    Assembly(x) => Ok(x.as_read()),
+                    Assembly(x) => {
+                        //if is a field, check the produce_assembly in pattern
+                        if x.field().is_some() {
+                            //check the pattern will produce this field
+                            if !self.pattern.produce_assembly(x) {
+                                return Err(DisassemblyError::InvalidRef(src));
+                            }
+                        }
+                        Ok(x.as_read())
+                    }
                     Varnode(x)
                         if matches!(
                             x.varnode_type,

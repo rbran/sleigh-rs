@@ -15,11 +15,11 @@ use super::Table;
 
 pub trait ExprBuilder<'a> {
     fn read_scope(
-        &self,
+        &mut self,
         name: &'a str,
     ) -> Result<Rc<dyn ReadScope>, DisassemblyError>;
     fn new_expr(
-        &self,
+        &mut self,
         mut input: block::disassembly::Expr<'a>,
     ) -> Result<Expr, DisassemblyError> {
         let rpn = input
@@ -30,7 +30,7 @@ pub trait ExprBuilder<'a> {
         Ok(Expr { rpn })
     }
     fn new_expr_element(
-        &self,
+        &mut self,
         input: block::disassembly::ExprElement<'a>,
     ) -> Result<ExprElement, DisassemblyError> {
         let ele = match input {
@@ -38,7 +38,7 @@ pub trait ExprBuilder<'a> {
                 ExprElement::Value(int.as_read())
             }
             block::disassembly::ExprElement::Value(Value::Ident(ident)) => {
-                ExprElement::Value(self.read_scope(ident)?)
+                self.read_scope(ident).map(ExprElement::Value)?
             }
             block::disassembly::ExprElement::Op(x) => ExprElement::Op(x),
             block::disassembly::ExprElement::OpUnary(x) => {
@@ -51,16 +51,19 @@ pub trait ExprBuilder<'a> {
 
 pub trait DisassemblyBuilder<'a>: ExprBuilder<'a> {
     fn insert_assertation(&mut self, ass: Assertation);
-    fn addr_scope(&self, name: &'a str) -> Result<AddrScope, DisassemblyError>;
+    fn addr_scope(
+        &mut self,
+        name: &'a str,
+    ) -> Result<AddrScope, DisassemblyError>;
     //TODO Write Scope shold never fail, leave the Result just in case
     fn write_scope(
         &mut self,
         name: &'a str,
     ) -> Result<Rc<dyn WriteScope>, DisassemblyError>;
-    fn context(&self, name: &'a str) -> Result<Rc<Varnode>, DisassemblyError>;
+    fn context(&mut self, name: &'a str) -> Result<Rc<Varnode>, DisassemblyError>;
 
     fn new_globalset(
-        &self,
+        &mut self,
         input: block::disassembly::GlobalSet<'a>,
     ) -> Result<GlobalSet, DisassemblyError> {
         let address = match input.address {
@@ -83,12 +86,12 @@ pub trait DisassemblyBuilder<'a>: ExprBuilder<'a> {
         input: block::disassembly::Assertation<'a>,
     ) -> Result<Assertation, DisassemblyError> {
         match input {
-            block::disassembly::Assertation::GlobalSet(globalset) => self
-                .new_globalset(globalset)
-                .map(|global| Assertation::GlobalSet(global)),
-            block::disassembly::Assertation::Assignment(assignment) => self
-                .new_assignment(assignment)
-                .map(|ass| Assertation::Assignment(ass)),
+            block::disassembly::Assertation::GlobalSet(globalset) => {
+                self.new_globalset(globalset).map(Assertation::GlobalSet)
+            }
+            block::disassembly::Assertation::Assignment(assignment) => {
+                self.new_assignment(assignment).map(Assertation::Assignment)
+            }
         }
     }
     fn extend(

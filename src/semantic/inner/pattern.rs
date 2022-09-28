@@ -312,6 +312,9 @@ impl Pattern {
             .map(Block::produce)
             .try_fold(FieldProducts::default(), FieldProducts::or)?;
 
+        //TODO verify that all assembly fields used in the constraint value
+        //are build in previous (maybe current) block
+
         Ok(Self {
             root_len,
             blocks,
@@ -326,6 +329,36 @@ impl Pattern {
     }
     pub fn blocks(&self) -> impl Iterator<Item = &Block> {
         self.blocks.iter()
+    }
+    pub fn produce_assembly(&mut self, assembly: &Rc<Assembly>) -> bool {
+        //if this pattern already produces this assembly explicitly, then ok
+        let assembly_ptr = Rc::as_ptr(assembly);
+        if self.products.fields.contains_key(&assembly_ptr) {
+            return true;
+        }
+        //if this token don't exists on the pattern, or is build multiple times,
+        //then impossible
+        let token = &assembly.field().unwrap().token;
+        let token_ptr = Rc::as_ptr(token);
+        match self.products.tokens.get(&token_ptr) {
+            Some((_, 1)) => (),
+            Some((_, 0)) => unreachable!(),
+            None | Some(_) => return false,
+        }
+        //if the token is present only once, extract this assembly from the
+        //block that produces it
+        let block = self
+            .blocks
+            .iter_mut()
+            .find(|block| block.produce().tokens.contains_key(&token_ptr))
+            .expect("Token producer not found in pattern");
+        if !block.produce_assembly(assembly) {
+            unreachable!("Block is unable to produce a field from token")
+        }
+        self.products
+            .fields
+            .insert(assembly_ptr, Rc::clone(assembly));
+        true
     }
     pub fn solve(
         &mut self,
@@ -542,7 +575,7 @@ impl Block {
                     .drain(..)
                     .map(|Element { field, ellipsis }| {
                         if ellipsis.is_some() {
-                            return Err(todo!("Ellipsis on OR pattern?"));
+                            todo!("Ellipsis on OR pattern?");
                         }
                         FieldOr::new(sleigh, field, table)
                     })
@@ -613,6 +646,76 @@ impl Block {
         match self {
             Block::Or { products, .. } | Block::And { products, .. } => {
                 products
+            }
+        }
+    }
+    pub fn produce_assembly(&mut self, assembly: &Rc<Assembly>) -> bool {
+        let src = self.src().clone();
+        match self {
+            //all fields need to produce this assembly
+            Block::Or {
+                fields, products, ..
+            } => {
+                let updated = fields
+                    .iter_mut()
+                    .map(|field| match field {
+                        FieldOr::Constraint {
+                            src: _,
+                            field:
+                                ConstraintVariable::Assembly {
+                                    assembly: field, ..
+                                },
+                            constraint: _,
+                        } => {
+                            assert!(Rc::as_ptr(assembly) == Rc::as_ptr(field));
+                            true
+                        }
+                        FieldOr::Constraint { .. } => unreachable!(),
+                        FieldOr::SubPattern { src: _, sub } => {
+                            sub.produce_assembly(assembly)
+                        }
+                    })
+                    .all(|x| x);
+                if !updated {
+                    unreachable!("Unable to produce assembly in or field");
+                }
+                products
+                    .fields
+                    .insert(Rc::as_ptr(assembly), Rc::clone(assembly));
+                true
+            }
+            Block::And { left, right, .. } => {
+                //find the field that can produce this assembly
+                let left: &mut Vec<FieldAnd> = left;
+                let is_found = left
+                    .iter_mut()
+                    .chain(right.iter_mut())
+                    .map(|field: &mut FieldAnd| match field {
+                        FieldAnd::Constraint {
+                            field:
+                                ConstraintVariable::Assembly {
+                                    src: _,
+                                    assembly: field,
+                                },
+                            constraint: _,
+                        } if Rc::as_ptr(assembly) == Rc::as_ptr(field) => true,
+                        FieldAnd::Constraint { .. } => false,
+                        FieldAnd::Field(Reference::Assembly {
+                            src: _,
+                            assembly: field,
+                        }) if Rc::as_ptr(assembly) == Rc::as_ptr(field) => true,
+                        FieldAnd::Field(_) => false,
+                        FieldAnd::SubPattern { src: _, sub } => {
+                            sub.produce_assembly(assembly)
+                        }
+                    })
+                    .any(|x| x);
+                if !is_found {
+                    unreachable!(
+                        "Unable to find the assembly generator in and field"
+                    );
+                }
+                true
             }
         }
     }
@@ -1442,7 +1545,7 @@ impl ConstraintField {
         input: block::pattern::ConstraintValue<'a>,
     ) -> Result<Self, PatternError> {
         let block::pattern::ConstraintValue { expr } = input;
-        let builder = DisassemblyBuilder { sleigh };
+        let mut builder = DisassemblyBuilder { sleigh };
         let expr = builder.new_expr(expr)?.convert();
         Ok(Self { expr })
     }
@@ -1455,7 +1558,7 @@ pub struct DisassemblyBuilder<'a, 'b> {
 
 impl<'a, 'b> ExprBuilder<'a> for DisassemblyBuilder<'a, 'b> {
     fn read_scope(
-        &self,
+        &mut self,
         name: &'a str,
     ) -> Result<Rc<dyn ReadScope>, DisassemblyError> {
         use super::GlobalScope::*;

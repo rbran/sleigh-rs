@@ -502,7 +502,7 @@ pub enum GlobalScope {
 }
 
 impl GlobalScope {
-    //TODO Why? replace by option
+    //TODO Why? replace this by FnMut and remove clone from `unwrap_*`
     pub fn space_or<T>(&self, err: T) -> Result<Rc<Space>, T> {
         match self {
             GlobalScope::Space(x) => Ok(Rc::clone(x)),
