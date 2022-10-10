@@ -419,52 +419,41 @@ impl Sleigh {
             global_scope,
         })
     }
-    pub fn spaces<'a>(&'a self) -> impl Iterator<Item = Rc<Space>> + 'a {
-        self.global_scope
-            .values()
-            .filter_map(|x| x.unwrap_space())
-            .map(Rc::clone)
+    pub fn spaces<'a>(&'a self) -> impl Iterator<Item = &'a Rc<Space>> + 'a {
+        self.global_scope.values().filter_map(|x| x.unwrap_space())
     }
-    pub fn varnodes<'a>(&'a self) -> impl Iterator<Item = Rc<Varnode>> + 'a {
+    pub fn varnodes<'a>(
+        &'a self,
+    ) -> impl Iterator<Item = &'a Rc<Varnode>> + 'a {
         self.global_scope
             .values()
             .filter_map(|x| x.unwrap_varnode())
-            .map(Rc::clone)
     }
     pub fn user_functions<'a>(
         &'a self,
-    ) -> impl Iterator<Item = Rc<UserFunction>> + 'a {
+    ) -> impl Iterator<Item = &'a Rc<UserFunction>> + 'a {
         self.global_scope
             .values()
             .filter_map(|x| x.unwrap_user_function())
-            .map(Rc::clone)
     }
     pub fn pcode_macros<'a>(
         &'a self,
-    ) -> impl Iterator<Item = Rc<PcodeMacro>> + 'a {
+    ) -> impl Iterator<Item = &'a Rc<PcodeMacro>> + 'a {
         self.global_scope
             .values()
             .filter_map(|x| x.unwrap_pcode_macro())
-            .map(Rc::clone)
     }
-    pub fn tables<'a>(&'a self) -> impl Iterator<Item = Rc<Table>> + 'a {
-        self.global_scope
-            .values()
-            .filter_map(|x| x.unwrap_table())
-            .map(Rc::clone)
+    pub fn tables<'a>(&'a self) -> impl Iterator<Item = &'a Rc<Table>> + 'a {
+        self.global_scope.values().filter_map(|x| x.unwrap_table())
     }
-    pub fn tokens<'a>(&'a self) -> impl Iterator<Item = Rc<Token>> + 'a {
-        self.global_scope
-            .values()
-            .filter_map(|x| x.unwrap_token())
-            .map(Rc::clone)
+    pub fn tokens<'a>(&'a self) -> impl Iterator<Item = &'a Rc<Token>> + 'a {
+        self.global_scope.values().filter_map(|x| x.unwrap_token())
     }
     pub fn token_fields<'a>(
         &'a self,
-    ) -> impl Iterator<Item = Rc<assembly::Assembly>> + 'a {
+    ) -> impl Iterator<Item = &'a Rc<assembly::Assembly>> + 'a {
         self.global_scope
             .values()
             .filter_map(|x| x.unwrap_token_field())
-            .map(Rc::clone)
     }
 }

@@ -64,16 +64,70 @@ impl PatternLen {
         }
     }
 }
+#[derive(Clone, Debug)]
+pub struct FieldProductTable {
+    table: Rc<Table>,
+    always: bool,
+    recursive: bool,
+}
+
+impl FieldProductTable {
+    pub(crate) fn new(table: Rc<Table>, always: bool, recursive: bool) -> Self {
+        Self {
+            table,
+            always,
+            recursive,
+        }
+    }
+    pub fn table(&self) -> &Rc<Table> {
+        &self.table
+    }
+    pub fn always(&self) -> bool {
+        self.always
+    }
+    pub fn recursive(&self) -> bool {
+        self.recursive
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FieldProducts {
+    fields: Vec<Rc<Assembly>>,
+    tables: Vec<FieldProductTable>,
+}
+impl FieldProducts {
+    pub fn new(
+        fields: Vec<Rc<Assembly>>,
+        tables: Vec<FieldProductTable>,
+    ) -> Self {
+        Self { fields, tables }
+    }
+    pub fn tables(&self) -> &[FieldProductTable] {
+        &self.tables
+    }
+    pub fn fields(&self) -> &[Rc<Assembly>] {
+        &self.fields
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Pattern {
     len: PatternLen,
+    products: FieldProducts,
     blocks: Vec<Block>,
 }
 
 impl Pattern {
-    pub(crate) fn new(blocks: Vec<Block>, len: PatternLen) -> Self {
-        Self { blocks, len }
+    pub(crate) fn new(
+        blocks: Vec<Block>,
+        len: PatternLen,
+        products: FieldProducts,
+    ) -> Self {
+        Self {
+            blocks,
+            len,
+            products,
+        }
     }
     pub fn blocks(&self) -> &[Block] {
         &self.blocks
@@ -81,19 +135,36 @@ impl Pattern {
     pub fn len(&self) -> &PatternLen {
         &self.len
     }
+    pub fn produced(&self) -> &FieldProducts {
+        &self.products
+    }
 }
 
 #[derive(Clone, Debug)]
 pub enum Block {
     ///block with multiple elements unified with ORs
-    Or { len: IntTypeU, fields: Vec<FieldOr> },
+    Or {
+        len: IntTypeU,
+        fields: Vec<FieldOr>,
+        products: FieldProducts,
+    },
     ///block with multiple elements unified with ANDs
     And {
         left_len: PatternLen,
         left: Vec<FieldAnd>,
         right_len: PatternLen,
         right: Vec<FieldAnd>,
+        products: FieldProducts,
     },
+}
+impl Block {
+    pub fn produced(&self) -> &FieldProducts {
+        match self {
+            Block::Or { products, .. } | Block::And { products, .. } => {
+                products
+            }
+        }
+    }
 }
 
 //Field used in Or Expressions

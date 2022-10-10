@@ -60,7 +60,10 @@ pub trait DisassemblyBuilder<'a>: ExprBuilder<'a> {
         &mut self,
         name: &'a str,
     ) -> Result<Rc<dyn WriteScope>, DisassemblyError>;
-    fn context(&mut self, name: &'a str) -> Result<Rc<Varnode>, DisassemblyError>;
+    fn context(
+        &mut self,
+        name: &'a str,
+    ) -> Result<Rc<Varnode>, DisassemblyError>;
 
     fn new_globalset(
         &mut self,
@@ -335,6 +338,7 @@ impl Disassembly {
             .collect();
         let assertations: Vec<_> =
             self.assertations.drain(..).map(|x| x.convert()).collect();
+        //TODO can pre-disassembly call global-set?
         //TODO disassembly need to be separated between before and after pattern
         //match but for now it is just a flag that make everything before or
         //after if there is an inst_next on the execution.

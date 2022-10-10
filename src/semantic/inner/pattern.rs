@@ -6,12 +6,15 @@ use crate::base::IntTypeU;
 use crate::semantic::assembly::Assembly;
 use crate::semantic::inner::table::Table;
 use crate::semantic::inner::GlobalScope;
-use crate::semantic::pattern::{ConstraintField, PatternError};
+use crate::semantic::pattern::{
+    ConstraintField, FieldProductTable, PatternError,
+};
 use crate::semantic::table::DisassemblyError;
 use crate::semantic::varnode::{Varnode, VarnodeType};
 use crate::syntax::block;
 use crate::{semantic, InputSource, PatternLen, Token};
 
+use super::assembly::AssemblyType;
 use super::disassembly::{ExprBuilder, ReadScope};
 use super::{Sleigh, SolverStatus};
 use semantic::pattern::CmpOp;
@@ -458,7 +461,8 @@ impl TryFrom<Pattern> for semantic::pattern::Pattern {
             .map(|block| block.try_into())
             .collect::<Result<_, _>>()?;
         let len = len.unwrap().basic().unwrap();
-        Ok(Self::new(blocks, len))
+        let products = value.products.into();
+        Ok(Self::new(blocks, len, products))
     }
 }
 
@@ -618,6 +622,7 @@ impl Block {
                     right.is_empty().then(|| PatternLen::Defined(0).into());
                 let products = FieldProducts::and_field(
                     left.iter().chain(right.iter()).map(FieldAnd::produce),
+                    table,
                 )?;
                 Self::And {
                     left_root_len,
@@ -644,16 +649,14 @@ impl Block {
     }
     pub fn produce(&self) -> &FieldProducts {
         match self {
-            Block::Or { products, .. } | Block::And { products, .. } => {
-                products
-            }
+            Self::Or { products, .. } | Self::And { products, .. } => products,
         }
     }
     pub fn produce_assembly(&mut self, assembly: &Rc<Assembly>) -> bool {
-        let src = self.src().clone();
+        //let src = self.src().clone();
         match self {
             //all fields need to produce this assembly
-            Block::Or {
+            Self::Or {
                 fields, products, ..
             } => {
                 let updated = fields
@@ -677,14 +680,14 @@ impl Block {
                     })
                     .all(|x| x);
                 if !updated {
-                    unreachable!("Unable to produce assembly in or field");
+                    unreachable!("Unable to produce assembly in all or fields");
                 }
                 products
                     .fields
                     .insert(Rc::as_ptr(assembly), Rc::clone(assembly));
                 true
             }
-            Block::And { left, right, .. } => {
+            Self::And { left, right, .. } => {
                 //find the field that can produce this assembly
                 let left: &mut Vec<FieldAnd> = left;
                 let is_found = left
@@ -725,7 +728,7 @@ impl Block {
     ) -> Result<(), PatternError> {
         let src = self.src().clone();
         match self {
-            Block::Or {
+            Self::Or {
                 root_len: _,
                 len,
                 fields,
@@ -781,7 +784,7 @@ impl Block {
                     solved.iam_not_finished_location(&src, file!(), line!());
                 }
             }
-            Block::And {
+            Self::And {
                 left_root_len: _,
                 left_len,
                 left,
@@ -829,8 +832,8 @@ impl Block {
     }
     pub fn root_len(&self) -> IntTypeU {
         match self {
-            Block::Or { root_len: len, .. } => *len,
-            Block::And {
+            Self::Or { root_len: len, .. } => *len,
+            Self::And {
                 left_root_len,
                 right_root_len,
                 ..
@@ -839,9 +842,9 @@ impl Block {
     }
     pub fn len(&self) -> &Option<ConstructorPatternLen> {
         match self {
-            Block::Or { len, .. } => len,
+            Self::Or { len, .. } => len,
             //NOTE left_len define the final len, right need to be smaller
-            Block::And { left_len, .. } => left_len,
+            Self::And { left_len, .. } => left_len,
         }
     }
     pub fn constrain(&self, constraint: &mut BitSlice) {
@@ -917,18 +920,22 @@ impl TryFrom<Block> for semantic::pattern::Block {
     fn try_from(value: Block) -> Result<Self, Self::Error> {
         match value {
             Block::Or {
-                root_len,
-                len: _,
+                root_len: _,
+                len,
                 mut fields,
-                products: _,
+                products,
             } => {
                 let fields = fields
                     .drain(..)
                     .map(|field| field.try_into())
                     .collect::<Result<_, _>>()?;
+                let products = products.into();
+                //Can each branch of the or pattern generate diff lens?
+                let len = len.unwrap().single_len().unwrap();
                 Ok(Self::Or {
-                    len: root_len,
+                    len,
                     fields,
+                    products,
                 })
             }
             Block::And {
@@ -938,7 +945,7 @@ impl TryFrom<Block> for semantic::pattern::Block {
                 right_root_len: _,
                 right_len,
                 mut right,
-                products: _,
+                products,
             } => {
                 let left = left
                     .drain(..)
@@ -950,11 +957,13 @@ impl TryFrom<Block> for semantic::pattern::Block {
                     .collect::<Result<_, _>>()?;
                 let left_len = left_len.unwrap().basic().unwrap();
                 let right_len = right_len.unwrap().basic().unwrap();
+                let products = products.into();
                 Ok(Self::And {
                     left,
                     left_len,
                     right,
                     right_len,
+                    products,
                 })
             }
         }
@@ -963,7 +972,7 @@ impl TryFrom<Block> for semantic::pattern::Block {
 
 #[derive(Clone, Debug)]
 pub enum FieldOrProduct<'a> {
-    Assembly(&'a Rc<Assembly>),
+    Token(&'a Rc<Token>),
     SubPattern(&'a FieldProducts),
 }
 
@@ -1026,7 +1035,12 @@ impl FieldOr {
                 src: _,
                 field,
                 constraint: _,
-            } => field.produce().map(FieldOrProduct::Assembly),
+            } => field
+                .produce()
+                .map(|ass| ass.field())
+                .flatten()
+                .map(|x| &x.token)
+                .map(FieldOrProduct::Token),
             Self::SubPattern { src: _, sub } => {
                 Some(FieldOrProduct::SubPattern(sub.produce()))
             }
@@ -1156,8 +1170,8 @@ impl FieldAnd {
         solved: &mut impl SolverStatus,
     ) -> Result<(), PatternError> {
         match self {
-            FieldAnd::SubPattern { sub, src: _ } => sub.solve(solved),
-            FieldAnd::Constraint { .. } | FieldAnd::Field(_) => Ok(()),
+            Self::SubPattern { sub, src: _ } => sub.solve(solved),
+            Self::Constraint { .. } | FieldAnd::Field(_) => Ok(()),
         }
     }
     pub fn root_len(&self) -> IntTypeU {
@@ -1216,25 +1230,18 @@ impl TryFrom<FieldAnd> for semantic::pattern::FieldAnd {
 //    //table is built, in some cases, or in all cases
 //    Table(Rc<Table>, bool),
 //}
-
 #[derive(Clone, Debug, Default)]
 pub struct FieldProducts {
     tokens: HashMap<*const Token, (Rc<Token>, usize)>,
     fields: HashMap<*const Assembly, Rc<Assembly>>,
-    tables: HashMap<*const Table, (Rc<Table>, bool)>,
+    tables: HashMap<*const Table, (Rc<Table>, bool, bool)>,
 }
 
 impl<'a> From<FieldOrProduct<'a>> for FieldProducts {
     fn from(value: FieldOrProduct<'a>) -> Self {
         match value {
-            FieldOrProduct::Assembly(ass) => {
+            FieldOrProduct::Token(token) => {
                 let mut value = Self::default();
-                //TODO maybe or blocks should only produce tokens
-                value
-                    .fields
-                    .entry(Rc::as_ptr(ass))
-                    .or_insert(Rc::clone(ass));
-                let token = &ass.field().unwrap().token;
                 value
                     .tokens
                     .entry(Rc::as_ptr(token))
@@ -1243,6 +1250,24 @@ impl<'a> From<FieldOrProduct<'a>> for FieldProducts {
             }
             FieldOrProduct::SubPattern(sub) => sub.clone(),
         }
+    }
+}
+
+impl From<FieldProducts> for semantic::pattern::FieldProducts {
+    fn from(mut value: FieldProducts) -> Self {
+        let tables = value
+            .tables
+            .drain()
+            .map(|(_, (table, always_produce, recursive))| {
+                FieldProductTable::new(
+                    table.reference(),
+                    always_produce,
+                    recursive,
+                )
+            })
+            .collect();
+        let fields = value.fields.drain().map(|(_, v)| v).collect();
+        Self::new(fields, tables)
     }
 }
 
@@ -1262,16 +1287,21 @@ impl FieldProducts {
                 new.tokens.insert(key, (field, field_num + other_num));
             }
         }
-        for (key, (table, mut always)) in self.tables.drain() {
+        for (key, (table, mut always, recursive1)) in self.tables.drain() {
             if always {
-                if let Some((_, other_always)) = other.tables.get(&key) {
+                if let Some((_, other_always, recursive2)) =
+                    other.tables.get(&key)
+                {
+                    assert_eq!(recursive1, *recursive2);
                     always &= other_always;
                 }
             }
-            new.tables.insert(key, (table, always));
+            new.tables.insert(key, (table, always, recursive1));
         }
-        for (key, (table, _)) in other.tables.iter() {
-            new.tables.entry(*key).or_insert((Rc::clone(table), false));
+        for (key, (table, _, rec)) in other.tables.iter() {
+            new.tables
+                .entry(*key)
+                .or_insert((Rc::clone(table), false, *rec));
         }
         new
     }
@@ -1291,24 +1321,17 @@ impl FieldProducts {
                 return Self::default();
             };
             match field {
-                FieldOrProduct::Assembly(ass) => {
-                    //TODO maybe or blocks should only produce tokens
-                    //ass/token need to be present in all orFields, or it can't
-                    //be produced, so remove all ass/token, but this one, if
-                    //exists.
-                    //any tables should be set to not-always-produce
-                    let token = &ass.field().unwrap().token;
+                FieldOrProduct::Token(token) => {
+                    //delete anything that is not this token
                     let token_ptr = Rc::as_ptr(token);
-                    let token = base.tokens.remove(&token_ptr);
-                    let ass_ptr = Rc::as_ptr(ass);
-                    let ass = base.fields.remove(&ass_ptr);
-                    base.tokens.clear();
+                    base.tokens.retain(|&k, _v| k == token_ptr);
                     base.fields.clear();
+                    //any tables should be set to not-always-produce
                     base.tables.values_mut().for_each(
-                        |(_table, always_produce)| *always_produce = false,
+                        |(_table, always_produce, _rec)| {
+                            *always_produce = false
+                        },
                     );
-                    token.map(|token| base.tokens.insert(token_ptr, token));
-                    ass.map(|ass| base.fields.insert(ass_ptr, ass));
                 }
                 FieldOrProduct::SubPattern(sub) => base = base.and(sub),
             }
@@ -1332,14 +1355,14 @@ impl FieldProducts {
                 self.tokens.entry(*key).or_insert((Rc::clone(field), 0));
             *num += field_num;
         }
-        for (key, (table, _)) in other.tables.iter() {
+        for (key, (table, _, rec)) in other.tables.iter() {
             match self.tables.entry(*key) {
                 std::collections::hash_map::Entry::Occupied(_) => {
                     //TODO return error, here, we need a src todo so
                     todo!("Error table is dulicated on pattern {}", table.name);
                 }
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert((Rc::clone(table), true));
+                    entry.insert((Rc::clone(table), true, *rec));
                 }
             }
         }
@@ -1348,10 +1371,17 @@ impl FieldProducts {
     //find fields produced in a `and` block
     pub fn and_field<'a>(
         fields: impl Iterator<Item = Option<FieldAndProduct<'a>>> + 'a,
+        self_table: &Rc<Table>,
     ) -> Result<Self, PatternError> {
         fields.filter_map(|x| x).try_fold(
             FieldProducts::default(),
             |mut acc, field| match field {
+                //ignore episolon
+                FieldAndProduct::Assembly(ass)
+                    if matches!(ass.assembly_type, AssemblyType::Epsilon) =>
+                {
+                    Ok(acc)
+                }
                 //if the ass_field already exists, this is an error, otherwise
                 //just add
                 FieldAndProduct::Assembly(ass) => {
@@ -1390,7 +1420,9 @@ impl FieldProducts {
                             );
                         }
                         std::collections::hash_map::Entry::Vacant(entry) => {
-                            entry.insert((Rc::clone(table), true));
+                            let rec =
+                                Rc::as_ptr(self_table) == Rc::as_ptr(table);
+                            entry.insert((Rc::clone(table), true, rec));
                         }
                     }
                     Ok(acc)
@@ -1421,10 +1453,8 @@ impl ConstraintVariable {
     }
     pub fn len(&self) -> IntTypeU {
         match self {
-            ConstraintVariable::Assembly { assembly, .. } => {
-                assembly.token_len()
-            }
-            ConstraintVariable::Varnode { .. } => 0,
+            Self::Assembly { assembly, .. } => assembly.token_len(),
+            Self::Varnode { .. } => 0,
         }
     }
     pub fn produce(&self) -> Option<&Rc<Assembly>> {

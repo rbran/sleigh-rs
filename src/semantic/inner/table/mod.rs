@@ -469,7 +469,9 @@ impl<'a> Sleigh<'a> {
         let disassembly =
             with_block_current.disassembly(constructor.dissasembly);
         let disassembly = disassembly
-            .map(|disassembly| self.table_disassembly(&mut pattern, disassembly))
+            .map(|disassembly| {
+                self.table_disassembly(&mut pattern, disassembly)
+            })
             .transpose()
             .to_table(table_pos.clone())?
             .unwrap_or_default();
