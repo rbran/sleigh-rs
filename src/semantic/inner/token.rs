@@ -14,10 +14,14 @@ impl<'a> Sleigh<'a> {
         let token_name = Rc::from(token.name);
         let size = NonZeroTypeU::new(token.size)
             .ok_or(SemanticError::TokenInvalidSize)?;
+        let endian = token
+            .endian
+            .or(self.endian)
+            .expect("Global endian undefined at this point is a logical error");
         let token_ref = Rc::new(assembly::Token {
             name: Rc::clone(&token_name),
             size,
-            endian: token.endian,
+            endian,
         });
         self.idents
             .insert(

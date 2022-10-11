@@ -136,8 +136,8 @@ pub struct Token {
     pub name: Rc<str>,
     /// The min size of the instruction this token require
     pub size: NonZeroTypeU,
-    /// Endian of the fields, None use the global endian
-    pub endian: Option<Endian>,
+    /// Endian of the fields
+    pub endian: Endian,
     /////all the fields
     //pub fields: Vec<Rc<Field>>,
 }
