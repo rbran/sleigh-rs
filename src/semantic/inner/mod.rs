@@ -572,7 +572,7 @@ pub struct Sleigh<'a> {
 
     //TODO: HACK: this this is not adequated, it requires that the addr size
     //being deduced some how
-    exec_addr_size: Rc<Cell<FieldSize>>,
+    pub(crate) exec_addr_size: Rc<Cell<FieldSize>>,
 }
 
 impl<'a> Sleigh<'a> {
@@ -705,6 +705,7 @@ impl<'a> Sleigh<'a> {
             .insert(Rc::clone(def.name()), GlobalScope::Table(def));
 
         sleigh.process(&mut WithBlockCurrent::default(), syntax)?;
+
         Ok(sleigh)
     }
 }

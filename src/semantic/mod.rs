@@ -358,6 +358,21 @@ impl Sleigh {
             })
             .collect();
 
+        //if unable to solve the addr size, use the default space addr size
+        if !inner.exec_addr_size.get().is_final() {
+            inner.exec_addr_size.set(inner::FieldSize::Value(
+                (inner
+                    .default_space
+                    .as_ref()
+                    .unwrap()
+                    .memory()
+                    .addr_len()
+                    .get()
+                    * 8)
+                .try_into()
+                .unwrap(),
+            ))
+        }
         //solve all pcodes macros inside the tables
         //solve all tables
         for i in 0.. {
