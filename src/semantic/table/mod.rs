@@ -125,6 +125,9 @@ impl Table {
             pattern_len: PatternLen::Defined(0 /*TODO*/),
         }
     }
+    pub fn export(&self) -> &ExecutionExport {
+        &self.export
+    }
     pub fn is_root(&self) -> bool {
         self.name.as_ref() == IDENT_INSTRUCTION
     }

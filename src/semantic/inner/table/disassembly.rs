@@ -172,7 +172,7 @@ impl<'a, 'b> disassembly::ExprBuilder<'a> for Builder<'a, 'b> {
                         //if is a field, check the produce_assembly in pattern
                         if x.field().is_some() {
                             //check the pattern will produce this field
-                            if !self.pattern.produce_assembly(x) {
+                            if !self.pattern.include_produced_assembly(x) {
                                 return Err(DisassemblyError::InvalidRef(src));
                             }
                         }

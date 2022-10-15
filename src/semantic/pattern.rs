@@ -174,6 +174,7 @@ pub enum FieldOr {
         src: InputSource,
         field: ConstraintVariable,
         constraint: Constraint,
+        implicit_fields: Vec<Rc<Assembly>>,
     },
     SubPattern {
         src: InputSource,
@@ -233,7 +234,6 @@ pub enum Reference {
         src: InputSource,
         varnode: Rc<Varnode>,
     },
-    //tables that extend are not allowed here
     Table {
         self_ref: bool,
         src: InputSource,

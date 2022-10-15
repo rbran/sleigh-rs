@@ -14,7 +14,6 @@ use crate::semantic::varnode::{Varnode, VarnodeType};
 use crate::syntax::block;
 use crate::{semantic, InputSource, PatternLen, Token};
 
-use super::assembly::AssemblyType;
 use super::disassembly::{ExprBuilder, ReadScope};
 use super::{Sleigh, SolverStatus};
 use semantic::pattern::CmpOp;
@@ -333,34 +332,33 @@ impl Pattern {
     pub fn blocks(&self) -> impl Iterator<Item = &Block> {
         self.blocks.iter()
     }
-    pub fn produce_assembly(&mut self, assembly: &Rc<Assembly>) -> bool {
-        //if this pattern already produces this assembly explicitly, then ok
-        let assembly_ptr = Rc::as_ptr(assembly);
-        if self.products.fields.contains_key(&assembly_ptr) {
+    pub fn include_produced_assembly(
+        &mut self,
+        assembly: &Rc<Assembly>,
+    ) -> bool {
+        //field is already produced, do nothing
+        if self.products.produce_assembly(assembly) {
             return true;
         }
-        //if this token don't exists on the pattern, or is build multiple times,
-        //then impossible
-        let token = &assembly.field().unwrap().token;
-        let token_ptr = Rc::as_ptr(token);
-        match self.products.tokens.get(&token_ptr) {
-            Some((_, 1)) => (),
-            Some((_, 0)) => unreachable!(),
-            None | Some(_) => return false,
+        //field can't be produced, don't try
+        if !self.products.can_produce_assembly(assembly) {
+            return false;
         }
-        //if the token is present only once, extract this assembly from the
-        //block that produces it
-        let block = self
+        //try all the blocks, one will be able to produce it
+        let found = self
             .blocks
             .iter_mut()
-            .find(|block| block.produce().tokens.contains_key(&token_ptr))
-            .expect("Token producer not found in pattern");
-        if !block.produce_assembly(assembly) {
-            unreachable!("Block is unable to produce a field from token")
+            .any(|block| block.include_produced_assembly(assembly));
+        if !found {
+            unreachable!("LOGIC_CHECK: Token producer not found in pattern");
         }
+
+        //now that a sub block produces this field, this pattern also produce it
+        let assembly_ptr: *const _ = Rc::as_ptr(assembly);
         self.products
             .fields
-            .insert(assembly_ptr, Rc::clone(assembly));
+            .insert(assembly_ptr, Rc::clone(assembly))
+            .map(|_| unreachable!());
         true
     }
     pub fn solve(
@@ -572,9 +570,9 @@ impl Block {
         table: &Rc<Table>,
     ) -> Result<Self, PatternError> {
         let block::pattern::Block { op, mut elements } = input;
-        use block::pattern::*;
-        let new = match op {
+        let mut new = match op {
             Some(block::pattern::Op::Or) => {
+                use block::pattern::*;
                 let fields = elements
                     .drain(..)
                     .map(|Element { field, ellipsis }| {
@@ -599,6 +597,7 @@ impl Block {
                 }
             }
             Some(block::pattern::Op::And) | None => {
+                use block::pattern::*;
                 let mut left = vec![];
                 let mut right = vec![];
                 let mut left_root_len = 0;
@@ -635,6 +634,44 @@ impl Block {
                 }
             }
         };
+        //this block need to produce all the assembly required in the constraint
+        //values
+        struct FindValues(Vec<Rc<Assembly>>);
+        impl PatternWalker for FindValues {
+            //don't search recursivally, only on this block
+            fn pattern(&mut self, _pattern: &Pattern) -> ControlFlow<(), ()> {
+                ControlFlow::Continue(())
+            }
+            fn constraint(
+                &mut self,
+                constraint: &semantic::inner::pattern::Constraint,
+            ) -> ControlFlow<(), ()> {
+                use semantic::disassembly::ExprElement::*;
+                use semantic::disassembly::ReadScope::*;
+                for expr_ele in constraint.value.expr.rpn.iter() {
+                    match expr_ele {
+                        Value(Assembly(ass)) => self.0.push(Rc::clone(ass)),
+                        Value(Integer(_) | Varnode(_)) | OpUnary(_) | Op(_) => {
+                            ()
+                        }
+                        Value(_) => unreachable!(),
+                    }
+                }
+                ControlFlow::Continue(())
+            }
+        }
+        let mut find = FindValues(vec![]);
+        find.block(&new);
+        for ele in find.0.iter() {
+            let found = new.include_produced_assembly(ele);
+            if !found {
+                //TODO error here and not panic
+                unreachable!(
+                    "LOGIC_CHECK: Token producer not found in pattern"
+                );
+            }
+        }
+
         Ok(new)
     }
     pub fn src(&self) -> &InputSource {
@@ -652,72 +689,136 @@ impl Block {
             Self::Or { products, .. } | Self::And { products, .. } => products,
         }
     }
-    pub fn produce_assembly(&mut self, assembly: &Rc<Assembly>) -> bool {
-        //let src = self.src().clone();
+    pub fn include_produced_assembly(
+        &mut self,
+        assembly: &Rc<Assembly>,
+    ) -> bool {
+        let products = self.produce();
+        //field is already produced, do nothing
+        if products.produce_assembly(assembly) {
+            return true;
+        }
+        //field can't be produced, don't try
+        if !products.can_produce_assembly(assembly) {
+            return false;
+        }
         match self {
             //all fields need to produce this assembly
-            Self::Or {
-                fields, products, ..
+            Self::Or { .. } => {
+                //TODO can Or block produce implicit fields?
+                false
+                //if !products.can_produce_assembly(assembly) {
+                //    return false;
+                //}
+                //let found = fields.iter_mut().all(|field| match field {
+                //    FieldOr::Constraint {
+                //        src: _,
+                //        field:
+                //            ConstraintVariable::Assembly {
+                //                assembly: field, ..
+                //            },
+                //        implicit_fields,
+                //        constraint: _,
+                //    } => {
+                //        assert!(Rc::as_ptr(assembly) == Rc::as_ptr(field));
+                //        implicit_fields.push(Rc::clone(assembly));
+                //        true
+                //    }
+                //    FieldOr::Constraint { .. } => unreachable!(),
+                //    FieldOr::SubPattern { src: _, sub } => {
+                //        sub.include_produced_assembly(assembly)
+                //    }
+                //});
+                //if !found {
+                //    unreachable!("LOGIC_CHECK: Ass producer not found block");
+                //}
+                ////now that all sub fields produces this, the block also produces
+                //products
+                //    .fields
+                //    .insert(Rc::as_ptr(assembly), Rc::clone(assembly))
+                //    .map(|_| unreachable!());
+                //true
+            }
+            Self::And {
+                left,
+                right,
+                products,
+                ..
             } => {
-                let updated = fields
-                    .iter_mut()
-                    .map(|field| match field {
-                        FieldOr::Constraint {
-                            src: _,
-                            field:
-                                ConstraintVariable::Assembly {
-                                    assembly: field, ..
-                                },
-                            constraint: _,
-                        } => {
-                            assert!(Rc::as_ptr(assembly) == Rc::as_ptr(field));
+                //find the field that can produce this assembly
+                fn find_implicit_field(
+                    fields: &mut Vec<FieldAnd>,
+                    find: &Rc<Assembly>,
+                ) -> bool {
+                    let token = &find.field().unwrap().token;
+                    let token_ptr = Rc::as_ptr(token);
+                    let add = fields.iter_mut().find_map(|field| {
+                        match field {
+                            FieldAnd::Field(Reference::Assembly {
+                                src,
+                                assembly: field,
+                            })
+                            | FieldAnd::Constraint {
+                                field:
+                                    ConstraintVariable::Assembly {
+                                        src,
+                                        assembly: field,
+                                    },
+                                constraint: _,
+                            } => {
+                                //this is the field that we are search for
+                                if Rc::as_ptr(find) == Rc::as_ptr(field) {
+                                    Some(None)
+                                //this is in the same token, so can also produce it
+                                } else if field
+                                    .field()
+                                    .map(|field| {
+                                        Rc::as_ptr(&field.token) == token_ptr
+                                    })
+                                    .unwrap_or(false)
+                                {
+                                    Some(Some(FieldAnd::Field(
+                                        Reference::Assembly {
+                                            src: src.clone(),
+                                            assembly: Rc::clone(find),
+                                        },
+                                    )))
+                                } else {
+                                    None
+                                }
+                            }
+                            FieldAnd::Constraint { .. } => None,
+                            FieldAnd::Field(_) => None,
+                            FieldAnd::SubPattern { src: _, sub } => {
+                                if sub.include_produced_assembly(find) {
+                                    Some(None)
+                                } else {
+                                    None
+                                }
+                            }
+                        }
+                    });
+                    match add {
+                        //found an implicit field, add it to the fields list
+                        Some(Some(add)) => {
+                            fields.push(add);
                             true
                         }
-                        FieldOr::Constraint { .. } => unreachable!(),
-                        FieldOr::SubPattern { src: _, sub } => {
-                            sub.produce_assembly(assembly)
-                        }
-                    })
-                    .all(|x| x);
-                if !updated {
-                    unreachable!("Unable to produce assembly in all or fields");
+                        Some(None) => true,
+                        None => false,
+                    }
                 }
+                let mut found = find_implicit_field(left, assembly);
+                if !found {
+                    found |= find_implicit_field(right, assembly);
+                }
+                if !found {
+                    unreachable!("LOGIC_CHECK: Ass producer not found block");
+                }
+                //now that one sub fields produces this, the block also produces
                 products
                     .fields
                     .insert(Rc::as_ptr(assembly), Rc::clone(assembly));
-                true
-            }
-            Self::And { left, right, .. } => {
-                //find the field that can produce this assembly
-                let left: &mut Vec<FieldAnd> = left;
-                let is_found = left
-                    .iter_mut()
-                    .chain(right.iter_mut())
-                    .map(|field: &mut FieldAnd| match field {
-                        FieldAnd::Constraint {
-                            field:
-                                ConstraintVariable::Assembly {
-                                    src: _,
-                                    assembly: field,
-                                },
-                            constraint: _,
-                        } if Rc::as_ptr(assembly) == Rc::as_ptr(field) => true,
-                        FieldAnd::Constraint { .. } => false,
-                        FieldAnd::Field(Reference::Assembly {
-                            src: _,
-                            assembly: field,
-                        }) if Rc::as_ptr(assembly) == Rc::as_ptr(field) => true,
-                        FieldAnd::Field(_) => false,
-                        FieldAnd::SubPattern { src: _, sub } => {
-                            sub.produce_assembly(assembly)
-                        }
-                    })
-                    .any(|x| x);
-                if !is_found {
-                    unreachable!(
-                        "Unable to find the assembly generator in and field"
-                    );
-                }
                 true
             }
         }
@@ -982,6 +1083,8 @@ pub enum FieldOr {
     Constraint {
         src: InputSource,
         field: ConstraintVariable,
+        //from the same token then field
+        implicit_fields: Vec<Rc<Assembly>>,
         constraint: Constraint,
     },
     //TODO This sub (Pattern) can only by Regular, replace this?
@@ -1008,6 +1111,7 @@ impl FieldOr {
                     src,
                     field,
                     constraint,
+                    implicit_fields: vec![],
                 })
             }
             block::pattern::Field::SubPattern { sub, src } => {
@@ -1035,6 +1139,7 @@ impl FieldOr {
                 src: _,
                 field,
                 constraint: _,
+                implicit_fields: _,
             } => field
                 .produce()
                 .map(|ass| ass.field())
@@ -1074,6 +1179,7 @@ impl TryFrom<FieldOr> for semantic::pattern::FieldOr {
                 src,
                 field,
                 constraint,
+                implicit_fields,
             } => {
                 let constraint = constraint.into();
                 let field = field.into();
@@ -1081,6 +1187,7 @@ impl TryFrom<FieldOr> for semantic::pattern::FieldOr {
                     src,
                     field,
                     constraint,
+                    implicit_fields,
                 })
             }
             FieldOr::SubPattern { sub, src } => {
@@ -1237,6 +1344,25 @@ pub struct FieldProducts {
     tables: HashMap<*const Table, (Rc<Table>, bool, bool)>,
 }
 
+impl FieldProducts {
+    pub fn produce_assembly(&self, assembly: &Assembly) -> bool {
+        let assembly_ptr: *const _ = assembly;
+        self.fields.get(&assembly_ptr).is_some()
+    }
+    pub fn can_produce_assembly(&self, assembly: &Assembly) -> bool {
+        //if this token don't exists on the pattern, or is build multiple times,
+        //then impossible
+        //if the token if produced only once, then is possible
+        let token = &assembly.field().unwrap().token;
+        let token_ptr: *const _ = Rc::as_ptr(token);
+        match self.tokens.get(&token_ptr) {
+            Some((_, 1)) => true,
+            Some((_, 0)) => unreachable!(),
+            None | Some(_) => false,
+        }
+    }
+}
+
 impl<'a> From<FieldOrProduct<'a>> for FieldProducts {
     fn from(value: FieldOrProduct<'a>) -> Self {
         match value {
@@ -1284,7 +1410,7 @@ impl FieldProducts {
         }
         for (key, (field, field_num)) in self.tokens.drain() {
             if let Some((_, other_num)) = other.tokens.get(&key) {
-                new.tokens.insert(key, (field, field_num + other_num));
+                new.tokens.insert(key, (field, field_num.max(*other_num)));
             }
         }
         for (key, (table, mut always, recursive1)) in self.tables.drain() {
@@ -1373,13 +1499,12 @@ impl FieldProducts {
         fields: impl Iterator<Item = Option<FieldAndProduct<'a>>> + 'a,
         self_table: &Rc<Table>,
     ) -> Result<Self, PatternError> {
-        fields.filter_map(|x| x).try_fold(
+        let mut root_tokens = HashMap::new();
+        let fields = fields.filter_map(|x| x).try_fold(
             FieldProducts::default(),
             |mut acc, field| match field {
-                //ignore episolon
-                FieldAndProduct::Assembly(ass)
-                    if matches!(ass.assembly_type, AssemblyType::Epsilon) =>
-                {
+                //ignore epsilon, inst_star, inst_next
+                FieldAndProduct::Assembly(ass) if ass.field().is_none() => {
                     Ok(acc)
                 }
                 //if the ass_field already exists, this is an error, otherwise
@@ -1398,14 +1523,17 @@ impl FieldProducts {
                             entry.insert(Rc::clone(ass));
                         }
                     }
+                    let field = ass.field().unwrap();
+                    let token = Rc::clone(&field.token);
+                    let token_ptr = Rc::as_ptr(&token);
+                    root_tokens.insert(token_ptr, token);
                     Ok(acc)
                 }
-                //just add the token, if exists, increase the counter
+                //just add the token
                 FieldAndProduct::Token(token) => {
-                    let ptr = Rc::as_ptr(token);
-                    let (_, counter) =
-                        acc.tokens.entry(ptr).or_insert((Rc::clone(token), 0));
-                    *counter += 1;
+                    let token = Rc::clone(token);
+                    let token_ptr = Rc::as_ptr(&token);
+                    root_tokens.insert(token_ptr, token);
                     Ok(acc)
                 }
                 //table is add, if exists, return error
@@ -1429,7 +1557,17 @@ impl FieldProducts {
                 }
                 FieldAndProduct::SubPattern(sub) => acc.or(sub),
             },
-        )
+        )?;
+        if root_tokens.len() != 0 {
+            let root_tokens = FieldProducts {
+                tokens: root_tokens.drain().map(|(k, x)| (k, (x, 1))).collect(),
+                fields: HashMap::new(),
+                tables: HashMap::new(),
+            };
+            fields.or(&root_tokens)
+        } else {
+            Ok(fields)
+        }
     }
 }
 
@@ -1628,29 +1766,45 @@ pub trait PatternWalker<B = ()> {
     fn field_or(&mut self, field: &FieldOr) -> ControlFlow<B, ()> {
         match field {
             FieldOr::Constraint {
-                field: ConstraintVariable::Assembly { assembly, .. },
-                ..
-            } => self.assembly(assembly),
-            FieldOr::Constraint {
-                field: ConstraintVariable::Varnode { varnode, .. },
-                ..
-            } => self.varnode(varnode),
+                field,
+                constraint,
+                src: _,
+                implicit_fields: _,
+            } => {
+                self.constraint(constraint)?;
+                match field {
+                    ConstraintVariable::Assembly { assembly, .. } => {
+                        self.assembly(assembly)
+                    }
+                    ConstraintVariable::Varnode { varnode, .. } => {
+                        self.varnode(varnode)
+                    }
+                }
+            }
             FieldOr::SubPattern { sub, .. } => self.pattern(sub),
         }
     }
     fn field_and(&mut self, field: &FieldAnd) -> ControlFlow<B, ()> {
         match field {
             FieldAnd::Constraint {
-                field: ConstraintVariable::Assembly { assembly, .. },
-                ..
-            } => self.assembly(assembly),
-            FieldAnd::Constraint {
-                field: ConstraintVariable::Varnode { varnode, .. },
-                ..
-            } => self.varnode(varnode),
+                field, constraint, ..
+            } => {
+                self.constraint(constraint)?;
+                match field {
+                    ConstraintVariable::Assembly { assembly, .. } => {
+                        self.assembly(assembly)
+                    }
+                    ConstraintVariable::Varnode { varnode, .. } => {
+                        self.varnode(varnode)
+                    }
+                }
+            }
             FieldAnd::Field(field) => self.reference(field),
             FieldAnd::SubPattern { sub, .. } => self.pattern(sub),
         }
+    }
+    fn constraint(&mut self, _constraint: &Constraint) -> ControlFlow<B, ()> {
+        ControlFlow::Continue(())
     }
     fn assembly(&mut self, _assembly: &Rc<Assembly>) -> ControlFlow<B, ()> {
         ControlFlow::Continue(())
