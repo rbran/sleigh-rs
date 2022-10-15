@@ -604,11 +604,11 @@ impl Block {
                 let mut right_root_len = 0;
                 for Element { field, ellipsis } in elements.drain(..) {
                     let (elements, elements_root_len) = match ellipsis {
-                        None | Some(Ellipsis::Left) => {
-                            (&mut left, &mut left_root_len)
-                        }
-                        Some(Ellipsis::Right) => {
+                        Some(Ellipsis::Left) => {
                             (&mut right, &mut right_root_len)
+                        }
+                        None | Some(Ellipsis::Right) => {
+                            (&mut left, &mut left_root_len)
                         }
                     };
                     let element = FieldAnd::new(sleigh, field, table)?;
