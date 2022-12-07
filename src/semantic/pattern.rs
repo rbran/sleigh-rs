@@ -1,15 +1,15 @@
 use std::ops::ControlFlow;
-use std::rc::Rc;
 
 use thiserror::Error;
 
 use crate::base::IntTypeU;
 use crate::{from_error, InputSource};
 
-use super::assembly::Assembly;
 use super::disassembly::{DisassemblyError, Expr};
 use super::table::Table;
-use super::varnode::Varnode;
+use super::token::TokenField;
+use super::varnode::Context;
+use super::{GlobalReference, InstStart};
 
 #[derive(Clone, Debug, Error)]
 pub enum PatternError {
@@ -26,6 +26,14 @@ pub enum PatternError {
     InvalidOrLen(InputSource),
     #[error("Each patern can only have a single recursive")]
     MultipleRecursives(InputSource),
+    #[error("Mix `|` and `&` operations on pattern is forbidden")]
+    MixOperations(InputSource),
+    #[error("Field produced multiple times at {0} and {1}")]
+    MultipleProduction(InputSource, InputSource),
+    #[error("Field produced is implicit and abiguous")]
+    AmbiguousProduction(InputSource),
+    #[error("Pattern in Or statement without constraint")]
+    UnrestrictedOr(InputSource),
 
     #[error("Invalid assignment Error")]
     ConstraintExpr(DisassemblyError),
@@ -65,21 +73,25 @@ impl PatternLen {
     }
 }
 #[derive(Clone, Debug)]
-pub struct FieldProductTable {
-    table: Rc<Table>,
+pub struct ProducedTable {
+    table: GlobalReference<Table>,
     always: bool,
     recursive: bool,
 }
 
-impl FieldProductTable {
-    pub(crate) fn new(table: Rc<Table>, always: bool, recursive: bool) -> Self {
+impl ProducedTable {
+    pub(crate) fn new(
+        table: GlobalReference<Table>,
+        always: bool,
+        recursive: bool,
+    ) -> Self {
         Self {
             table,
             always,
             recursive,
         }
     }
-    pub fn table(&self) -> &Rc<Table> {
+    pub fn table(&self) -> &GlobalReference<Table> {
         &self.table
     }
     pub fn always(&self) -> bool {
@@ -90,172 +102,186 @@ impl FieldProductTable {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct FieldProducts {
-    fields: Vec<Rc<Assembly>>,
-    tables: Vec<FieldProductTable>,
+#[derive(Clone, Debug)]
+pub struct ProducedTokenField {
+    //if this field is produced explicitly (on pattern) or implicitly deduced
+    //the existence of by the use of it in a desassembly/execution
+    explicit: bool,
+    local: bool,
+    field: GlobalReference<TokenField>,
 }
-impl FieldProducts {
-    pub fn new(
-        fields: Vec<Rc<Assembly>>,
-        tables: Vec<FieldProductTable>,
+impl ProducedTokenField {
+    pub(crate) fn new(
+        field: GlobalReference<TokenField>,
+        local: bool,
+        explicit: bool,
     ) -> Self {
-        Self { fields, tables }
+        Self {
+            field,
+            local,
+            explicit,
+        }
     }
-    pub fn tables(&self) -> &[FieldProductTable] {
-        &self.tables
+    pub fn token_field(&self) -> &GlobalReference<TokenField> {
+        &self.field
     }
-    pub fn fields(&self) -> &[Rc<Assembly>] {
-        &self.fields
+    pub fn is_explicit(&self) -> bool {
+        self.explicit
+    }
+    pub fn is_local(&self) -> bool {
+        self.local
     }
 }
+
+//#[derive(Clone, Debug, Default)]
+//pub struct FieldProducts {
+//    fields: Box<[ProductTokenField]>,
+//    tables: Box<[ProductTable]>,
+//}
+//impl FieldProducts {
+//    pub(crate) fn new(
+//        fields: Box<[ProductTokenField]>,
+//        tables: Box<[ProductTable]>,
+//    ) -> Self {
+//        Self { fields, tables }
+//    }
+//    pub fn tables(&self) -> &[ProductTable] {
+//        &self.tables
+//    }
+//    pub fn fields(&self) -> &[ProductTokenField] {
+//        &self.fields
+//    }
+//}
 
 #[derive(Clone, Debug)]
 pub struct Pattern {
     len: PatternLen,
-    products: FieldProducts,
-    blocks: Vec<Block>,
+    //products: FieldProducts,
+    blocks: Box<[Block]>,
 }
 
 impl Pattern {
     pub(crate) fn new(
-        blocks: Vec<Block>,
+        blocks: Box<[Block]>,
         len: PatternLen,
-        products: FieldProducts,
+        //products: FieldProducts,
     ) -> Self {
         Self {
             blocks,
             len,
-            products,
+            //products,
         }
     }
     pub fn blocks(&self) -> &[Block] {
         &self.blocks
     }
+    pub fn tables(&self) -> impl Iterator<Item = &ProducedTable> {
+        self.blocks().iter().map(Block::tables).flatten()
+    }
+    pub fn token_fields(&self) -> impl Iterator<Item = &ProducedTokenField> {
+        self.blocks()
+            .iter()
+            .map(|block| block.token_fields().iter())
+            .flatten()
+    }
     pub fn len(&self) -> &PatternLen {
         &self.len
     }
-    pub fn produced(&self) -> &FieldProducts {
-        &self.products
-    }
+    //pub fn produced(&self) -> &FieldProducts {
+    //    &self.products
+    //}
 }
 
 #[derive(Clone, Debug)]
 pub enum Block {
-    ///block with multiple elements unified with ORs
-    Or {
-        len: IntTypeU,
-        fields: Vec<FieldOr>,
-        products: FieldProducts,
-    },
-    ///block with multiple elements unified with ANDs
     And {
-        left_len: PatternLen,
-        left: Vec<FieldAnd>,
-        right_len: PatternLen,
-        right: Vec<FieldAnd>,
-        products: FieldProducts,
+        len: PatternLen,
+        token_len: IntTypeU,
+        token_fields: Box<[ProducedTokenField]>,
+        tables: Box<[ProducedTable]>,
+        verifications: Box<[Verification]>,
+    },
+    //TODO or block can export token_fields?
+    Or {
+        len: PatternLen,
+        token_fields: Box<[ProducedTokenField]>,
+        tables: Box<[ProducedTable]>,
+        branches: Box<[Verification]>,
     },
 }
 impl Block {
-    pub fn produced(&self) -> &FieldProducts {
+    pub fn tables(&self) -> &[ProducedTable] {
         match self {
-            Block::Or { products, .. } | Block::And { products, .. } => {
-                products
-            }
+            Block::And { tables, .. } | Block::Or { tables, .. } => tables,
+        }
+    }
+    pub fn token_fields(&self) -> &[ProducedTokenField] {
+        match self {
+            Block::And { token_fields, .. }
+            | Block::Or { token_fields, .. } => token_fields,
+        }
+    }
+    pub fn len(&self) -> PatternLen {
+        match self {
+            Block::And { len, .. } | Block::Or { len, .. } => *len,
+        }
+    }
+    pub fn verifications(&self) -> &[Verification] {
+        match self {
+            Block::And { verifications, .. }
+            | Block::Or {
+                branches: verifications,
+                ..
+            } => verifications,
         }
     }
 }
 
-//Field used in Or Expressions
 #[derive(Clone, Debug)]
-pub enum FieldOr {
-    Constraint {
-        src: InputSource,
-        field: ConstraintVariable,
-        constraint: Constraint,
-        implicit_fields: Vec<Rc<Assembly>>,
+pub enum Verification {
+    ContextCheck {
+        context: GlobalReference<Context>,
+        op: CmpOp,
+        value: ConstraintValue,
+    },
+    TableBuild {
+        produced_table: ProducedTable,
+        verification: Option<(CmpOp, ConstraintValue)>,
+    },
+    TokenFieldCheck {
+        field: GlobalReference<TokenField>,
+        op: CmpOp,
+        value: ConstraintValue,
     },
     SubPattern {
-        src: InputSource,
-        sub: Pattern,
-    },
-}
-#[derive(Clone, Debug)]
-pub enum FieldAnd {
-    Constraint {
-        field: ConstraintVariable,
-        constraint: Constraint,
-    },
-    Field(Reference),
-    SubPattern {
-        src: InputSource,
-        sub: Pattern,
+        location: InputSource,
+        pattern: Pattern,
     },
 }
 
 #[derive(Clone, Debug)]
-pub struct Constraint {
-    op: CmpOp,
-    value: ConstraintField,
+pub enum ConstraintField {
+    TokenField(GlobalReference<TokenField>),
+    Context(GlobalReference<Context>),
+    InstStart(GlobalReference<InstStart>),
+    Table(GlobalReference<Table>),
 }
 
-impl Constraint {
-    pub fn new(op: CmpOp, value: ConstraintField) -> Self {
-        Self { op, value }
-    }
-    pub fn op(&self) -> &CmpOp {
-        &self.op
-    }
-    pub fn value(&self) -> &ConstraintField {
-        &self.value
+#[derive(Clone, Debug)]
+pub struct ConstraintValue {
+    expr: Expr,
+}
+
+impl ConstraintValue {
+    pub(crate) fn new(expr: Expr) -> Self {
+        Self { expr }
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum ConstraintVariable {
-    Assembly {
-        src: InputSource,
-        assembly: Rc<Assembly>,
-    },
-    Varnode {
-        src: InputSource,
-        varnode: Rc<Varnode>,
-    },
-}
-
-#[derive(Clone, Debug)]
-pub enum Reference {
-    Assembly {
-        src: InputSource,
-        assembly: Rc<Assembly>,
-    },
-    Varnode {
-        src: InputSource,
-        varnode: Rc<Varnode>,
-    },
-    Table {
-        self_ref: bool,
-        src: InputSource,
-        table: Rc<Table>,
-    },
-}
-
-#[derive(Clone, Debug)]
-pub enum ExprScope {
-    Varnode(Rc<Varnode>), //Context only
-    Assembly(Rc<Assembly>),
-}
-
-#[derive(Clone, Debug)]
-pub struct ConstraintField {
-    pub expr: Expr,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub enum Op {
-    And,
-    Or,
+impl ConstraintValue {
+    pub fn expr(&self) -> &Expr {
+        &self.expr
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -282,60 +308,71 @@ pub trait PatternWalker<B = ()> {
             .try_for_each(|block| self.block(block))
     }
     fn block(&mut self, block: &Block) -> ControlFlow<B, ()> {
-        match block {
-            Block::Or { fields, .. } => {
-                fields.iter().try_for_each(|field| self.field_or(field))
+        block
+            .token_fields()
+            .iter()
+            .try_for_each(|prod| self.token_field(&prod.field))?;
+        block
+            .tables()
+            .iter()
+            .try_for_each(|prod| self.table(&prod.table))?;
+        block
+            .verifications()
+            .iter()
+            .try_for_each(|ver| self.verification(ver))
+    }
+    fn token_field(
+        &mut self,
+        _field: &GlobalReference<TokenField>,
+    ) -> ControlFlow<B, ()> {
+        ControlFlow::Continue(())
+    }
+    fn table(&mut self, _table: &GlobalReference<Table>) -> ControlFlow<B, ()> {
+        ControlFlow::Continue(())
+    }
+    fn context(
+        &mut self,
+        _table: &GlobalReference<Context>,
+    ) -> ControlFlow<B, ()> {
+        ControlFlow::Continue(())
+    }
+    fn value(&mut self, _value: &ConstraintValue) -> ControlFlow<B, ()> {
+        ControlFlow::Continue(())
+    }
+    fn verification(
+        &mut self,
+        verification: &Verification,
+    ) -> ControlFlow<B, ()> {
+        match verification {
+            Verification::ContextCheck {
+                context,
+                op: _,
+                value,
+            } => {
+                self.context(context)?;
+                self.value(value)
             }
-            Block::And { left, right, .. } => {
-                left.iter().try_for_each(|field| self.field_and(field))?;
-                right.iter().try_for_each(|field| self.field_and(field))
+            Verification::TableBuild {
+                produced_table,
+                verification,
+            } => {
+                if let Some((_op, value)) = verification {
+                    self.value(value)?;
+                }
+                self.table(&produced_table.table)
+            }
+            Verification::SubPattern {
+                location: _,
+                pattern,
+            } => self.pattern(pattern),
+            Verification::TokenFieldCheck {
+                field,
+                op: _,
+                value,
+            } => {
+                self.value(value)?;
+                self.token_field(field)
             }
         }
-    }
-    fn field_or(&mut self, field: &FieldOr) -> ControlFlow<B, ()> {
-        match field {
-            FieldOr::Constraint {
-                field: ConstraintVariable::Assembly { assembly, .. },
-                ..
-            } => self.assembly(assembly),
-            FieldOr::Constraint {
-                field: ConstraintVariable::Varnode { varnode, .. },
-                ..
-            } => self.varnode(varnode),
-            FieldOr::SubPattern { sub, .. } => self.pattern(sub),
-        }
-    }
-    fn field_and(&mut self, field: &FieldAnd) -> ControlFlow<B, ()> {
-        match field {
-            FieldAnd::Constraint {
-                field: ConstraintVariable::Assembly { assembly, .. },
-                ..
-            } => self.assembly(assembly),
-            FieldAnd::Constraint {
-                field: ConstraintVariable::Varnode { varnode, .. },
-                ..
-            } => self.varnode(varnode),
-            FieldAnd::Field(field) => self.reference(field),
-            FieldAnd::SubPattern { sub, .. } => self.pattern(sub),
-        }
-    }
-    fn assembly(&mut self, _assembly: &Rc<Assembly>) -> ControlFlow<B, ()> {
-        ControlFlow::Continue(())
-    }
-    fn varnode(&mut self, _varnode: &Rc<Varnode>) -> ControlFlow<B, ()> {
-        ControlFlow::Continue(())
-    }
-    fn extension(&mut self, table: &Rc<Table>) -> ControlFlow<B, ()> {
-        self.table(table)
-    }
-    fn reference(&mut self, reference: &Reference) -> ControlFlow<B, ()> {
-        match reference {
-            Reference::Assembly { assembly, .. } => self.assembly(assembly),
-            Reference::Varnode { varnode, .. } => self.varnode(varnode),
-            Reference::Table { table, .. } => self.table(table),
-        }
-    }
-    fn table(&mut self, _table: &Rc<Table>) -> ControlFlow<B, ()> {
-        ControlFlow::Continue(())
     }
 }

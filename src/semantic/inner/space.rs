@@ -1,21 +1,23 @@
 use std::rc::Rc;
 
 use crate::semantic::inner;
-use crate::semantic::space;
+use crate::semantic::space::SpaceType;
+use crate::semantic::GlobalElement;
 use crate::semantic::SemanticError;
 use crate::syntax::define;
 
+use super::FieldSize;
 use super::Sleigh;
 
 impl<'a> Sleigh<'a> {
     pub fn create_space(
         &mut self,
-        mut space: define::Space<'a>,
+        space: define::Space<'a>,
     ) -> Result<(), SemanticError> {
-        let name: Rc<str> = Rc::from(space.name);
+        let src = self.input_src(space.name);
         let (mut default, mut addr_size, mut wordsize, mut space_type) =
             (false, None, None, None);
-        for att in space.attributes.drain(..) {
+        for att in space.attributes.into_iter() {
             use define::Attribute::*;
             match att {
                 Type(x) if space_type.is_none() => space_type = Some(x),
@@ -25,7 +27,7 @@ impl<'a> Sleigh<'a> {
                 _ => return Err(SemanticError::SpaceInvalidAtt),
             }
         }
-        let wordsize = wordsize
+        let word_size = wordsize
             .unwrap_or(1)
             .try_into()
             .map_err(|_| SemanticError::SpaceMissingSize)?;
@@ -35,25 +37,18 @@ impl<'a> Sleigh<'a> {
             0 => return Err(SemanticError::SpaceInvalidSize),
             x => x.try_into().map_err(|_| SemanticError::SpaceMissingSize)?,
         };
-        let mem = space::Memory {
-            wordsize,
-            addr_size,
-        };
-        use define::SpaceType::*;
-        let space = match space_type.unwrap_or(define::SpaceType::Register) {
-            Register => space::SpaceType::Register(mem),
-            Rom => space::SpaceType::Rom(mem),
-            Ram => space::SpaceType::Ram(mem),
-        };
-        let space = Rc::new(space::Space {
-            name,
-            space_type: space,
-        });
+        let space_type = space_type.unwrap_or(SpaceType::Register);
+        let space = GlobalElement::new_space(
+            space.name, src, space_type, word_size, addr_size,
+        );
         if default {
             self.default_space
-                .replace(Rc::clone(&space))
+                .replace(space.clone())
                 .map(|_| Err(SemanticError::SpaceMultipleDefault))
                 .unwrap_or(Ok(()))?;
+            //set the exec addr size
+            self.exec_addr_size =
+                Some(FieldSize::new_bytes(space.addr_bytes()));
         }
         self.idents
             .insert(Rc::clone(&space.name), inner::GlobalScope::Space(space))

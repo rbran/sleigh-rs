@@ -12,6 +12,7 @@ use crate::base::{empty_space1, ident, string};
 
 #[derive(Clone, Debug)]
 pub enum DisplayElement<'a> {
+    Concat,
     Ident(&'a str),
     Literal(Cow<'a, str>),
 }
@@ -46,6 +47,7 @@ impl<'a> Display<'a> {
                 //used to concat strings, flush the current acc string and
                 //start a new after the `^`
                 flush_acc(str_end);
+                display.push(Concat);
                 str_start = input_new;
                 input_new
             } else if let Ok((input_new, value)) = string(input) {
@@ -99,7 +101,7 @@ fn find_not_whitespace<'a>(
     mut iter: impl Iterator<Item = (usize, &'a DisplayElement<'a>)>,
 ) -> Option<usize> {
     iter.find(|(_, x)| match x {
-        DisplayElement::Ident(_) => true,
+        DisplayElement::Concat | DisplayElement::Ident(_) => true,
         DisplayElement::Literal(x) => {
             x.chars().any(|x| !x.is_ascii_whitespace())
         }

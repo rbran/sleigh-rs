@@ -1,4 +1,4 @@
-use crate::semantic::inner::FieldSizeMut;
+use crate::semantic::{GlobalElement, GlobalReference};
 use core::cell::Cell;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -6,7 +6,6 @@ use std::rc::{Rc, Weak};
 use crate::base::NonZeroTypeU;
 use crate::semantic::pcode_macro::{PcodeMacroError, ToPcodeMacroError};
 use crate::semantic::table::ExecutionError;
-use crate::semantic::varnode::VarnodeType;
 use crate::syntax::block;
 use crate::InputSource;
 use crate::{semantic, ParamNumber};
@@ -15,7 +14,7 @@ use super::execution::{
     Block, Build, Execution, ExecutionBuilder, Expr, ExprElement, ExprValue,
     Statement, WriteValue,
 };
-use super::{FieldSize, GlobalScope, Sleigh, SolverStatus};
+use super::{FieldSize, GlobalConvert, GlobalScope, Sleigh, SolverStatus};
 
 pub type FinalPcodeMacroInstance = semantic::pcode_macro::PcodeMacroInstance;
 #[derive(Debug, Clone)]
@@ -82,8 +81,7 @@ impl PcodeMacroInstance {
                 let param = param.clone_me();
                 param
                     .size()
-                    .update_action(|param| param.set_final_value(*size))
-                    .unwrap();
+                    .set(param.size().get().set_final_value(*size).unwrap());
                 param
             })
             .collect();
@@ -105,11 +103,10 @@ impl PcodeMacroInstance {
         }
         let exec_src = self.execution.borrow().src().clone();
         let execution = self.execution.replace(Execution::new_empty(&exec_src));
-        let final_instance = FinalPcodeMacroInstance {
-            //    params,
-            execution: execution.convert(),
-            parent: Weak::clone(parent),
-        };
+        let final_instance = FinalPcodeMacroInstance::new(
+            execution.convert(),
+            Weak::clone(parent),
+        );
         *self.result.borrow_mut() = Some(Rc::new(final_instance));
         Rc::clone(&self.result.borrow().as_ref().unwrap())
     }
@@ -122,12 +119,11 @@ impl PcodeMacroInstance {
 pub type FinalPcodeMacro = semantic::pcode_macro::PcodeMacro;
 #[derive(Clone, Debug)]
 pub struct PcodeMacro {
-    pub name: Rc<str>,
     og_instance: Rc<PcodeMacroInstance>,
     instances: RefCell<Vec<Rc<PcodeMacroInstance>>>,
     pub src: InputSource,
     solved: RefCell<bool>,
-    me: Weak<Self>,
+    _me: Weak<Self>,
 
     pub result: RefCell<Option<Rc<semantic::pcode_macro::PcodeMacro>>>,
     //TODO: export macro is a thing?
@@ -135,14 +131,11 @@ pub struct PcodeMacro {
 
 impl PcodeMacro {
     pub fn new(
-        name: &str,
         src: InputSource,
         params: Vec<Rc<Parameter>>,
         execution: RefCell<Execution>,
     ) -> Rc<Self> {
-        let name = Rc::from(name);
         Rc::new_cyclic(|me| Self {
-            name: Rc::clone(&name),
             instances: RefCell::default(),
             og_instance: PcodeMacroInstance::new_root(
                 params,
@@ -151,7 +144,7 @@ impl PcodeMacro {
             ),
             src,
             solved: RefCell::new(false),
-            me: Weak::clone(me),
+            _me: Weak::clone(me),
             result: RefCell::default(),
         })
     }
@@ -174,10 +167,10 @@ impl PcodeMacro {
             .iter()
             .map(|param| param.size().get())
     }
-    pub fn try_specialize(
+    pub fn specialize(
         &self,
         params: &[NonZeroTypeU],
-    ) -> Option<Rc<PcodeMacroInstance>> {
+    ) -> Rc<PcodeMacroInstance> {
         if params.len() != self.og_instance.params().len() {
             panic!("invalid number of param")
         }
@@ -189,7 +182,7 @@ impl PcodeMacro {
             .iter()
             .find(|inst| inst.signature() == params)
         {
-            return Some(Rc::clone(inst));
+            return Rc::clone(inst);
         }
 
         //if not already exists, create a new instance with this signature
@@ -200,7 +193,7 @@ impl PcodeMacro {
         //solving need to happen
         *self.solved.borrow_mut() = false;
 
-        Some(new_og)
+        new_og
     }
     pub fn solve<T: SolverStatus>(
         &self,
@@ -234,21 +227,28 @@ impl PcodeMacro {
         solved.combine(&self_solved);
         Ok(())
     }
-    pub fn convert(&self) -> Rc<FinalPcodeMacro> {
+}
+
+impl GlobalConvert for PcodeMacro {
+    type FinalType = FinalPcodeMacro;
+
+    fn convert(&self) -> Rc<Self::FinalType> {
+        //TODO set a flat to converted
         if let Some(result) = self.result.borrow().as_ref() {
             return Rc::clone(result);
         }
-        let final_macro =
-            Rc::new(FinalPcodeMacro::new_empty(Rc::clone(&self.name)));
-        let weak_final_macro = Rc::downgrade(&final_macro);
-        for instance in self.instances.borrow_mut().drain(..) {
-            final_macro
-                .instances
-                .borrow_mut()
-                .push(instance.convert_from_parent(&weak_final_macro));
-        }
-        *self.result.borrow_mut() = Some(final_macro);
-        Rc::clone(&self.result.borrow().as_ref().unwrap())
+        //let final_macro = Rc::new(UnsafeCell::new(MaybeUninit::zeroed()));
+        let final_macro = Rc::new_cyclic(|weak_final_macro| {
+            let instances: Vec<_> =
+                std::mem::take(self.instances.borrow_mut().as_mut());
+            let instances = instances
+                .into_iter()
+                .map(|instance| instance.convert_from_parent(&weak_final_macro))
+                .collect();
+            FinalPcodeMacro::new(instances)
+        });
+        *self.result.borrow_mut() = Some(Rc::clone(&final_macro));
+        final_macro
     }
 }
 
@@ -364,16 +364,21 @@ impl<'a, 'b, 'c> ExecutionBuilder<'a> for Builder<'a, 'b, 'c> {
                     .get_global(name)
                     .ok_or(ExecutionError::MissingRef(src()))?
                 {
-                    Assembly(x) => match x.assembly_type {
-                        semantic::assembly::AssemblyType::Next(_)
-                        | semantic::assembly::AssemblyType::Start(_) => {
-                            Ok(ExprValue::new_assembly(src(), Rc::clone(x)))
-                        }
-                        _ => Err(ExecutionError::InvalidRef(src())),
-                    },
-                    Varnode(x) => {
-                        Ok(ExprValue::new_varnode(src(), Rc::clone(x)))
+                    InstStart(x) => {
+                        //TODO error
+                        let len = self.sleigh().exec_addr_size().unwrap();
+                        Ok(ExprValue::new_inst_start(src(), *len, x))
                     }
+                    InstNext(x) => {
+                        //TODO error
+                        let len = self.sleigh().exec_addr_size().unwrap();
+                        Ok(ExprValue::new_inst_next(src(), *len, x))
+                    }
+                    //TODO is this even legal? How the token_field is accesed?
+                    TokenField(x) => Ok(ExprValue::new_token_field(src(), x)),
+                    Varnode(x) => Ok(ExprValue::new_varnode(src(), x)),
+                    Context(x) => Ok(ExprValue::new_context(src(), x)),
+                    Bitrange(x) => Ok(ExprValue::new_bitrange(src(), x)),
                     _ => Err(ExecutionError::InvalidRef(src())),
                 }
             })
@@ -401,14 +406,15 @@ impl<'a, 'b, 'c> ExecutionBuilder<'a> for Builder<'a, 'b, 'c> {
                     .get_global(name)
                     .ok_or(ExecutionError::MissingRef(src()))?
                 {
-                    Varnode(varnode)
-                        if matches!(
-                            varnode.varnode_type,
-                            VarnodeType::Memory(_) | VarnodeType::BitRange(_)
-                        ) =>
-                    {
-                        Ok(WriteValue::Varnode(src(), Rc::clone(varnode)))
-                    }
+                    Varnode(x) => Ok(WriteValue::Varnode(
+                        GlobalReference::from_element(x, src()),
+                    )),
+                    //Context(x) => Ok(WriteValue::Context(
+                    //    GlobalReference::from_element(x, src()),
+                    //)),
+                    Bitrange(x) => Ok(WriteValue::Bitrange(
+                        GlobalReference::from_element(x, src()),
+                    )),
                     _ => Err(ExecutionError::InvalidRef(src())),
                 }
             })
@@ -454,11 +460,12 @@ impl<'a> Sleigh<'a> {
         execution.extend(pcode.body).to_pcode_macro(src.clone())?;
         let execution = RefCell::new(execution.into());
 
-        let pcode_macro = PcodeMacro::new(&pcode.name, src, params, execution);
-        self.idents.insert(
-            Rc::clone(&pcode_macro.name),
-            GlobalScope::PcodeMacro(pcode_macro),
-        );
+        let name = Rc::from(pcode.name);
+        let pcode_macro =
+            GlobalElement::new(name, PcodeMacro::new(src, params, execution));
+        //TODO: Error here
+        self.insert_global(GlobalScope::PcodeMacro(pcode_macro))
+            .unwrap();
         Ok(())
     }
 }
@@ -533,10 +540,11 @@ fn update_write_value(
     new: &[Rc<Parameter>],
 ) {
     match write {
-        WriteValue::Varnode(_, _)
-        | WriteValue::Table(_, _)
+        WriteValue::Varnode(_)
+        | WriteValue::Bitrange(_)
+        | WriteValue::Table(_)
         | WriteValue::ExeVar(_, _)
-        | WriteValue::Assembly(_, _) => (),
+        | WriteValue::TokenField(_) => (),
         WriteValue::Param(_, param) => {
             if let Some(new_param) =
                 old.iter().enumerate().find_map(|(i, x)| {
@@ -592,11 +600,13 @@ fn update_expr_value(
     match expr {
         ExprValue::Int(_, _, _)
         | ExprValue::DisVar(_, _, _)
-        | ExprValue::Assembly(_, _, _)
-        | ExprValue::Varnode(_, _)
-        | ExprValue::Context(_, _, _)
-        | ExprValue::BitRange(_, _, _)
-        | ExprValue::Table(_, _)
+        | ExprValue::TokenField(_, _)
+        | ExprValue::InstStart(_, _)
+        | ExprValue::InstNext(_, _)
+        | ExprValue::Varnode(_)
+        | ExprValue::Context(_, _)
+        | ExprValue::Bitrange(_, _)
+        | ExprValue::Table(_)
         | ExprValue::ExeVar(_, _) => (),
         ExprValue::Param(_, param) => {
             if let Some(new_param) =

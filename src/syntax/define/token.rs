@@ -7,7 +7,7 @@ use nom::sequence::{
 use nom::IResult;
 
 use crate::base::{empty_space0, empty_space1, ident, number_unsig, IntTypeU};
-use crate::syntax::define::{Endian, PrintFmt};
+use crate::syntax::define::Endian;
 
 #[derive(Clone, Debug)]
 pub struct Token<'a> {
@@ -82,21 +82,27 @@ impl<'a> TokenField<'a> {
 
 #[derive(Clone, Debug, Copy)]
 pub enum TokenFieldAttribute {
-    PrintFmt(PrintFmt),
+    Hex,
+    Dec,
     Signed,
 }
 
 impl TokenFieldAttribute {
+    pub(crate) fn from_str(name: &str) -> Option<Self> {
+        match name {
+            "signed" => Some(Self::Signed),
+            "hex" => Some(Self::Hex),
+            "dec" => Some(Self::Dec),
+            _ => None,
+        }
+    }
     fn parse(input_ori: &str) -> IResult<&str, TokenFieldAttribute> {
         let (input, att) = ident(input_ori)?;
-        match att {
-            "signed" => Ok((input, Self::Signed)),
-            name => PrintFmt::find(name)
-                .map(|x| (input, Self::PrintFmt(x)))
-                .ok_or(nom::Err::Error(nom::error::Error {
-                    input,
-                    code: nom::error::ErrorKind::MapOpt,
-                })),
-        }
+        Self::from_str(att)
+            .map(|att| (input, att))
+            .ok_or(nom::Err::Error(nom::error::Error {
+                input,
+                code: nom::error::ErrorKind::MapOpt,
+            }))
     }
 }

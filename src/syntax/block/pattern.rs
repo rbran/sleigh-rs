@@ -1,7 +1,7 @@
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::combinator::{consumed, map, map_res, opt, value};
-use nom::multi::separated_list0;
+use nom::multi::{many0, separated_list0};
 use nom::sequence::{
     delimited, pair, preceded, separated_pair, terminated, tuple,
 };
@@ -12,8 +12,12 @@ use crate::base::{empty_space0, ident};
 
 pub use crate::semantic::pattern::CmpOp;
 pub use crate::semantic::pattern::Ellipsis;
-pub use crate::semantic::pattern::Op;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Op {
+    And,
+    Or,
+}
 impl Op {
     pub fn parse(input: &str) -> IResult<&str, Op> {
         alt((value(Op::Or, tag("|")), value(Op::And, tag("&"))))(input)
@@ -76,21 +80,18 @@ pub enum Field<'a> {
         field: &'a str,
         constraint: Option<Constraint<'a>>,
     },
-    SubPattern {
-        src: &'a str,
-        sub: Pattern<'a>,
-    },
+    SubPattern(Pattern<'a>),
 }
 impl<'a> Field<'a> {
     pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
         alt((
             map(
-                consumed(delimited(
+                delimited(
                     pair(tag("("), empty_space0),
                     Pattern::parse,
                     pair(empty_space0, tag(")")),
-                )),
-                |(src, sub)| Field::SubPattern { sub, src },
+                ),
+                |sub| Field::SubPattern(sub),
             ),
             map(
                 pair(ident, opt(preceded(empty_space0, Constraint::parse))),
@@ -128,33 +129,36 @@ impl<'a> Element<'a> {
     }
 }
 
-//NOTE I'll not allow to mix `&` and `|` in the same level
 #[derive(Clone, Debug)]
 pub struct Block<'a> {
-    pub op: Option<Op>,
-    pub elements: Vec<Element<'a>>,
+    pub src: &'a str,
+    pub first: Element<'a>,
+    pub elements: Vec<(Op, Element<'a>)>,
 }
 
 impl<'a> Block<'a> {
     pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
-        let mut op = None;
-        let (input, elements) = separated_list0(
-            preceded(empty_space0, |input| match op {
-                Some(Op::Or) => value((), tag("|"))(input),
-                Some(Op::And) => value((), tag("&"))(input),
-                None => Op::parse(input).map(|(input, new_op)| {
-                    op = Some(new_op);
-                    (input, ())
-                }),
-            }),
-            preceded(empty_space0, Element::parse),
-        )(input)?;
-        Ok((input, Self { op, elements }))
+        map(
+            consumed(tuple((
+                preceded(empty_space0, Element::parse),
+                many0(pair(
+                    preceded(empty_space0, Op::parse),
+                    preceded(empty_space0, Element::parse),
+                )),
+            ))),
+            |(src, (first, elements))| Self {
+                src,
+                first,
+                elements,
+            },
+        )(input)
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct Pattern<'a> {
+    //NOTE: point after the `is`
+    pub src: &'a str,
     pub blocks: Vec<Block<'a>>,
 }
 impl<'a> IntoIterator for Pattern<'a> {
@@ -169,11 +173,11 @@ impl<'a> IntoIterator for Pattern<'a> {
 impl<'a> Pattern<'a> {
     pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
         map(
-            separated_list0(
+            consumed(separated_list0(
                 tuple((empty_space0, tag(";"), empty_space0)),
                 Block::parse,
-            ),
-            |blocks| Pattern { blocks },
+            )),
+            |(src, blocks)| Pattern { src, blocks },
         )(input)
     }
 }

@@ -47,6 +47,139 @@ impl Op {
     }
 }
 
+#[derive(Debug)]
+enum InnerExprOperators {
+    Op(Op),
+    OpUnary(OpUnary),
+    OpenParenthesis,
+}
+
+#[derive(Default, Debug)]
+struct InnerExpr<'a> {
+    output: Vec<ExprElement<'a>>,
+    operators: Vec<InnerExprOperators>,
+}
+
+impl<'a> InnerExpr<'a> {
+    fn open_parenthesis(&mut self, input: &'a str) -> IResult<&'a str, ()> {
+        let (input, _) = pair(tag("("), empty_space0)(input)?;
+        //open parentessis goes on top of all ops
+        self.operators.push(InnerExprOperators::OpenParenthesis);
+        Ok((input, ()))
+    }
+    fn close_parenthesis(&mut self, input: &'a str) -> IResult<&'a str, ()> {
+        let (input, _) = pair(empty_space0, tag(")"))(input)?;
+        //pop until we find the open parenthesis
+        loop {
+            let op = self.operators.pop().ok_or_else(|| {
+                nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Fix,
+                ))
+            })?;
+            match op {
+                InnerExprOperators::OpenParenthesis => break,
+                InnerExprOperators::Op(op) => {
+                    self.output.push(ExprElement::Op(op))
+                }
+                InnerExprOperators::OpUnary(op) => {
+                    self.output.push(ExprElement::OpUnary(op))
+                }
+            }
+        }
+        Ok((input, ()))
+    }
+    fn parse_op_unary(&mut self, input: &'a str) -> IResult<&'a str, ()> {
+        map(opt(terminated(OpUnary::parse, empty_space0)), |op| {
+            if let Some(op) = op {
+                self.operators.push(InnerExprOperators::OpUnary(op));
+            }
+            ()
+        })(input)
+    }
+    fn parse_op(&mut self, input: &'a str, safe: bool) -> IResult<&'a str, ()> {
+        let (input, op) = Op::parse(input, safe)?;
+        //unstack the operation until it is able to put this op to the stack
+        loop {
+            let Some(last_op) = self.operators.pop() else {
+                break
+            };
+            match last_op {
+                //only if the op have a smaller precedence that this one
+                InnerExprOperators::Op(last_op) => {
+                    if last_op < op {
+                        //stack on top of this one
+                        self.operators.push(InnerExprOperators::Op(last_op));
+                        break;
+                    } else {
+                        //remove this op from the op stack
+                        self.output.push(ExprElement::Op(last_op));
+                    }
+                }
+                //we can never stack on top of unary, unstack it
+                InnerExprOperators::OpUnary(op) => {
+                    self.output.push(ExprElement::OpUnary(op));
+                }
+                //we can always stack on top of parenthesis
+                InnerExprOperators::OpenParenthesis => {
+                    self.operators.push(InnerExprOperators::OpenParenthesis);
+                    break;
+                }
+            }
+        }
+        self.operators.push(InnerExprOperators::Op(op));
+
+        let (input, _) = pair(empty_space0, |x| self.expr_rec(x))(input)?;
+        Ok((input, ()))
+    }
+    fn value(&mut self, input: &'a str) -> IResult<&'a str, ()> {
+        map(Value::parse, |x| self.output.push(ExprElement::Value(x)))(input)
+    }
+    fn expr_rec(&mut self, input: &'a str) -> IResult<&'a str, ()> {
+        let (input, ()) = self.parse_op_unary(input).unwrap();
+
+        let input = if let Ok((input, _)) = self.value(input) {
+            input
+        } else {
+            let (input, ()) = self.open_parenthesis(input)?;
+            let (input, ()) = self.expr(input, true)?;
+            let (input, ()) = self.close_parenthesis(input)?;
+            input
+        };
+        Ok((input, ()))
+    }
+    fn expr(&mut self, input: &'a str, safe: bool) -> IResult<&'a str, ()> {
+        //first element is required
+        let (input, _) = self.expr_rec(input)?;
+        //then we get 0 or more Op Field after that.
+        value(
+            (),
+            many0(preceded(empty_space0, |input| self.parse_op(input, safe))),
+        )(input)
+    }
+    fn parse(
+        input: &'a str,
+        safe: bool,
+    ) -> IResult<&'a str, Vec<ExprElement<'a>>> {
+        let mut rpn = Self::default();
+        let (input, _) = rpn.expr(input, safe)?;
+        for ele in rpn.operators.into_iter() {
+            let ele = match ele {
+                InnerExprOperators::Op(op) => ExprElement::Op(op),
+                InnerExprOperators::OpUnary(op) => ExprElement::OpUnary(op),
+                InnerExprOperators::OpenParenthesis => {
+                    return Err(nom::Err::Error(nom::error::Error::new(
+                        input,
+                        nom::error::ErrorKind::Fix,
+                    )))
+                }
+            };
+            rpn.output.push(ele);
+        }
+        Ok((input, rpn.output))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Expr<'a> {
     pub rpn: Vec<ExprElement<'a>>,
@@ -66,66 +199,9 @@ impl<'a> IntoIterator for Expr<'a> {
     }
 }
 impl<'a> Expr<'a> {
-    fn value(
-        input: &'a str,
-        stack: &'_ mut Vec<ExprElement<'a>>,
-    ) -> IResult<&'a str, ()> {
-        map(Value::parse, |x| stack.push(ExprElement::Value(x)))(input)
-    }
-    fn expr_rec(
-        input: &'a str,
-        stack: &'_ mut Vec<ExprElement<'a>>,
-    ) -> IResult<&'a str, ()> {
-        let (input, op) = opt(terminated(OpUnary::parse, empty_space0))(input)?;
-
-        let input = if let Ok((input, _)) = Self::value(input, stack) {
-            input
-        } else {
-            delimited(
-                pair(tag("("), empty_space0),
-                |x| Self::expr(x, stack, true),
-                pair(empty_space0, tag(")")),
-            )(input)?
-            .0
-        };
-        if let Some(op) = op {
-            stack.push(ExprElement::OpUnary(op));
-        }
-        Ok((input, ()))
-    }
-    fn op_field(
-        input: &'a str,
-        stack: &'_ mut Vec<ExprElement<'a>>,
-        safe: bool,
-    ) -> IResult<&'a str, ()> {
-        let (input, op) = terminated(
-            |x| Op::parse(x, safe),
-            pair(empty_space0, |x| Self::expr_rec(x, stack)),
-        )(input)?;
-        stack.push(ExprElement::Op(op));
-        Ok((input, ()))
-    }
-    //Expr is just a Vec with reverse polish notion of values, ops and unary ops
-    fn expr(
-        input: &'a str,
-        stack: &'_ mut Vec<ExprElement<'a>>,
-        safe: bool,
-    ) -> IResult<&'a str, ()> {
-        //TODO op precedence
-        //first element is required
-        let input = Self::expr_rec(input, stack)?.0;
-        //then we get 0 or more Op Field after that.
-        value(
-            (),
-            many0(preceded(empty_space0, |input| {
-                Self::op_field(input, stack, safe)
-            })),
-        )(input)
-    }
     pub fn parse(input: &'a str, safe: bool) -> IResult<&'a str, Self> {
-        let mut rpn = vec![];
-        let (input, _) = Self::expr(input, &mut rpn, safe)?;
-        Ok((input, Self { rpn }))
+        let (input, inner_expr) = InnerExpr::parse(input, safe)?;
+        Ok((input, Self { rpn: inner_expr }))
     }
 }
 

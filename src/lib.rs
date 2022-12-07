@@ -12,15 +12,16 @@ use preprocessor::preprocess;
 
 use syntax::parse_syntax;
 
-pub use semantic::assembly::{Assembly, Token};
 pub use semantic::disassembly::Disassembly;
+pub use semantic::meaning::Meaning;
 pub use semantic::pattern::{Block, Pattern, PatternLen};
 pub use semantic::pcode_macro::PcodeMacro;
 pub use semantic::space::Space;
 pub use semantic::table::{Constructor, Table};
+pub use semantic::token::{Token, TokenField};
 pub use semantic::user_function::UserFunction;
-pub use semantic::varnode::Varnode;
-pub use semantic::Sleigh;
+pub use semantic::varnode::{Bitrange, Context, Varnode};
+pub use semantic::{InstNext, InstStart, Sleigh};
 
 pub use base::{IntTypeS, IntTypeU, NonZeroTypeU};
 
@@ -104,26 +105,34 @@ impl RangeBounds<usize> for ParamNumber {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct BitRange {
+pub struct RangeBits {
     pub lsb_bit: IntTypeU,
     pub n_bits: NonZeroTypeU,
 }
-impl BitRange {
+impl RangeBits {
     pub fn new(lsb_bit: IntTypeU, n_bits: NonZeroTypeU) -> Self {
         Self { lsb_bit, n_bits }
     }
-    pub fn size(&self) -> NonZeroTypeU {
+    pub fn len_bits(&self) -> NonZeroTypeU {
         self.n_bits
     }
-    pub fn from_syntax(input: syntax::BitRange) -> Option<Self> {
+    pub(crate) fn from_syntax(input: syntax::BitRange) -> Option<Self> {
         let lsb_bit = input.lsb_bit;
         let n_bits = NonZeroTypeU::new(input.n_bits)?;
         Some(Self { lsb_bit, n_bits })
     }
 }
-impl From<BitRange> for std::ops::Range<IntTypeU> {
-    fn from(input: BitRange) -> Self {
+impl From<RangeBits> for std::ops::Range<IntTypeU> {
+    fn from(input: RangeBits) -> Self {
         input.lsb_bit..(input.lsb_bit + input.n_bits.get())
+    }
+}
+impl IntoIterator for RangeBits {
+    type Item = IntTypeU;
+    type IntoIter = <std::ops::Range<Self::Item> as IntoIterator>::IntoIter;
+    fn into_iter(self) -> Self::IntoIter {
+        let range: std::ops::Range<Self::Item> = self.into();
+        range.into_iter()
     }
 }
 
@@ -274,6 +283,12 @@ mod test {
         "Dalvik_DEX_Android11.slaspec",
         "Dalvik_DEX_Android12.slaspec",
     ];
+
+    #[test]
+    fn superh4() {
+        file_to_sleigh("/home/rbran/src/ghidra/Ghidra/Processors/SuperH4/data/languages/SuperH4_be.slaspec").unwrap();
+        panic!()
+    }
 
     #[test]
     fn syntax() {

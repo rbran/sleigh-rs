@@ -1,4 +1,4 @@
-use crate::{semantic::table::PatternError, syntax, IDENT_INSTRUCTION};
+use crate::{syntax, IDENT_INSTRUCTION};
 
 //multiple with_blocks are combined into this one during the processing
 #[derive(Clone, Debug, Default)]
@@ -54,59 +54,62 @@ impl<'a> WithBlockCurrent<'a> {
             None => IDENT_INSTRUCTION,
         }
     }
+    fn pattern_iter(
+        &self,
+    ) -> impl Iterator<Item = &syntax::block::pattern::Pattern<'a>> + ExactSizeIterator
+    {
+        self.0
+            .iter()
+            .map(|(_table_name, pattern, _disassembly)| pattern)
+    }
+    //Merge multiple patterns into a single one, obs: merge, not concat.
+    //the last block of the first pattern is merged with the first block of
+    //the second patter using the `And` operation.
     pub fn pattern(
         &self,
-        current_pattern: syntax::block::pattern::Pattern<'a>,
-    ) -> Result<syntax::block::pattern::Pattern<'a>, PatternError> {
-        //FUTURE use try_reduce instead
-        let mut patterns = self
-            .0
-            .iter()
-            .map(|x| &x.1)
-            .cloned()
-            .chain([current_pattern]);
-        let first = patterns.next().unwrap();
-
-        //Merge multiple patterns into a single one, obs: merge, not concat.
-        //the last block of the first pattern is fuzed with the first block of
-        //the second patter.
-        patterns.try_fold(first, |mut x, mut y| {
-            use syntax::block::pattern::{Block, Op};
-            //if one of the patterns are empty, just return the other
-            if y.blocks.len() == 0 {
-                return Ok(x);
-            }
-            if x.blocks.len() == 0 {
-                return Ok(y);
-            }
-
-            let mut y = y.blocks.drain(..);
-            let first_block = y.next().unwrap();
-            let last_block = x.blocks.pop().unwrap();
-
-            //the output operation, need to be `&` or `|`, combine patterns with
-            //diferent operations is invalid
-            let op = match (first_block.op, last_block.op) {
-                (Some(Op::And), Some(Op::Or))
-                | (Some(Op::Or), Some(Op::And)) => {
-                    //TODO error
-                    todo!("Unable to combine patterns");
+        constructor_pattern: &syntax::block::pattern::Pattern<'a>,
+    ) -> syntax::block::pattern::Pattern<'a> {
+        use syntax::block::pattern::Op;
+        let patterns = self.pattern_iter().chain([constructor_pattern]);
+        let block_number =
+            self.pattern_iter().map(|p| p.blocks.len()).sum::<usize>()
+                + constructor_pattern.blocks.len();
+        let mut final_pattern = syntax::block::pattern::Pattern {
+            //the right most pattern (constructor) is the src that we want
+            src: constructor_pattern.src,
+            blocks: Vec::with_capacity(block_number),
+        };
+        for pattern in patterns {
+            let mut blocks = pattern.blocks.iter();
+            let first_block = blocks.next();
+            let last_block = final_pattern.blocks.last_mut();
+            //if there is a last_block on the final_pattern and a first_block
+            //on the new_pattern, merge both into a single block
+            match (first_block, last_block) {
+                //no blocks to merge into the final pattern, do nothing
+                (None, _) => continue,
+                //there is no last block to be merged with the new blocks.
+                //so just add this new block into the final pattern.
+                (Some(first_block), None) => {
+                    final_pattern.blocks.extend([first_block.clone()]);
                 }
-                //If we have two blocks with only on element, consequently no
-                //operation (op == None), default to `and`.
-                (x, y) => x.or(y).unwrap_or(Op::And),
-            };
-            let mut elements = first_block.elements;
-            elements.extend(last_block.elements);
-
-            let merged_block = Block {
-                op: Some(op),
-                elements,
-            };
-            x.blocks.push(merged_block);
-            x.blocks.extend(y);
-            Ok(x)
-        })
+                //merge the first_block (final_pattern) with the last_block
+                //(new_pattern)
+                (Some(first_block), Some(last_block)) => {
+                    //last block will include all the elements from the first block of
+                    //the new pattern
+                    last_block
+                        .elements
+                        .extend([(Op::And, first_block.first.clone())]);
+                    last_block
+                        .elements
+                        .extend(first_block.elements.iter().cloned());
+                }
+            }
+            //add all the other blocks without merging
+            final_pattern.blocks.extend(blocks.cloned());
+        }
+        final_pattern
     }
     pub fn disassembly(
         &self,

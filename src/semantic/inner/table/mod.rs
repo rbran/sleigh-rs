@@ -6,21 +6,24 @@ use std::ops::ControlFlow;
 use std::rc::{Rc, Weak};
 
 use crate::semantic::table::{ExecutionError, TableErrorSub, ToTableError};
-use crate::semantic::{self, TableError};
+use crate::semantic::{self, GlobalElement, GlobalReference, TableError};
 use crate::syntax::block;
-use crate::{InputSource, PatternLen, IDENT_INSTRUCTION};
+use crate::{InputSource, PatternLen};
 
 use super::disassembly::Disassembly;
 use super::display::Display;
 use super::execution::ExecutionExport;
 use super::execution::{Execution, ExecutionBuilder};
 use super::pattern::{Pattern, PatternConstraint};
-use super::{FieldSize, GlobalScope, Sleigh, SolverStatus, WithBlockCurrent};
+use super::{
+    FieldSize, FieldSizeMut, GlobalConvert, GlobalScope, Sleigh, SolverStatus,
+    WithBlockCurrent,
+};
 
 #[derive(Clone)]
 pub struct Table {
     me: Weak<Self>,
-    pub name: Rc<str>,
+    is_root: bool,
     pub constructors: RefCell<Vec<Constructor>>,
     /* TODO:
      * export need to be identified by type, such Varnode, Const, Value, etc.
@@ -47,17 +50,16 @@ pub struct Table {
 
 impl std::fmt::Debug for Table {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Table {}, returning: {:?}", self.name, self.export)
+        write!(f, "Table returning: {:?}", self.export)
     }
 }
 
 impl Table {
-    pub fn new_empty(name: Rc<str>) -> Rc<Self> {
-        let name = Rc::from(name);
+    pub fn new_empty(is_root: bool) -> Rc<Self> {
         Rc::new_cyclic(|me| Self {
-            name: Rc::clone(&name),
+            is_root,
             constructors: RefCell::new(vec![]),
-            result: Rc::new(semantic::table::Table::new_dummy(name)),
+            result: Rc::new(semantic::table::Table::new_dummy(is_root)),
             converted: RefCell::new(false),
             //it does not export, unless a exporting constructor is added
             export: RefCell::default(),
@@ -69,13 +71,10 @@ impl Table {
         })
     }
     pub fn is_root(&self) -> bool {
-        self.name.as_ref() == IDENT_INSTRUCTION
+        self.is_root
     }
     pub fn me(&self) -> Rc<Self> {
         self.me.upgrade().unwrap()
-    }
-    pub fn name(&self) -> &Rc<str> {
-        &self.name
     }
     pub fn add_constructor(
         &self,
@@ -115,13 +114,13 @@ impl Table {
         impl PatternWalker<Vec<Rc<Table>>> for FindIndirectRecursion {
             fn table(
                 &mut self,
-                table: &Rc<Table>,
+                table: &GlobalReference<Table>,
             ) -> ControlFlow<Vec<Rc<Table>>> {
-                if Rc::as_ptr(table) == self.0 {
+                if table.element_ptr() == self.0 {
                     //we don't care about self reference, only indirect ones
                     return ControlFlow::Continue(());
                 }
-                table.pattern_indirect_recursion()
+                table.element().pattern_indirect_recursion()
             }
         }
         //This borrow will detect the recursion, we hold the lock, while the
@@ -157,42 +156,40 @@ impl Table {
     where
         T: SolverStatus + Default,
     {
-        //if already solved, do nothing
-        if self.pattern_len.get().is_some() {
-            return Ok(());
-        };
-
         //update all constructors
         self.constructors
             .borrow_mut()
             .iter_mut()
             .try_for_each(|constructor| constructor.solve_pattern(solved))?;
 
+        //if already solved, do nothing
+        if self.pattern_len.get().is_some() {
+            return Ok(());
+        };
+
         //TODO improve this to not require collect
         //all the lens from constructors
-        let lens: Vec<_> = {
-            let constructors = self.constructors.borrow();
-            let lens: Result<Vec<_>, &InputSource> = constructors
-                .iter()
-                //get all the lens, returning none if is undefined len,
-                //in this case abort the whole len calculation
-                //indexs are 1/1
-                .map(|constructor| {
-                    constructor
-                        .pattern
-                        .len()
-                        .clone()
-                        .ok_or_else(|| constructor.src())
-                })
-                .collect();
-            match lens {
-                Ok(lens) => lens,
-                Err(src) => {
-                    //found one undefined len, unable to calculate the table pattern len
-                    //range for now
-                    solved.iam_not_finished_location(src, file!(), line!());
-                    return Ok(());
-                }
+        let constructors = self.constructors.borrow();
+        let lens: Result<Vec<_>, &InputSource> = constructors
+            .iter()
+            //get all the lens, returning none if is undefined len,
+            //in this case abort the whole len calculation
+            //indexs are 1/1
+            .map(|constructor| {
+                constructor
+                    .pattern
+                    .len()
+                    .clone()
+                    .ok_or_else(|| constructor.src())
+            })
+            .collect();
+        let lens: Vec<_> = match lens {
+            Ok(lens) => lens,
+            Err(src) => {
+                //found one undefined len, unable to calculate the table pattern
+                //len range for now
+                solved.iam_not_finished_location(src, file!(), line!());
+                return Ok(());
             }
         };
         //the smallest possible table pattern_len, except from recursives
@@ -200,14 +197,10 @@ impl Table {
 
         //the biggest possible table pattern_len
         //FUTURE use try_reduce instead
-        let max = {
-            let mut iter = lens.iter().map(|len| len.max());
-            if let Some(first) = iter.next().unwrap() {
-                iter.try_fold(first, |acc, len| len.map(|len| len.max(acc)))
-            } else {
-                None
-            }
-        };
+        let mut iter = lens.iter().map(|len| len.max());
+        let max = iter.next().unwrap().and_then(|first| {
+            iter.try_fold(first, |acc, len| len.map(|len| len.max(acc)))
+        });
 
         match (min, max) {
             //impossible to happen, only invalid logic can generate that
@@ -216,10 +209,7 @@ impl Table {
             //invalid, because the pattern will never end to match
             (None, None) => {
                 //TODO error here
-                panic!(
-                    "Table is composed exclusivelly of recursive patterns: {}",
-                    self.name()
-                );
+                panic!("Table is composed exclusivelly of recursive patterns");
             }
             //if there is no biggest, means at least one constructor
             //will always result in a Min (recursive).
@@ -237,16 +227,17 @@ impl Table {
             }
         }
 
-        //with this table len solved, all constructors shold also be able to
-        //immediatelly solve all the sub-patterns, unable to do so can only
-        //be caused by an logic error.
-        let mut solved = super::Solved::default();
-        self.constructors.borrow_mut().iter_mut().try_for_each(
-            |constructor| constructor.solve_pattern(&mut solved),
-        )?;
-        if !solved.we_finished() {
-            unreachable!("Table pattern len solver have a logical error")
-        }
+        //TODO not really, review this check
+        ////with this table len solved, all constructors shold also be able to
+        ////immediatelly solve all the sub-patterns, unable to do so can only
+        ////be caused by an logic error.
+        //let mut solved = super::Solved::default();
+        //self.constructors.borrow_mut().iter_mut().try_for_each(
+        //    |constructor| constructor.solve_pattern(&mut solved),
+        //)?;
+        //if !solved.we_finished() {
+        //    unreachable!("Table pattern len solver have a logical error")
+        //}
         Ok(())
     }
     pub fn solve<T>(&self, solved: &mut T) -> Result<(), TableError>
@@ -324,30 +315,33 @@ impl Table {
         }
         Ok(())
     }
-    pub fn convert(&self) -> Rc<semantic::table::Table> {
+}
+impl GlobalConvert for Table {
+    type FinalType = crate::semantic::Table;
+    fn convert(&self) -> Rc<Self::FinalType> {
         let converted = *self.converted.borrow();
         if converted {
-            return self.reference();
+            return Rc::clone(&self.result);
         }
         //TODO better sorting method
         //put the constructors in the correct order
-        let mut constructors = self.constructors.borrow_mut();
-        let mut constructors: Vec<(Constructor, PatternConstraint)> =
-            constructors
-                .drain(..)
-                .map(|constructor| {
-                    let patt = constructor.pattern.pattern_constrait();
-                    (constructor, patt)
-                })
-                .collect();
+        let constructors: Vec<_> =
+            std::mem::take(self.constructors.borrow_mut().as_mut());
+        let constructors: Vec<(Constructor, PatternConstraint)> = constructors
+            .into_iter()
+            .map(|constructor| {
+                let patt = constructor.pattern.pattern_constrait();
+                (constructor, patt)
+            })
+            .collect();
         let mut new_constructors: Vec<(Constructor, PatternConstraint)> =
             vec![];
-        for (constructor, pattern) in constructors.drain(..) {
+        for (constructor, pattern) in constructors.into_iter() {
             let pos = new_constructors.iter().enumerate().find_map(
-                |(i, (_con, pat))| pat.contains(&pattern).then_some(i),
+                |(i, (_con, pat))| pattern.contains(&pat).then_some(i),
             );
-            //insert constructors in the correct order accordingly with the rules of
-            //`7.8.1. Matching`
+            //insert constructors in the correct order accordingly with the
+            //rules of `7.8.1. Matching`
             if let Some(pos) = pos {
                 new_constructors.insert(pos, (constructor, pattern));
             } else {
@@ -359,8 +353,8 @@ impl Table {
         let export =
             self.export.borrow().unwrap_or_default().convert().unwrap();
         let constructors = new_constructors
-            .drain(..)
-            .map(|(x, _)| x.convert())
+            .into_iter()
+            .map(|(x, _)| Rc::new(x.convert()))
             .collect();
 
         //TODO is this really safe?
@@ -374,10 +368,28 @@ impl Table {
             (*ptr).export = export;
         }
 
-        self.reference()
+        Rc::clone(&self.result)
     }
 }
 
+impl FieldSizeMut for GlobalElement<Table> {
+    fn get(&self) -> FieldSize {
+        //TODO expect
+        *self.export().borrow().as_ref().unwrap().size().unwrap()
+    }
+
+    fn set(&mut self, size: FieldSize) -> Option<bool> {
+        let mut self_export = self.export().borrow_mut();
+        let self_ref = self_export.as_mut().unwrap().size_mut().unwrap();
+        let modify = *self_ref != size;
+        if modify {
+            let _ = std::mem::replace(self_ref, size);
+        }
+        Some(modify)
+    }
+}
+
+pub type FinalConstructor = crate::semantic::table::Constructor;
 #[derive(Clone, Debug)]
 pub struct Constructor {
     //pub table: Weak<Table>,
@@ -447,6 +459,23 @@ impl Constructor {
     }
 }
 
+impl<'a> From<Constructor> for FinalConstructor {
+    fn from(value: Constructor) -> Self {
+        let src = value.src;
+        let pattern = value.pattern.into();
+        let display = value.display.into();
+        let execution = value.execution.map(|x| x.convert());
+        let disassembly = value.disassembly.convert();
+        Self {
+            pattern,
+            display,
+            execution,
+            disassembly,
+            src,
+        }
+    }
+}
+
 impl<'a> Sleigh<'a> {
     pub(crate) fn insert_table_constructor(
         &mut self,
@@ -456,15 +485,28 @@ impl<'a> Sleigh<'a> {
         let table_pos = self.input_src(constructor.src);
         let table_name =
             with_block_current.table_name(constructor.table_name());
-        let table = self.get_table_or_create_empty(table_name).ok_or(
-            TableErrorSub::TableNameInvalid.to_table(table_pos.clone()),
-        )?;
+        let table = self
+            .get_table_or_create_empty(table_name)
+            .ok_or(TableErrorSub::TableNameInvalid.to_table(table_pos.clone()))?
+            .clone();
 
-        let pattern = with_block_current
-            .pattern(constructor.pattern)
+        let pattern = with_block_current.pattern(&constructor.pattern);
+        let mut pattern = Pattern::new(self, pattern, table.element_ptr())
             .to_table(table_pos.clone())?;
-        let mut pattern =
-            Pattern::new(self, pattern, &table).to_table(table_pos.clone())?;
+        pattern.unresolved_token_fields().into_iter().try_for_each(
+            |(_key, token_field)| {
+                if !pattern
+                    .add_implicit_token_field(&token_field)
+                    .to_table(table_pos.clone())?
+                {
+                    return Err(semantic::table::PatternError::MissingRef(
+                        token_field.src.clone(),
+                    ))
+                    .to_table(table_pos.clone());
+                }
+                Ok(())
+            },
+        )?;
 
         let disassembly =
             with_block_current.disassembly(constructor.dissasembly);
@@ -477,9 +519,14 @@ impl<'a> Sleigh<'a> {
             .unwrap_or_default();
 
         let is_root = table.is_root();
-        let display =
-            Display::new(constructor.display, self, &disassembly, is_root)
-                .to_table(table_pos.clone())?;
+        let display = Display::new(
+            constructor.display,
+            self,
+            &mut pattern,
+            &disassembly,
+            is_root,
+        )
+        .to_table(table_pos.clone())?;
 
         let src_table = self.input_src(constructor.src);
         let execution = constructor
@@ -506,14 +553,17 @@ impl<'a> Sleigh<'a> {
     pub fn get_table_or_create_empty(
         &mut self,
         name: &str,
-    ) -> Option<Rc<Table>> {
+    ) -> Option<&GlobalElement<Table>> {
         //TODO check if creating the table is always required, or we can create
         //it only if a contructor is added to it. Or just remove empty tables
         //and check the Rc counts before converting into the final sleigh struct
         let name = Rc::from(name);
         self.idents
             .entry(Rc::clone(&name))
-            .or_insert(GlobalScope::Table(Table::new_empty(name)))
+            .or_insert_with(|| {
+                let table = Table::new_empty(false);
+                GlobalScope::Table(GlobalElement::new(name, table))
+            })
             .table_or(())
             .ok()
     }

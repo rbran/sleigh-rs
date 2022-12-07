@@ -5,12 +5,12 @@ use std::rc::Rc;
 use thiserror::Error;
 
 use crate::base::{IntTypeU, NonZeroTypeU};
-use crate::{InputSource, UserFunction};
+use crate::{InputSource, TokenField, UserFunction};
 
 use super::pcode_macro::PcodeMacroInstance;
 use super::table::{Table, TableError, TableErrorSub};
-use super::varnode::Varnode;
-use super::{assembly, disassembly};
+use super::varnode::{Bitrange, Context, Varnode};
+use super::{disassembly, GlobalReference, InstNext, InstStart};
 
 mod op;
 
@@ -32,6 +32,8 @@ pub enum ExecutionError {
 
     #[error("Invalid Var declaration {0}")]
     InvalidVarDeclare(InputSource),
+    #[error("Invalid Var Len {0}")]
+    InvalidVarLen(InputSource),
     #[error("Label invalid {0}")]
     InvalidLabel(InputSource),
     #[error("Label not found {0}")]
@@ -84,17 +86,20 @@ impl Variable {
 #[derive(Clone, Debug)]
 pub enum VariableScope {
     Value { value: IntTypeU, size: NonZeroTypeU },
-    AttachVarnode(Rc<assembly::Field>),
-    TableExport(Rc<Table>),
+    AttachVarnode(GlobalReference<TokenField>),
+    TableExport(GlobalReference<Table>),
 }
 
 #[derive(Clone, Debug)]
 pub struct UserCall {
-    function: Rc<UserFunction>,
+    pub function: GlobalReference<UserFunction>,
     pub params: Vec<Expr>,
 }
 impl UserCall {
-    pub fn new(params: Vec<Expr>, function: Rc<UserFunction>) -> Self {
+    pub fn new(
+        params: Vec<Expr>,
+        function: GlobalReference<UserFunction>,
+    ) -> Self {
         Self { params, function }
     }
 }
@@ -102,8 +107,10 @@ impl UserCall {
 #[derive(Clone, Debug)]
 pub enum ReferencedValue {
     //only if translate into varnode
-    Assembly(Rc<assembly::Assembly>),
-    Table(Rc<Table>),
+    TokenField(GlobalReference<TokenField>),
+    InstStart(GlobalReference<InstStart>),
+    InstNext(GlobalReference<InstNext>),
+    Table(GlobalReference<Table>),
     //Param(InputSource, Rc<Parameter>),
 }
 
@@ -126,10 +133,14 @@ pub enum ExprElement {
 #[derive(Clone, Debug)]
 pub enum ExprValue {
     Int(IntTypeU),
+    TokenField(GlobalReference<TokenField>),
+    InstStart(GlobalReference<InstStart>),
+    InstNext(GlobalReference<InstNext>),
+    Varnode(GlobalReference<Varnode>),
+    Context(GlobalReference<Context>),
+    Bitrange(GlobalReference<Bitrange>),
+    Table(GlobalReference<Table>),
     DisVar(Rc<disassembly::Variable>),
-    Assembly(Rc<assembly::Assembly>),
-    Varnode(Rc<Varnode>),
-    Table(Rc<Table>),
     ExeVar(Rc<Variable>),
     //Param(Rc<Parameter>),
 }
@@ -145,7 +156,7 @@ pub enum BranchCall {
 pub struct CpuBranch {
     pub cond: Option<Expr>,
     pub call: BranchCall,
-    direct: bool,
+    pub direct: bool,
     pub dst: Expr,
 }
 
@@ -173,9 +184,10 @@ pub struct LocalGoto {
 
 #[derive(Clone, Debug)]
 pub enum WriteValue {
-    Varnode(Rc<Varnode>),
-    Assembly(Rc<assembly::Assembly>), //only with attach variable
-    TableExport(Rc<Table>),
+    Varnode(GlobalReference<Varnode>),
+    Bitrange(GlobalReference<Bitrange>),
+    TokenField(GlobalReference<TokenField>), //only with attach variable
+    TableExport(GlobalReference<Table>),
     Local(Rc<Variable>),
 }
 
@@ -183,11 +195,15 @@ pub enum WriteValue {
 pub enum ReadValue {
     //value is always unsigned, negatives are preceded by an '-' op
     Integer(IntTypeU),
-    Disassembly(Rc<disassembly::Variable>),
-    Assembly(Rc<assembly::Assembly>),
-    Varnode(Rc<Varnode>),
-    TableExport(Rc<Table>),
-    Local(Rc<Variable>),
+    DisVar(Rc<disassembly::Variable>),
+    TokenField(GlobalReference<TokenField>),
+    InstStart(GlobalReference<InstStart>),
+    InstNext(GlobalReference<InstNext>),
+    Varnode(GlobalReference<Varnode>),
+    Context(GlobalReference<Context>),
+    Bitrange(GlobalReference<Bitrange>),
+    TableExport(GlobalReference<Table>),
+    ExeVar(Rc<Variable>),
 }
 
 #[derive(Clone, Debug)]
@@ -218,16 +234,16 @@ pub struct AssignmentVar {
 
 #[derive(Clone, Debug)]
 pub struct Build {
-    pub table: Rc<Table>,
+    pub table: GlobalReference<Table>,
 }
 
 #[derive(Clone, Debug)]
 pub struct MacroCall {
-    pub params: Vec<Expr>,
+    pub params: Box<[Expr]>,
     pub function: Rc<PcodeMacroInstance>,
 }
 impl MacroCall {
-    pub fn new(params: Vec<Expr>, function: Rc<PcodeMacroInstance>) -> Self {
+    pub fn new(params: Box<[Expr]>, function: Rc<PcodeMacroInstance>) -> Self {
         Self { params, function }
     }
 }
@@ -235,9 +251,9 @@ impl MacroCall {
 #[derive(Clone, Debug)]
 pub enum ExportConst {
     DisVar(Rc<disassembly::Variable>),
-    Assembly(Rc<assembly::Assembly>),
-    Context(Rc<Varnode>),
-    Table(Rc<Table>),
+    TokenField(GlobalReference<TokenField>),
+    Context(GlobalReference<Context>),
+    Table(GlobalReference<Table>),
 }
 #[derive(Clone, Debug)]
 pub enum Export {

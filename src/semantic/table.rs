@@ -3,7 +3,6 @@ use std::rc::Rc;
 use thiserror::Error;
 
 use crate::base::NonZeroTypeU;
-use crate::IDENT_INSTRUCTION;
 use crate::{from_error, InputSource};
 
 use super::disassembly::Disassembly;
@@ -11,7 +10,6 @@ pub use super::disassembly::DisassemblyError;
 pub use super::display::{Display, DisplayError};
 use super::execution::Execution;
 pub use super::execution::ExecutionError;
-use super::inner;
 use super::pattern::PatternLen;
 pub use super::pattern::{Pattern, PatternError};
 
@@ -110,17 +108,17 @@ pub struct Constructor {
 
 #[derive(Clone, Debug)]
 pub struct Table {
-    pub name: Rc<str>,
-    pub constructors: Vec<Constructor>,
+    is_root: bool,
+    pub constructors: Box<[Rc<Constructor>]>,
     pub export: ExecutionExport,
     pub(crate) pattern_len: PatternLen,
 }
 
 impl Table {
-    pub(crate) fn new_dummy(name: Rc<str>) -> Self {
+    pub(crate) fn new_dummy(is_root: bool) -> Self {
         Self {
-            name,
-            constructors: vec![],
+            is_root,
+            constructors: Box::new([]),
             export: ExecutionExport::None,
             pattern_len: PatternLen::Defined(0 /*TODO*/),
         }
@@ -129,28 +127,9 @@ impl Table {
         &self.export
     }
     pub fn is_root(&self) -> bool {
-        self.name.as_ref() == IDENT_INSTRUCTION
+        self.is_root
     }
     pub fn pattern_len(&self) -> &PatternLen {
         &self.pattern_len
-    }
-}
-
-impl<'a> TryFrom<inner::Constructor> for Constructor {
-    type Error = TableError;
-
-    fn try_from(value: inner::Constructor) -> Result<Self, Self::Error> {
-        let src = value.src().clone();
-        let pattern = value.pattern.try_into().to_table(src.clone())?;
-        let display = value.display.into();
-        let execution = value.execution.map(|x| x.convert());
-        let disassembly = value.disassembly.convert();
-        Ok(Self {
-            pattern,
-            display,
-            execution,
-            disassembly,
-            src,
-        })
     }
 }

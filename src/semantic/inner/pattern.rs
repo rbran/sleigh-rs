@@ -1,22 +1,22 @@
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::ops::ControlFlow;
-use std::rc::Rc;
 
 use crate::base::IntTypeU;
-use crate::semantic::assembly::Assembly;
 use crate::semantic::inner::table::Table;
 use crate::semantic::inner::GlobalScope;
-use crate::semantic::pattern::{
-    ConstraintField, FieldProductTable, PatternError,
-};
+use crate::semantic::pattern::PatternError;
 use crate::semantic::table::DisassemblyError;
-use crate::semantic::varnode::{Varnode, VarnodeType};
+use crate::semantic::{GlobalAnonReference, GlobalElement, GlobalReference};
 use crate::syntax::block;
+use crate::syntax::block::pattern::Op;
 use crate::{semantic, InputSource, PatternLen, Token};
 
-use super::disassembly::{ExprBuilder, ReadScope};
+use super::disassembly::{Expr, ExprBuilder, ReadScope};
+use super::token::TokenField;
+use super::varnode::Context;
 use super::{Sleigh, SolverStatus};
-use semantic::pattern::CmpOp;
+use semantic::pattern::{CmpOp, Ellipsis};
 
 use bitvec::prelude::*;
 
@@ -31,7 +31,7 @@ impl PatternConstraint {
     //one pattern contains the other if all the cases that match the contained,
     //also match the pattern.
     //eg: `a` contains `b` if all cases that match `b` also match `a`. In other
-    //words `b` is a special case of `a`.
+    //words `a` is a special case of `b`.
     //NOTE the opose don't need to be true.
     pub fn contains(&self, other: &Self) -> bool {
         if self.0.len() != other.0.len() {
@@ -40,12 +40,16 @@ impl PatternConstraint {
         self.0
             .iter()
             .zip(other.0.iter())
-            .all(|(a, b)| match (*a, *b) {
-                (true, true) => true,
-                (true, false) => false,
-                (false, true) => true,
-                (false, false) => true,
+            //None means `b` restrain something `a` don't, so a don't contains b
+            //Some(false) means `a`/`b` are identical.
+            //Some(true) means `b` is fully contained in `a`
+            .try_fold(false, |acc, (a, b)| match (*a, *b) {
+                (false, false) |
+                (true, true) => Some(acc),
+                (true, false) => Some(true),
+                (false, true) => None,
             })
+            .unwrap_or(false)
     }
 }
 impl PatternLen {
@@ -81,26 +85,6 @@ impl PatternLen {
             ) => Self::Min(x + y),
         }
     }
-    /////Used to find the smallest constructor in a table, and solve the
-    /////Growing/NonGrowing recrusive patterns
-    //pub fn smaller(self, other: Self) -> Self {
-    //    match (self, other) {
-    //        (Self::Defined(x), Self::Defined(y)) => Self::Defined(x.max(y)),
-    //        (
-    //            Self::Defined(ix @ ax) | Self::Range { min: ix, max: ax },
-    //            Self::Defined(iy @ ay) | Self::Range { min: iy, max: ay },
-    //        ) => {
-    //            let min = ix.min(iy);
-    //            let max = ax.min(ay);
-    //            if min == max {
-    //                Self::Defined(min)
-    //            } else {
-    //                Self::Range { min, max }
-    //            }
-    //        }
-    //        (Self::Min(x), other) => Self::Min(x.max(y)),
-    //    }
-    //}
     ///Used to solve recursives in Growing/NonGrowing patterns
     pub fn greater(self, other: Self) -> Self {
         match (self, other) {
@@ -197,36 +181,6 @@ impl ConstructorPatternLen {
     pub fn max(&self) -> Option<IntTypeU> {
         self.basic().map(|len| len.max()).flatten()
     }
-    /////Used to find the smallest constructor in a table, and solve the
-    /////table final pattern len
-    //pub fn smaller(self, other: Self) -> Option<Self> {
-    //    match (self, other) {
-    //        //recrusives can't be the smaller
-    //        (
-    //            Self::NonGrowingRecursive(_) | Self::GrowingRecursive { .. },
-    //            Self::NonGrowingRecursive(_) | Self::GrowingRecursive { .. },
-    //        ) => None,
-    //        (Self::Basic(x), Self::Basic(y)) => match (x, y) {},
-    //        _ => todo!(),
-    //    }
-    //}
-    //pub fn add_value(self, add: IntTypeU) -> Self {
-    //    match self {
-    //        Self::Unrestricted => self,
-    //        //recursive block can't be concat at yet
-    //        Self::NonGrowingRecursive(value) => {
-    //            Self::GrowingRecursive(value.add_value(add))
-    //        }
-    //        Self::GrowingRecursive(_) => {
-    //            unimplemented!("Incremental Self-Recursive")
-    //        }
-    //        Self::Restricted(value) => Self::Restricted(value + add),
-    //        Self::Range { min, max } => Self::Range {
-    //            min: min + add,
-    //            max: max + add,
-    //        },
-    //    }
-    //}
     //TODO replace Option with Result?
     pub fn add(self, other: Self) -> Option<Self> {
         let new_self = match (self, other) {
@@ -269,7 +223,7 @@ impl ConstructorPatternLen {
             ) => Some(Self::NonGrowingRecursive(x.greater(y))),
             (Self::Basic(_), Self::GrowingRecursive { .. })
             | (Self::GrowingRecursive { .. }, Self::Basic(_)) => {
-                //This only happen if recursive block is in a sub-pattern
+                //This only happen if recursive block is in a sub_pattern
                 //what i think is not allowed
                 unimplemented!()
             }
@@ -281,85 +235,223 @@ impl From<PatternLen> for ConstructorPatternLen {
         Self::Basic(value)
     }
 }
-fn is_finished(len: &Option<ConstructorPatternLen>) -> bool {
+fn is_len_finished(len: &Option<ConstructorPatternLen>) -> bool {
     match len.as_ref() {
         Some(len) => len.is_basic(),
         None => false,
     }
 }
+struct FindValues(HashMap<*const TokenField, GlobalReference<TokenField>>);
+impl FindValues {
+    fn search<'a>(
+        verifications: impl Iterator<Item = &'a Verification>,
+    ) -> HashMap<*const TokenField, GlobalReference<TokenField>> {
+        let mut find = Self(HashMap::new());
+        for ver in verifications {
+            find.verification(ver);
+        }
+        find.0
+    }
+}
+impl PatternWalker for FindValues {
+    //don't search recursivally, only on this pattern, each sub-pattern
+    //will be responsible to produce it's own fields
+    fn pattern(&mut self, _pattern: &Pattern) -> ControlFlow<(), ()> {
+        ControlFlow::Continue(())
+    }
+    fn value(&mut self, value: &ConstraintValue) -> ControlFlow<(), ()> {
+        use semantic::inner::disassembly::ExprElement::*;
+        use semantic::inner::disassembly::ReadScope::*;
+        for expr_ele in value.expr.rpn.iter() {
+            match expr_ele {
+                Value(TokenField(ass)) => {
+                    self.0
+                        .entry(ass.element_ptr())
+                        .or_insert_with(|| ass.clone());
+                }
+                Value(Integer(_) | Context(_) | InstStart(_))
+                | OpUnary(_)
+                | Op(_) => (),
+                Value(InstNext(_) | Local(_)) => unreachable!(),
+            }
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+pub type FinalProducedTable = semantic::pattern::ProducedTable;
+#[derive(Clone, Debug)]
+pub struct ProducedTable {
+    pub table: GlobalReference<Table>,
+    //pub local: bool,
+    pub always: bool,
+    pub recursive: bool,
+}
+
+impl From<ProducedTable> for FinalProducedTable {
+    fn from(value: ProducedTable) -> Self {
+        Self::new(
+            value.table.convert_reference(),
+            value.always,
+            value.recursive,
+        )
+    }
+}
+
+pub type FinalProducedTokenField = semantic::pattern::ProducedTokenField;
+#[derive(Clone, Debug)]
+pub struct ProducedTokenField {
+    //if this field is produced explicitly (on pattern) or implicitly deduced
+    //the existence of by the use of it in a desassembly/execution
+    pub explicit: bool,
+    pub local: bool,
+    pub field: GlobalReference<TokenField>,
+}
+
+impl From<ProducedTokenField> for FinalProducedTokenField {
+    fn from(value: ProducedTokenField) -> Self {
+        Self::new(value.field.convert_reference(), value.local, value.explicit)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Pattern {
-    len: Option<ConstructorPatternLen>,
-    products: FieldProducts,
-    root_len: IntTypeU,
-    blocks: Vec<Block>,
+    //NOTE point after the `is` in the constructor, pattern itself don't have a
+    //start, thats because it could be mixed with the `with_block` pattern
+    pub src: InputSource,
+    pub len: Option<ConstructorPatternLen>,
+    pub tables: HashMap<*const Table, ProducedTable>,
+    pub tokens: HashMap<*const Token, (usize, GlobalAnonReference<Token>)>,
+    pub token_fields: HashMap<*const TokenField, ProducedTokenField>,
+    //products: FieldProducts,
+    pub blocks: Vec<Block>,
+    ////token fields required by value checking, not produced locally, maybe
+    //they could be produced in outer patterns (in case this is sub_pattern)
+    //pub unresolved_token_fields: Vec<GlobalReference<TokenField>>,
 }
 
 impl Pattern {
     pub fn new(
         sleigh: &Sleigh,
         input: block::pattern::Pattern,
-        table: &Rc<Table>,
+        this_table: *const Table,
     ) -> Result<Self, PatternError> {
-        let block::pattern::Pattern { mut blocks } = input;
-        let blocks = blocks
-            .drain(..)
-            .map(|block| Block::new(sleigh, block, table))
-            .collect::<Result<Vec<_>, _>>()?;
-        let root_len = blocks.iter().map(Block::root_len).sum();
+        let src = sleigh.input_src(&input.src);
+        let blocks = input
+            .blocks
+            .into_iter()
+            .map(|block| Block::new(sleigh, block, this_table))
+            .collect::<Result<Vec<Block>, _>>()?;
         let len = blocks.is_empty().then(|| PatternLen::Defined(0).into());
-        let products = blocks
-            .iter()
-            .map(Block::produce)
-            .try_fold(FieldProducts::default(), FieldProducts::or)?;
 
-        //TODO verify that all assembly fields used in the constraint value
-        //are build in previous (maybe current) block
-
+        //make sure the fields are not duplicated
+        let mut token_fields: HashMap<*const TokenField, ProducedTokenField> =
+            HashMap::new();
+        use std::collections::hash_map::Entry::*;
+        for (k, produced_field) in
+            blocks.iter().map(|block| &block.token_fields).flatten()
+        {
+            match token_fields.entry(*k) {
+                Occupied(entry) => {
+                    return Err(PatternError::MultipleProduction(
+                        entry.get().field.location().clone(),
+                        produced_field.field.location().clone(),
+                    ));
+                }
+                Vacant(entry) => {
+                    entry.insert(produced_field.clone());
+                }
+            }
+        }
+        //make sure the tables are not duplicated
+        let mut tables: HashMap<*const Table, ProducedTable> = HashMap::new();
+        for (k, produced_table) in
+            blocks.iter().map(|block| &block.tables).flatten()
+        {
+            match tables.entry(*k) {
+                Occupied(entry) => {
+                    return Err(PatternError::MultipleProduction(
+                        entry.get().table.location().clone(),
+                        produced_table.table.location().clone(),
+                    ));
+                }
+                Vacant(entry) => {
+                    entry.insert(produced_table.clone());
+                }
+            }
+        }
+        let mut tokens = HashMap::new();
+        let tokens_iter =
+            blocks.iter().map(|block| block.tokens.values()).flatten();
+        for (num, token) in tokens_iter {
+            tokens
+                .entry(token.element_ptr())
+                .and_modify(|(entry_num, _token)| *entry_num += *num)
+                .or_insert_with(|| (*num, token.clone()));
+        }
+        //let products = FieldProducts::combine_blocks(blocks.iter())?;
         Ok(Self {
-            root_len,
+            src,
             blocks,
-            products,
+            //products,
             len,
+            tokens,
+            token_fields,
+            tables,
         })
     }
-    pub fn src(&self) -> &InputSource {
-        //TODO block even have a src? it is the combination of with_table and
-        //the constructor pattern. Use the constructor location?
-        self.blocks.first().unwrap(/*TODO*/).src()
+    //token fields required by value comparisons that this pattern can't produce
+    //itself
+    pub fn unresolved_token_fields(
+        &self,
+    ) -> HashMap<*const TokenField, GlobalReference<TokenField>> {
+        let mut all_unresolved = HashMap::new();
+        for (index, block) in self.blocks.iter().enumerate() {
+            let mut block_unresolved = block.unresolved_token_fields();
+            //remove unresolveds already produced by previous blocks
+            block_unresolved.retain(|_key, unresolved| {
+                self.blocks[..index].iter().any(|block| {
+                    block.token_fields.contains_key(&unresolved.element_ptr())
+                })
+            });
+            all_unresolved.extend(block_unresolved);
+        }
+        all_unresolved
     }
-    pub fn blocks(&self) -> impl Iterator<Item = &Block> {
-        self.blocks.iter()
-    }
-    pub fn include_produced_assembly(
+    pub fn add_implicit_token_field(
         &mut self,
-        assembly: &Rc<Assembly>,
-    ) -> bool {
-        //field is already produced, do nothing
-        if self.products.produce_assembly(assembly) {
-            return true;
+        token_field: &GlobalReference<TokenField>,
+    ) -> Result<bool, PatternError> {
+        let ptr = token_field.element_ptr();
+        //check if we already produces it, if so do nothing
+        if self.token_fields.contains_key(&ptr) {
+            return Ok(true);
         }
-        //field can't be produced, don't try
-        if !self.products.can_produce_assembly(assembly) {
-            return false;
+        //try all the blocks, find one that is able to produce it, but only one!
+        let mut found = false;
+        for block in self.blocks.iter_mut() {
+            match (found, block.add_implicit_token_field(token_field)) {
+                //this block can't add this token_field
+                (_, false) => (),
+                //found the first block that is able to add the token_field
+                (false, true) => found = true,
+                //found the second block that is able to add the token_field
+                (true, true) => {
+                    return Err(PatternError::AmbiguousProduction(
+                        token_field.src.clone(),
+                    ))
+                }
+            }
         }
-        //try all the blocks, one will be able to produce it
-        let found = self
-            .blocks
-            .iter_mut()
-            .any(|block| block.include_produced_assembly(assembly));
-        if !found {
-            unreachable!("LOGIC_CHECK: Token producer not found in pattern");
-        }
-
-        //now that a sub block produces this field, this pattern also produce it
-        let assembly_ptr: *const _ = Rc::as_ptr(assembly);
-        self.products
-            .fields
-            .insert(assembly_ptr, Rc::clone(assembly))
-            .map(|_| unreachable!());
-        true
+        self.token_fields.insert(
+            ptr,
+            ProducedTokenField {
+                local: true,
+                explicit: false,
+                field: token_field.clone(),
+            },
+        );
+        Ok(found)
     }
     pub fn solve(
         &mut self,
@@ -378,51 +470,32 @@ impl Pattern {
             .iter_mut()
             .try_for_each(|block| block.solve(solved))?;
         //FUTURE replace with try_reduce
-        let mut lens = self.blocks.iter().map(|block| block.len()).copied();
-        let first = match lens.next() {
-            //empty pattern
-            None => {
-                self.len = Some(PatternLen::Defined(0).into());
-                return Ok(());
-            }
-            //first len is indefined, we can't calcualte the pattern len yet
-            Some(None) => return Ok(()),
-            Some(Some(first)) => first,
-        };
-        let mut final_len = first;
-        for len in lens {
-            //check if len is undefined
-            if let Some(len) = len {
-                if let Some(new_len) = final_len.add(len) {
-                    final_len = new_len;
-                } else {
-                    //add will fail if we try to add two recursives
-                    return Err(PatternError::MultipleRecursives(
-                        self.src().clone(),
-                    ));
-                }
-            } else {
-                return Ok(());
-            }
-        }
-        if self.len != Some(final_len) {
-            solved.i_did_a_thing();
-            self.len = Some(final_len);
-        }
-        //if not fully finished yet, request another run
-        if !is_finished(&self.len) {
+        let mut lens = self.blocks.iter().map(|block| block.len.clone());
+        let first = ConstructorPatternLen::Basic(PatternLen::Defined(0).into());
+        let final_len = lens.try_fold(first, |acc, len| acc.add(len?));
+
+        if !is_len_finished(&final_len) {
+            //if not fully finished yet, request another run
             solved.iam_not_finished_location(self.src(), file!(), line!());
+        }
+        //update self.len if found a more restricted value
+        match final_len {
+            Some(final_len) if self.len != Some(final_len) => {
+                solved.i_did_a_thing();
+                self.len = Some(final_len);
+            }
+            _ => (),
         }
         Ok(())
     }
-    pub fn produce(&self) -> &FieldProducts {
-        &self.products
+    pub fn src(&self) -> &InputSource {
+        &self.src
     }
-    pub fn root_len(&self) -> IntTypeU {
-        self.root_len
+    pub fn root_len(&self) -> usize {
+        self.blocks.iter().map(Block::root_len).sum()
     }
-    pub fn len(&self) -> &Option<ConstructorPatternLen> {
-        &self.len
+    pub fn len(&self) -> Option<ConstructorPatternLen> {
+        self.len
     }
     pub fn len_mut(&mut self) -> &mut Option<ConstructorPatternLen> {
         &mut self.len
@@ -444,522 +517,783 @@ impl Pattern {
     }
 }
 
-impl TryFrom<Pattern> for semantic::pattern::Pattern {
-    type Error = PatternError;
-
-    fn try_from(value: Pattern) -> Result<Self, Self::Error> {
+impl From<Pattern> for semantic::pattern::Pattern {
+    fn from(value: Pattern) -> Self {
         let Pattern {
+            src: _,
             len,
-            root_len: _,
-            mut blocks,
-            products: _,
+            blocks,
+            tokens: _,
+            tables: _,
+            token_fields: _,
         } = value;
-        let blocks = blocks
-            .drain(..)
-            .map(|block| block.try_into())
-            .collect::<Result<_, _>>()?;
+        let blocks = blocks.into_iter().map(|block| block.into()).collect();
         let len = len.unwrap().basic().unwrap();
-        let products = value.products.into();
-        Ok(Self::new(blocks, len, products))
+        Self::new(blocks, len)
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum Block {
-    //block with multiple elements unified with ORs
-    Or {
-        root_len: IntTypeU,
-        len: Option<ConstructorPatternLen>,
-        fields: Vec<FieldOr>,
-        products: FieldProducts,
-    },
-    //block with multiple elements unified with ANDs
-    And {
-        left_root_len: IntTypeU,
-        left_len: Option<ConstructorPatternLen>,
-        left: Vec<FieldAnd>,
-        right_root_len: IntTypeU,
-        right_len: Option<ConstructorPatternLen>,
-        right: Vec<FieldAnd>,
-        products: FieldProducts,
-    },
-}
-fn fields_and_solve(
-    fields: &mut [FieldAnd],
-    solved: &mut impl SolverStatus,
-) -> Result<(), PatternError> {
-    fields
-        .iter_mut()
-        .map(|field| match field {
-            FieldAnd::SubPattern { sub, .. } => sub.solve(solved),
-            FieldAnd::Constraint { .. } | FieldAnd::Field(_) => Ok(()),
-        })
-        .collect::<Result<_, _>>()
-}
-fn fields_and_len(
-    fields: &mut [FieldAnd],
-    src: &InputSource,
-) -> Option<Result<ConstructorPatternLen, PatternError>> {
-    //FUTURE implement this using try_reduce
-    let mut lens = fields.iter().filter_map(|field| {
-        match field {
-            FieldAnd::Constraint {
-                field: ConstraintVariable::Assembly { assembly, .. },
-                ..
-            }
-            | FieldAnd::Field(Reference::Assembly { assembly, .. }) => {
-                Some(Some(PatternLen::Defined(assembly.token_len()).into()))
-            }
-            FieldAnd::Constraint {
-                field: ConstraintVariable::Varnode { .. },
-                ..
-            }
-            | FieldAnd::Field(Reference::Varnode { .. }) => None,
-            FieldAnd::SubPattern { sub, .. } => Some(*sub.len()),
-            FieldAnd::Field(Reference::Table {
-                table,
-                src: _,
-                self_ref: false,
-            }) => {
-                //on FieldAnd tables need to have a len smaller then the
-                //current block
-                Some(table.pattern_len().map(|table_len| table_len.into()))
-            }
-            FieldAnd::Field(Reference::Table {
-                self_ref: true,
-                table,
-                ..
-            }) => {
-                //if self-recursive, return the table len, if resolved,
-                //otherwise just return the recursive len indicator
-                let table_len = table.pattern_len();
-                if table_len.is_some() {
-                    Some(table.pattern_len().map(|table_len| table_len.into()))
-                } else {
-                    Some(Some(ConstructorPatternLen::NonGrowingRecursive(
-                        PatternLen::Defined(0),
-                    )))
-                }
-            }
-        }
-    });
-    let first = match lens.next() {
-        //no elements, is an empty pattern, so zero sized
-        None => return Some(Ok(PatternLen::Defined(0).into())),
-        //there is a element, but it is a unknown len, just return unkown len
-        Some(None) => return None,
-        //have a first element, and it is a valid len
-        Some(Some(first)) => first,
-    };
-    let mut final_len = first;
-    for len in lens {
-        let len = len?;
-        if let Some(new_len) = final_len.greater(len) {
-            final_len = new_len;
-        } else {
-            return Some(Err(PatternError::MultipleRecursives(src.clone())));
-        }
-    }
-    Some(Ok(final_len))
+pub struct Block {
+    pub op: Op,
+    pub location: InputSource,
+    pub len: Option<ConstructorPatternLen>,
+    //root_len: usize,
+
+    //block produces this token this number of times
+    pub tokens: HashMap<*const Token, (usize, GlobalAnonReference<Token>)>,
+    //map to make sure token_fields are produced only once
+    //fields extracted, implicitly or explicity, localy or in sub_pattern
+    pub token_fields: HashMap<*const TokenField, ProducedTokenField>,
+    //produced tables
+    pub tables: HashMap<*const Table, ProducedTable>,
+
+    //verification in the order they are defined
+    pub verifications: Vec<Verification>,
 }
 
 impl Block {
+    fn new_or<'a>(
+        sleigh: &Sleigh,
+        location: InputSource,
+        elements: impl Iterator<Item = block::pattern::Element<'a>>,
+        this_table: *const Table,
+    ) -> Result<Self, PatternError> {
+        //convert the verifications and generate the tokens/token_fields that
+        //all branches produces.
+        let mut tokens: Option<HashMap<_, (usize, _)>> = None;
+        let mut token_fields: Option<HashMap<_, _>> = None;
+        let branches = elements
+            //convert into Verifications
+            .map(|element| {
+                let block::pattern::Element { field, ellipsis } = element;
+                if ellipsis.is_some() {
+                    //TODO error here
+                    todo!("Ellipsis on OR pattern?");
+                }
+                match field {
+                    block::pattern::Field::Field {
+                        field,
+                        constraint: None,
+                    } => {
+                        let src = sleigh.input_src(field);
+                        let field = sleigh
+                            .get_global(field)
+                            .ok_or(PatternError::MissingRef(src.clone()))?;
+                        match field {
+                            GlobalScope::Table(table) => {
+                                //this branch only produces a table, so no
+                                //token/token_fields, so clean/empty it
+                                match &mut tokens {
+                                    Some(tokens) => tokens.clear(),
+                                    None => tokens = Some(HashMap::new()),
+                                }
+                                match &mut token_fields {
+                                    Some(token_fields) => token_fields.clear(),
+                                    None => token_fields = Some(HashMap::new()),
+                                }
+                                Ok(Verification::new_table(
+                                    this_table, table, src, None,
+                                ))
+                            }
+                            _ => Err(PatternError::UnrestrictedOr(src)),
+                        }
+                    }
+                    block::pattern::Field::Field {
+                        field,
+                        constraint: Some(constraint),
+                    } => {
+                        let verification = Verification::from_constraint(
+                            sleigh, field, constraint, this_table,
+                        )?;
+                        match &verification {
+                            Verification::ContextCheck { .. }
+                            | Verification::TableBuild { .. } => {
+                                //this branch only produces_table/check_context,
+                                //so no token/token_fields, so clean/empty it
+                                match &mut tokens {
+                                    Some(tokens) => tokens.clear(),
+                                    None => tokens = Some(HashMap::new()),
+                                }
+                                match &mut token_fields {
+                                    Some(token_fields) => token_fields.clear(),
+                                    None => token_fields = Some(HashMap::new()),
+                                }
+                            }
+                            Verification::TokenFieldCheck { field, .. } => {
+                                let field_ele = field.element();
+                                let token = &field_ele.token;
+                                //this branch checks a token_field, remove all
+                                //tokens except for this one
+                                match &mut tokens {
+                                    Some(tokens) => {
+                                        tokens.retain(|this_token, _| {
+                                            *this_token == token.element_ptr()
+                                        })
+                                    }
+                                    None => {
+                                        tokens = Some(HashMap::from([(
+                                            token.element_ptr(),
+                                            (1, token.reference()),
+                                        )]))
+                                    }
+                                }
+                                //to token_fields are produced, clean/empty it
+                                match &mut token_fields {
+                                    Some(token_fields) => token_fields.clear(),
+                                    None => token_fields = Some(HashMap::new()),
+                                }
+                            }
+                            Verification::SubPattern { .. } => {
+                                unreachable!()
+                            }
+                        }
+                        Ok(verification)
+                    }
+                    block::pattern::Field::SubPattern(sub) => {
+                        let location = sleigh.input_src(&sub.src);
+                        let pattern = Pattern::new(sleigh, sub, this_table)?;
+                        //remote all the tokens that this sub_pattern don't
+                        //produces or produces more then once
+                        match &mut tokens {
+                            Some(tokens) => {
+                                tokens.retain(|this_token, (num, _token)| {
+                                    let found = pattern.tokens.get(this_token);
+                                    if let Some((found_num, _token)) = found {
+                                        *num = (*num).max(*found_num);
+                                    }
+                                    found.is_some()
+                                })
+                            }
+                            None => tokens = Some(pattern.tokens.clone()),
+                        }
+                        //remove all token this sub_pattern, don't produces
+                        match &mut token_fields {
+                            Some(fields) => fields.retain(|this_field, _| {
+                                pattern.token_fields.contains_key(this_field)
+                            }),
+                            None => {
+                                token_fields = Some(
+                                    pattern
+                                        .token_fields
+                                        .iter()
+                                        .map(|(k, v)| {
+                                            let mut v = v.clone();
+                                            v.local = false;
+                                            (*k, v)
+                                        })
+                                        .collect(),
+                                )
+                            }
+                        }
+                        Ok(Verification::SubPattern { location, pattern })
+                    }
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        //all tables produced should be included on the final tables list,
+        //but mark always=true only tables produced in all branches
+        let mut tables_iter = branches.iter();
+        let mut tables: HashMap<*const Table, ProducedTable> =
+            match tables_iter.next().expect("LOGIC_ERROR: empty OR pattern") {
+                //no tables in branch/no_branch
+                Verification::ContextCheck { .. }
+                | Verification::TokenFieldCheck { .. } => HashMap::new(),
+                //branch produces only one table, add this table
+                Verification::TableBuild {
+                    produced_table,
+                    verification: _,
+                } => HashMap::from([(
+                    produced_table.table.element_ptr(),
+                    produced_table.clone(),
+                )]),
+                Verification::SubPattern {
+                    location: _,
+                    pattern,
+                } => pattern.tables.clone(),
+            };
+        tables_iter.for_each(|verification| {
+            match verification {
+                //no table in this branch, mark all existing tables as
+                //not always producing.
+                Verification::ContextCheck { .. }
+                | Verification::TokenFieldCheck { .. } => {
+                    tables.values_mut().for_each(|table| table.always = false)
+                }
+
+                //branch produces only one table, add this table
+                Verification::TableBuild {
+                    produced_table,
+                    verification: _,
+                } => {
+                    let ptr = produced_table.table.element_ptr();
+                    //if this table don't exists, add it and mark it
+                    //not_always produce
+                    tables.entry(ptr).or_insert_with(|| {
+                        let mut produced_table = produced_table.clone();
+                        produced_table.always = false;
+                        produced_table
+                    });
+                    //mark all other tables as not always produce
+                    tables
+                        .iter_mut()
+                        .filter(|(k, _v)| **k != ptr)
+                        .for_each(|(_k, v)| v.always = false);
+                }
+                //this branch can produce 0..n tables
+                Verification::SubPattern {
+                    location: _,
+                    pattern,
+                } => {
+                    pattern.tables.iter().for_each(|(ptr, produced_table)| {
+                        //if this table don't exists, add it and mark it
+                        //not_always produce
+                        tables.entry(*ptr).or_insert_with(|| {
+                            let mut produced_table = produced_table.clone();
+                            produced_table.always = false;
+                            produced_table
+                        });
+                    });
+                    //mark all other tables as not always produce
+                    tables
+                        .iter_mut()
+                        .filter(|(k, _v)| !pattern.tables.contains_key(k))
+                        .for_each(|(_k, v)| v.always = false);
+                }
+            }
+        });
+
+        //tokens that are present in all branches of the or can produce
+        //fields,
+        let mut tokens_iter = branches.iter();
+        let mut tokens: HashMap<
+            *const Token,
+            (usize, GlobalAnonReference<Token>),
+        > = match tokens_iter.next().expect("LOGIC_ERROR: empty OR pattern") {
+            //no fields exported
+            Verification::ContextCheck { .. }
+            | Verification::TableBuild { .. } => HashMap::new(),
+            //TODO: sub_pattern export tokens?
+            Verification::SubPattern { .. } => HashMap::new(),
+            //one fields exported
+            Verification::TokenFieldCheck {
+                field,
+                op: _,
+                value: _,
+            } => {
+                let token_field = field.element();
+                let token = &token_field.token;
+                HashMap::from([(token.element_ptr(), (1, token.reference()))])
+            }
+        };
+        for verification in tokens_iter {
+            match verification {
+                //no fields, just clean it
+                Verification::ContextCheck { .. }
+                | Verification::TableBuild { .. } => {
+                    tokens.clear();
+                }
+                //TODO: sub_pattern export tokens?
+                Verification::SubPattern { .. } => tokens.clear(),
+                //one field, remove all the others
+                Verification::TokenFieldCheck {
+                    field,
+                    op: _,
+                    value: _,
+                } => {
+                    let token_field = field.element();
+                    tokens.retain(|ptr, _token| {
+                        *ptr == token_field.token.element_ptr()
+                    })
+                }
+            }
+            if tokens.is_empty() {
+                //don't need to search any further, because is already empty
+                break;
+            }
+        }
+        //fields explicitly produced by all branches, are produced by the or
+        //pattern
+        let mut fields_iter = branches.iter();
+        let mut fields: HashMap<*const TokenField, ProducedTokenField> =
+            match fields_iter.next().expect("LOGIC_ERROR: empty OR pattern") {
+                //no fields exported
+                Verification::ContextCheck { .. }
+                | Verification::TokenFieldCheck { .. }
+                | Verification::TableBuild { .. } => HashMap::new(),
+                //TODO: sub_pattern export tokens?
+                Verification::SubPattern { .. } => HashMap::new(),
+                //one fields exported
+            };
+        for verification in fields_iter {
+            match verification {
+                //no fields, just clean it
+                Verification::ContextCheck { .. }
+                | Verification::TokenFieldCheck { .. }
+                | Verification::TableBuild { .. } => {
+                    fields.clear();
+                }
+                Verification::SubPattern {
+                    location: _,
+                    pattern,
+                } => fields.retain(|ptr, _token| {
+                    pattern.token_fields.keys().any(|sub_ptr| sub_ptr == ptr)
+                }),
+            }
+            if fields.is_empty() {
+                //don't need to search any further, because is already empty
+                break;
+            }
+        }
+        fields.values_mut().for_each(|prod| prod.local = false);
+
+        Ok(Self {
+            op: Op::Or,
+            location,
+            len: None,
+            tokens,
+            token_fields: token_fields.unwrap_or_default(),
+            tables,
+            verifications: branches,
+        })
+    }
+    fn new_and<'a>(
+        sleigh: &Sleigh,
+        location: InputSource,
+        elements: impl Iterator<Item = block::pattern::Element<'a>>,
+        this_table: *const Table,
+    ) -> Result<Self, PatternError> {
+        //convert into Verifications, also capturing the explicit fields
+        let mut token_fields = HashMap::new();
+        //closure for identation sake
+        let mut add_explicit_token_field =
+            |token_field: ProducedTokenField| match token_fields
+                .entry(token_field.field.element_ptr())
+            {
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    let field_old: &ProducedTokenField = entry.get();
+                    Err(PatternError::MultipleProduction(
+                        field_old.field.location().clone(),
+                        token_field.field.location().clone(),
+                    ))
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(token_field);
+                    Ok(())
+                }
+            };
+        let mut verifications = vec![];
+        for element in elements {
+            let block::pattern::Element { field, ellipsis } = element;
+            if matches!(ellipsis, Some(Ellipsis::Left)) {
+                todo!("Ellispsis on the Left")
+            }
+            match field {
+                block::pattern::Field::Field {
+                    field,
+                    constraint: Some(constraint),
+                } => {
+                    let src = sleigh.input_src(field);
+                    let block::pattern::Constraint { op: cmp_op, value } =
+                        constraint;
+                    let value = ConstraintValue::new(sleigh, value)?;
+                    let field = sleigh
+                        .get_global(field)
+                        .ok_or(PatternError::MissingRef(src.clone()))?;
+                    match field {
+                        GlobalScope::TokenField(x) => {
+                            verifications.push(Verification::new_token_field(
+                                x, src, cmp_op, value,
+                            ))
+                        }
+                        //TODO create InstStart? Does start_start exists?
+                        GlobalScope::Context(x) => verifications.push(
+                            Verification::new_context(x, src, cmp_op, value),
+                        ),
+                        GlobalScope::Table(x) => {
+                            verifications.push(Verification::new_table(
+                                this_table,
+                                x,
+                                src,
+                                Some((cmp_op, value)),
+                            ))
+                        }
+                        _ => return Err(PatternError::InvalidRef(src)),
+                    };
+                }
+
+                block::pattern::Field::Field {
+                    field,
+                    constraint: None,
+                } => {
+                    let src = sleigh.input_src(field);
+                    let field = sleigh
+                        .get_global(field)
+                        .ok_or(PatternError::MissingRef(src.clone()))?;
+                    match field {
+                        //could be explicitly defined, usually for display,
+                        //but is not required
+                        GlobalScope::Epsilon(_)
+                        | GlobalScope::Varnode(_)
+                        | GlobalScope::Context(_)
+                        | GlobalScope::Bitrange(_) => (),
+                        //token_field exported
+                        GlobalScope::TokenField(token_field) => {
+                            add_explicit_token_field(ProducedTokenField {
+                                explicit: true,
+                                local: true,
+                                field: token_field.reference_from(src),
+                            })?
+                        }
+                        GlobalScope::Table(table) => {
+                            verifications.push(Verification::new_table(
+                                this_table, table, src, None,
+                            ))
+                        }
+                        _ => return Err(PatternError::InvalidRef(src)),
+                    }
+                }
+
+                block::pattern::Field::SubPattern(sub) => {
+                    let location = sleigh.input_src(&sub.src);
+                    let pattern = Pattern::new(sleigh, sub, this_table)?;
+                    //add/verify all token fields
+                    pattern
+                        .token_fields
+                        .values()
+                        .map(|prod| {
+                            let mut prod = prod.clone();
+                            prod.local = false;
+                            prod
+                        })
+                        .try_for_each(&mut add_explicit_token_field)?;
+                    verifications
+                        .push(Verification::SubPattern { location, pattern })
+                }
+            }
+        }
+
+        //tokens (that can produce implicit fields) are only taken from local,
+        //sub_patterns can't produce implicit token_fields
+        let fields_from_verifications =
+            verifications
+                .iter()
+                .filter_map(
+                    |verification: &Verification| match &verification {
+                        Verification::TokenFieldCheck { field, .. } => {
+                            Some(field.element())
+                        }
+                        Verification::ContextCheck { .. }
+                        | Verification::TableBuild { .. }
+                        | Verification::SubPattern { .. } => None,
+                    },
+                );
+        let fields_from_explicit_fields = token_fields
+            .values()
+            .map(|token_fields| token_fields.field.element());
+        let token_from_pattern = fields_from_explicit_fields
+            .chain(fields_from_verifications)
+            .map(|field| field.token.reference());
+        let mut tokens = HashMap::new();
+        for token in token_from_pattern {
+            tokens
+                .entry(token.element_ptr())
+                .and_modify(|(num, _token)| {
+                    *num += 1;
+                })
+                .or_insert_with(|| (1, token));
+        }
+
+        let tables = verifications
+            .iter()
+            .filter_map(Verification::tables)
+            .flatten()
+            .map(|produced_table| {
+                (produced_table.table.element_ptr(), produced_table.clone())
+            })
+            .collect();
+
+        Ok(Self {
+            op: Op::And,
+            location,
+            len: None,
+            token_fields,
+            tokens,
+            verifications,
+            tables,
+        })
+    }
     fn new(
         sleigh: &Sleigh,
         input: block::pattern::Block,
-        table: &Rc<Table>,
+        this_table: *const Table,
     ) -> Result<Self, PatternError> {
-        let block::pattern::Block { op, mut elements } = input;
-        let mut new = match op {
-            Some(block::pattern::Op::Or) => {
-                use block::pattern::*;
-                let fields = elements
-                    .drain(..)
-                    .map(|Element { field, ellipsis }| {
-                        if ellipsis.is_some() {
-                            todo!("Ellipsis on OR pattern?");
-                        }
-                        FieldOr::new(sleigh, field, table)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let root_len = fields.iter().map(FieldOr::root_len).sum();
-                let len =
-                    fields.is_empty().then(|| PatternLen::Defined(0).into());
+        let block::pattern::Block {
+            src,
+            first,
+            elements,
+        } = input;
+        let src = sleigh.input_src(src);
 
-                let products = FieldProducts::or_field(
-                    fields.iter().map(FieldOr::produce),
-                );
-                Self::Or {
-                    root_len,
-                    fields,
-                    len,
-                    products,
-                }
-            }
-            Some(block::pattern::Op::And) | None => {
-                use block::pattern::*;
-                let mut left = vec![];
-                let mut right = vec![];
-                let mut left_root_len = 0;
-                let mut right_root_len = 0;
-                for Element { field, ellipsis } in elements.drain(..) {
-                    let (elements, elements_root_len) = match ellipsis {
-                        Some(Ellipsis::Left) => {
-                            (&mut right, &mut right_root_len)
-                        }
-                        None | Some(Ellipsis::Right) => {
-                            (&mut left, &mut left_root_len)
-                        }
-                    };
-                    let element = FieldAnd::new(sleigh, field, table)?;
-                    *elements_root_len += element.root_len();
-                    elements.push(element);
-                }
-                let left_len =
-                    left.is_empty().then(|| PatternLen::Defined(0).into());
-                let right_len =
-                    right.is_empty().then(|| PatternLen::Defined(0).into());
-                let products = FieldProducts::and_field(
-                    left.iter().chain(right.iter()).map(FieldAnd::produce),
-                    table,
-                )?;
-                Self::And {
-                    left_root_len,
-                    left_len,
-                    left,
-                    right_root_len,
-                    right_len,
-                    right,
-                    products,
+        //NOTE I'll not allow to mix `&` and `|` in the same level
+        let op = match &elements[..] {
+            //a single element don't care for operations, just default to and
+            [] => block::pattern::Op::And,
+            [(first_op, _), rest @ ..] => {
+                if rest.iter().all(|(op, _)| first_op == op) {
+                    *first_op
+                } else {
+                    return Err(PatternError::MixOperations(src.clone()));
                 }
             }
         };
-        //this block need to produce all the assembly required in the constraint
-        //values
-        struct FindValues(Vec<Rc<Assembly>>);
-        impl PatternWalker for FindValues {
-            //don't search recursivally, only on this block
-            fn pattern(&mut self, _pattern: &Pattern) -> ControlFlow<(), ()> {
-                ControlFlow::Continue(())
-            }
-            fn constraint(
-                &mut self,
-                constraint: &semantic::inner::pattern::Constraint,
-            ) -> ControlFlow<(), ()> {
-                use semantic::disassembly::ExprElement::*;
-                use semantic::disassembly::ReadScope::*;
-                for expr_ele in constraint.value.expr.rpn.iter() {
-                    match expr_ele {
-                        Value(Assembly(ass)) => self.0.push(Rc::clone(ass)),
-                        Value(Integer(_) | Varnode(_)) | OpUnary(_) | Op(_) => {
-                            ()
-                        }
-                        Value(_) => unreachable!(),
-                    }
-                }
-                ControlFlow::Continue(())
-            }
-        }
-        let mut find = FindValues(vec![]);
-        find.block(&new);
-        for ele in find.0.iter() {
-            let found = new.include_produced_assembly(ele);
-            if !found {
-                //TODO error here and not panic
-                unreachable!(
-                    "LOGIC_CHECK: Token producer not found in pattern"
-                );
-            }
-        }
 
-        Ok(new)
-    }
-    pub fn src(&self) -> &InputSource {
-        //TODO: Is this even possible? Blocks could be a fusion of the
-        //with_block and the constructor
-        match self {
-            Self::And { left, right, .. } => {
-                left.last().or_else(|| right.last()).unwrap(/*TODO*/).src()
+        let all_elements = [first]
+            .into_iter()
+            .chain(elements.into_iter().map(|(_op, element)| element));
+
+        match op {
+            block::pattern::Op::Or => {
+                Self::new_or(sleigh, src, all_elements, this_table)
             }
-            Self::Or { fields, .. } => fields.last().unwrap(/*TODO*/).src(),
+            block::pattern::Op::And => {
+                Self::new_and(sleigh, src, all_elements, this_table)
+            }
         }
     }
-    pub fn produce(&self) -> &FieldProducts {
-        match self {
-            Self::Or { products, .. } | Self::And { products, .. } => products,
-        }
+    //token fields required by value comparisons that this block can't produce
+    //itself
+    pub fn unresolved_token_fields(
+        &self,
+    ) -> HashMap<*const TokenField, GlobalReference<TokenField>> {
+        let mut this_unresolved = FindValues::search(self.verifications.iter());
+        //remove all token_fields that can be produced locally
+        this_unresolved.retain(|_key, token_field| {
+            let token_field = token_field.element();
+            let token = &token_field.token;
+            !self.tokens.contains_key(&token.element_ptr())
+        });
+        //for each sub_pattern, find unresolved token_fields
+        this_unresolved.extend(
+            self.verifications
+                .iter()
+                .map(Verification::sub_pattern)
+                .flatten()
+                .map(Pattern::unresolved_token_fields)
+                .flatten(),
+        );
+        ////remove all token_fields that is produced locally
+        //this_unresolved.retain(|_key, token_field| {
+        //    !self.token_fields.contains_key(&token_field.element_ptr())
+        //});
+        this_unresolved
     }
-    pub fn include_produced_assembly(
-        &mut self,
-        assembly: &Rc<Assembly>,
+    pub fn is_token_field_produced(
+        &self,
+        search_field: &GlobalReference<TokenField>,
     ) -> bool {
-        let products = self.produce();
-        //field is already produced, do nothing
-        if products.produce_assembly(assembly) {
+        self.token_fields.get(&search_field.element_ptr()).is_some()
+    }
+    pub fn add_implicit_token_field(
+        &mut self,
+        token_field: &GlobalReference<TokenField>,
+    ) -> bool {
+        if self.is_token_field_produced(token_field) {
             return true;
         }
-        //field can't be produced, don't try
-        if !products.can_produce_assembly(assembly) {
-            return false;
+        let token_field_element = token_field.element();
+        let token = &token_field_element.token;
+        let token_num_used = self
+            .tokens
+            .get(&token.element_ptr())
+            .map(|(num, _)| *num)
+            .unwrap_or(0);
+        if token_num_used == 1 {
+            self.token_fields.insert(
+                token_field.element_ptr(),
+                ProducedTokenField {
+                    explicit: false,
+                    field: token_field.clone(),
+                    local: true,
+                },
+            );
+            true
+        } else {
+            false
         }
-        match self {
-            //all fields need to produce this assembly
-            Self::Or { .. } => {
-                //TODO can Or block produce implicit fields?
-                false
-                //if !products.can_produce_assembly(assembly) {
-                //    return false;
-                //}
-                //let found = fields.iter_mut().all(|field| match field {
-                //    FieldOr::Constraint {
-                //        src: _,
-                //        field:
-                //            ConstraintVariable::Assembly {
-                //                assembly: field, ..
-                //            },
-                //        implicit_fields,
-                //        constraint: _,
-                //    } => {
-                //        assert!(Rc::as_ptr(assembly) == Rc::as_ptr(field));
-                //        implicit_fields.push(Rc::clone(assembly));
-                //        true
-                //    }
-                //    FieldOr::Constraint { .. } => unreachable!(),
-                //    FieldOr::SubPattern { src: _, sub } => {
-                //        sub.include_produced_assembly(assembly)
-                //    }
-                //});
-                //if !found {
-                //    unreachable!("LOGIC_CHECK: Ass producer not found block");
-                //}
-                ////now that all sub fields produces this, the block also produces
-                //products
-                //    .fields
-                //    .insert(Rc::as_ptr(assembly), Rc::clone(assembly))
-                //    .map(|_| unreachable!());
-                //true
+    }
+    pub fn solve_or<T: SolverStatus>(
+        &mut self,
+        solved: &mut T,
+    ) -> Result<(), PatternError> {
+        //each branch of the or is represented by each verification
+        enum OrLenPossible {
+            Recursive,    //recursive in `OR` is not allowed
+            Unknown,      //at least one branch len is not known
+            DiferenceLen, //all branchs need to have the same len
+        }
+        let mut branch_len_iter = self
+            .verifications
+            .iter()
+            .map(Verification::pattern_len)
+            .map(|len| match len {
+                Some(ConstructorPatternLen::Basic(len)) => Ok(len),
+                Some(
+                    ConstructorPatternLen::NonGrowingRecursive(_)
+                    | ConstructorPatternLen::GrowingRecursive { .. },
+                ) => Err(OrLenPossible::Recursive),
+                None => Err(OrLenPossible::Unknown),
+            });
+        //unwrap never happen because empty pattern default to `Op::And`
+        let first = branch_len_iter.next().unwrap();
+        let new_len = first.and_then(|first| {
+            branch_len_iter.try_fold(first, |acc, x| {
+                if x? == first {
+                    Ok(acc)
+                } else {
+                    Err(OrLenPossible::DiferenceLen)
+                }
+            })
+        });
+        match new_len {
+            //all the lens are valid, and equal
+            Ok(new_len) => {
+                solved.i_did_a_thing();
+                self.len = Some(ConstructorPatternLen::Basic(new_len));
             }
-            Self::And {
-                left,
-                right,
-                products,
-                ..
-            } => {
-                //find the field that can produce this assembly
-                fn find_implicit_field(
-                    fields: &mut Vec<FieldAnd>,
-                    find: &Rc<Assembly>,
-                ) -> bool {
-                    let token = &find.field().unwrap().token;
-                    let token_ptr = Rc::as_ptr(token);
-                    let add = fields.iter_mut().find_map(|field| {
-                        match field {
-                            FieldAnd::Field(Reference::Assembly {
-                                src,
-                                assembly: field,
-                            })
-                            | FieldAnd::Constraint {
-                                field:
-                                    ConstraintVariable::Assembly {
-                                        src,
-                                        assembly: field,
-                                    },
-                                constraint: _,
-                            } => {
-                                //this is the field that we are search for
-                                if Rc::as_ptr(find) == Rc::as_ptr(field) {
-                                    Some(None)
-                                //this is in the same token, so can also produce it
-                                } else if field
-                                    .field()
-                                    .map(|field| {
-                                        Rc::as_ptr(&field.token) == token_ptr
-                                    })
-                                    .unwrap_or(false)
-                                {
-                                    Some(Some(FieldAnd::Field(
-                                        Reference::Assembly {
-                                            src: src.clone(),
-                                            assembly: Rc::clone(find),
-                                        },
-                                    )))
-                                } else {
-                                    None
-                                }
-                            }
-                            FieldAnd::Constraint { .. } => None,
-                            FieldAnd::Field(_) => None,
-                            FieldAnd::SubPattern { src: _, sub } => {
-                                if sub.include_produced_assembly(find) {
-                                    Some(None)
-                                } else {
-                                    None
-                                }
-                            }
-                        }
-                    });
-                    match add {
-                        //found an implicit field, add it to the fields list
-                        Some(Some(add)) => {
-                            fields.push(add);
-                            true
-                        }
-                        Some(None) => true,
-                        None => false,
-                    }
-                }
-                let mut found = find_implicit_field(left, assembly);
-                if !found {
-                    found |= find_implicit_field(right, assembly);
-                }
-                if !found {
-                    unreachable!("LOGIC_CHECK: Ass producer not found block");
-                }
-                //now that one sub fields produces this, the block also produces
-                products
-                    .fields
-                    .insert(Rc::as_ptr(assembly), Rc::clone(assembly));
-                true
+            //at least one len is not known yet, request another
+            //run to solve it
+            Err(OrLenPossible::Unknown) => {
+                solved.iam_not_finished_location(
+                    &self.location,
+                    file!(),
+                    line!(),
+                );
+            }
+            //at least one len is diferent from the others
+            Err(OrLenPossible::DiferenceLen) => {
+                return Err(PatternError::InvalidOrLen(self.location.clone()))
+            }
+            //at least one len is recursive
+            Err(OrLenPossible::Recursive) => {
+                return Err(PatternError::InvalidOrLen(self.location.clone()))
             }
         }
+        Ok(())
+    }
+    pub fn solve_and<T: SolverStatus>(
+        &mut self,
+        solved: &mut T,
+    ) -> Result<(), PatternError> {
+        //the pattern len is the biggest of all tokens, all sub_patterns
+        //and all tables in the pattern
+        let tokens_len = self
+            .tokens
+            .values()
+            .map(|(_num, token)| token.element().len_bytes())
+            .max()
+            .map(|token_len| {
+                ConstructorPatternLen::Basic(PatternLen::Defined(
+                    token_len.get(),
+                ))
+            });
+        let mut verifications_len =
+            self.verifications.iter().map(Verification::pattern_len);
+        let first = tokens_len.unwrap_or(PatternLen::Defined(0).into());
+        let final_len =
+            verifications_len.try_fold(first, |acc, x| acc.greater(x?));
+
+        if let Some(final_len) = final_len {
+            //basic means fully solved
+            if !final_len.is_basic() {
+                //need to solve the recursive len of the pattern
+                solved.iam_not_finished_location(
+                    &self.location,
+                    file!(),
+                    line!(),
+                );
+            }
+            if self.len != Some(final_len) {
+                solved.i_did_a_thing();
+                self.len = Some(final_len);
+            }
+        } else {
+            //if not fully finished yet, request another run
+            solved.iam_not_finished_location(&self.location, file!(), line!());
+        }
+        Ok(())
     }
     pub fn solve<T: SolverStatus>(
         &mut self,
         solved: &mut T,
     ) -> Result<(), PatternError> {
-        let src = self.src().clone();
-        match self {
-            Self::Or {
-                root_len: _,
-                len,
-                fields,
-                products: _,
-            } => {
-                //if len is already solved, there is nothing todo
-                if is_finished(len) {
-                    return Ok(());
-                }
-                fields
-                    .iter_mut()
-                    .map(|field| match field {
-                        FieldOr::SubPattern { sub, .. } => sub.solve(solved),
-                        FieldOr::Constraint { .. } => Ok(()),
-                    })
-                    .collect::<Result<_, _>>()?;
-                let mut lens = fields.iter().map(|field| match field {
-                    FieldOr::SubPattern { sub, .. } => *sub.len(),
-                    FieldOr::Constraint { field, .. } => {
-                        Some(PatternLen::Defined(field.len()).into())
-                    }
-                });
-                let first = match lens.next() {
-                    //no elements, is an empty pattern, so zero sized
-                    None => {
-                        *len = Some(PatternLen::Defined(0).into());
-                        return Ok(());
-                    }
-                    //there is a element, but it is a unknown len, so just stop
-                    Some(None) => return Ok(()),
-                    //have a first element, and it is a valid len
-                    Some(Some(first)) => first,
-                };
-                //all lens need to have the be the same
-                for len in lens {
-                    match len {
-                        //there is a element, but it is a unknown len, so stop
-                        None => return Ok(()),
-                        //all lens in the pattern need to have the same len
-                        Some(len) if len != first => {
-                            return Err(PatternError::InvalidOrLen(src));
-                        }
-                        Some(_len) /*if _len == first*/ => (),
-                    }
-                }
-                //found the len, update if diferent
-                if *len != Some(first) {
-                    solved.i_did_a_thing();
-                    *len = Some(first);
-                }
-                //if not fully finished yet, request another run
-                if !is_finished(len) {
-                    solved.iam_not_finished_location(&src, file!(), line!());
-                }
-            }
-            Self::And {
-                left_root_len: _,
-                left_len,
-                left,
-                right_root_len: _,
-                right_len,
-                right,
-                products: _,
-            } => {
-                //if one side is not solved, try to solve it
-                let mut try_solve =
-                    |side: &mut [FieldAnd],
-                     side_len: &mut Option<ConstructorPatternLen>|
-                     -> Result<(), PatternError> {
-                        if is_finished(side_len) {
-                            return Ok(());
-                        }
-                        fields_and_solve(side, solved)?;
-                        let new_len = match fields_and_len(side, &src) {
-                            //have undefined len
-                            None => return Ok(()),
-                            //found a error
-                            Some(Err(err)) => return Err(err),
-                            Some(Ok(len)) => len,
-                        };
-                        if *side_len != Some(new_len) {
-                            solved.i_did_a_thing();
-                            *side_len = Some(new_len);
-                        }
-                        //if not fully finished yet, request another run
-                        if !is_finished(side_len) {
-                            solved.iam_not_finished_location(
-                                &src,
-                                file!(),
-                                line!(),
-                            );
-                        }
-                        Ok(())
-                    };
-                //solve all the elements
-                try_solve(left, left_len)?;
-                try_solve(right, right_len)?;
-            }
+        //if len is already solved and no unresolved_token_field, there is
+        //nothing todo
+        if is_len_finished(&self.len) {
+            return Ok(());
+        }
+        //call solve in all sub_patterns
+        self.verifications
+            .iter_mut()
+            .filter_map(Verification::sub_pattern_mut)
+            .map(|sub| sub.solve(solved))
+            .collect::<Result<_, _>>()?;
+        //TODO check all table value verifications export a const value
+        match self.op {
+            Op::And => self.solve_and(solved)?,
+            Op::Or => self.solve_or(solved)?,
+        }
+        if !is_len_finished(&self.len) {
+            solved.iam_not_finished_location(&self.location, file!(), line!());
         }
         Ok(())
     }
-    pub fn root_len(&self) -> IntTypeU {
-        match self {
-            Self::Or { root_len: len, .. } => *len,
-            Self::And {
-                left_root_len,
-                right_root_len,
-                ..
-            } => left_root_len + right_root_len,
-        }
-    }
-    pub fn len(&self) -> &Option<ConstructorPatternLen> {
-        match self {
-            Self::Or { len, .. } => len,
-            //NOTE left_len define the final len, right need to be smaller
-            Self::And { left_len, .. } => left_len,
+    pub fn root_len(&self) -> usize {
+        match self.op {
+            Op::And => {
+                //get the biggest token, from all token_field verifications and
+                //explicit/implicit token_fields
+                let biggest_token_bytes = self
+                    .tokens
+                    .values()
+                    .map(|(_num, token)| token.element().len_bytes().get())
+                    .max()
+                    .unwrap_or(0);
+                let biggest_token =
+                    usize::try_from(biggest_token_bytes).unwrap() * 8usize;
+                //calc the len of the biggest sub_pattern
+                let biggest_sub_pattern = self
+                    .verifications
+                    .iter()
+                    .filter_map(Verification::sub_pattern)
+                    .map(Pattern::root_len)
+                    .max()
+                    .unwrap_or(0);
+                //return the biggest one
+                biggest_token.max(biggest_sub_pattern)
+            }
+            Op::Or => {
+                //get the biggest of all branches
+                self.verifications
+                    .iter()
+                    .map(Verification::root_len)
+                    .max()
+                    .unwrap_or(0)
+            }
         }
     }
     pub fn constrain(&self, constraint: &mut BitSlice) {
-        match self {
-            Self::Or { fields, .. } => {
-                let mut elements = fields.iter();
-                let first = elements.next().expect(
-                    "Block with Or operator but no elements is invalid",
-                );
+        match self.op {
+            Op::Or => {
+                let mut verifications_iter = self.verifications.iter();
+                let first = verifications_iter
+                    .next()
+                    .expect("LOGIC_ERROR: Block with Or operator but no elements is invalid");
                 let mut out = bitvec![0; constraint.len()];
                 first.constrain(&mut out);
-
                 let mut ele_out = bitvec![0; constraint.len()];
-                for ele in elements {
+                for ele in verifications_iter {
                     ele_out.set_elements(0);
                     ele.constrain(&mut ele_out);
                     for (mut out, ele) in out.iter_mut().zip(ele_out.iter()) {
@@ -970,44 +1304,32 @@ impl Block {
                     *out = *out | *ele;
                 }
             }
-            Self::And {
-                left_root_len,
-                left,
-                right_root_len,
-                right,
-                ..
-            } => {
-                left.iter().for_each(|ele| ele.constraint(constraint));
-                let right_pos: usize = (*left_root_len).try_into().unwrap();
-                let right_constraint = &mut constraint[right_pos..];
-                if *right_root_len > right_constraint.len().try_into().unwrap()
-                {
-                    panic!("Constraint right is too small");
-                }
-                right
-                    .iter()
-                    .for_each(|ele| ele.constraint(right_constraint));
-            }
+            Op::And => self
+                .verifications
+                .iter()
+                .for_each(|ele| ele.constrain(constraint)),
         }
     }
 }
 #[derive(Default)]
-struct TokenFinder(Option<Rc<Token>>);
+struct TokenFinder(Option<GlobalElement<Token>>);
 impl PatternWalker for TokenFinder {
-    fn assembly(&mut self, assembly: &Rc<Assembly>) -> ControlFlow<(), ()> {
-        let this_token = assembly.field().map(|field| &field.token);
-        match (&mut self.0, this_token) {
-            (_, None) => ControlFlow::Continue(()),
-            (None, Some(this_token)) => {
-                self.0 = Some(Rc::clone(this_token));
+    fn token_field(
+        &mut self,
+        field: &GlobalReference<TokenField>,
+    ) -> ControlFlow<(), ()> {
+        let this_token = &field.element().token;
+        match &mut self.0 {
+            None => {
+                self.0 = Some(this_token.clone());
                 ControlFlow::Continue(())
             }
-            (Some(token), Some(this_token))
-                if Rc::as_ptr(&token) == Rc::as_ptr(this_token) =>
+            Some(token)
+                if token.element_ptr() == this_token.element_ptr() =>
             {
                 ControlFlow::Continue(())
             }
-            (Some(_token), Some(_this_token))
+            Some(_token)
                 /*if Rc::as_ptr(&_token) != Rc::as_ptr(_this_token)*/ =>
             {
                 ControlFlow::Break(())
@@ -1016,706 +1338,353 @@ impl PatternWalker for TokenFinder {
     }
 }
 
-impl TryFrom<Block> for semantic::pattern::Block {
-    type Error = PatternError;
-    fn try_from(value: Block) -> Result<Self, Self::Error> {
-        match value {
-            Block::Or {
-                root_len: _,
-                len,
-                mut fields,
-                products,
-            } => {
-                let fields = fields
-                    .drain(..)
-                    .map(|field| field.try_into())
-                    .collect::<Result<_, _>>()?;
-                let products = products.into();
-                //Can each branch of the or pattern generate diff lens?
-                let len = len.unwrap().single_len().unwrap();
-                Ok(Self::Or {
-                    len,
-                    fields,
-                    products,
-                })
-            }
-            Block::And {
-                left_root_len: _,
-                left_len,
-                mut left,
-                right_root_len: _,
-                right_len,
-                mut right,
-                products,
-            } => {
-                let left = left
-                    .drain(..)
-                    .map(|field| field.try_into())
-                    .collect::<Result<_, _>>()?;
-                let right = right
-                    .drain(..)
-                    .map(|field| field.try_into())
-                    .collect::<Result<_, _>>()?;
-                let left_len = left_len.unwrap().basic().unwrap();
-                let right_len = right_len.unwrap().basic().unwrap();
-                let products = products.into();
-                Ok(Self::And {
-                    left,
-                    left_len,
-                    right,
-                    right_len,
-                    products,
-                })
-            }
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum FieldOrProduct<'a> {
-    Token(&'a Rc<Token>),
-    SubPattern(&'a FieldProducts),
-}
-
-//Field used in Or Expressions
-#[derive(Clone, Debug)]
-pub enum FieldOr {
-    Constraint {
-        src: InputSource,
-        field: ConstraintVariable,
-        //from the same token then field
-        implicit_fields: Vec<Rc<Assembly>>,
-        constraint: Constraint,
-    },
-    //TODO This sub (Pattern) can only by Regular, replace this?
-    SubPattern {
-        src: InputSource,
-        sub: Pattern,
-    },
-}
-impl FieldOr {
-    fn new(
-        sleigh: &Sleigh,
-        input: block::pattern::Field,
-        table: &Rc<Table>,
-    ) -> Result<Self, PatternError> {
-        match input {
-            block::pattern::Field::Field { field, constraint } => {
-                let src = sleigh.input_src(field);
-                //TODO decent error
-                let constraint =
-                    constraint.ok_or(PatternError::InvalidRef(src.clone()))?;
-                let constraint = Constraint::new(sleigh, constraint)?;
-                let field = sleigh.get_pattern_constraint_variable(field)?;
-                Ok(Self::Constraint {
-                    src,
+impl From<Block> for semantic::pattern::Block {
+    fn from(value: Block) -> Self {
+        let exported_token_fields =
+            value.token_fields.values().map(|prod| &prod.field);
+        let verified_token_fields =
+            value.verifications.iter().filter_map(|ver| match ver {
+                Verification::ContextCheck { .. }
+                | Verification::TableBuild { .. }
+                | Verification::SubPattern { .. } => None,
+                Verification::TokenFieldCheck {
                     field,
-                    constraint,
-                    implicit_fields: vec![],
-                })
-            }
-            block::pattern::Field::SubPattern { sub, src } => {
-                let sub = Pattern::new(sleigh, sub, table)?;
-                let src = sleigh.input_src(src);
-                Ok(Self::SubPattern { src, sub })
-            }
+                    op: _,
+                    value: _,
+                } => Some(field),
+            });
+        let token_len = exported_token_fields
+            .chain(verified_token_fields)
+            .map(|token_field| token_field.element().token.len_bytes().get())
+            .max();
+        let token_fields = value
+            .token_fields
+            .into_iter()
+            .map(|(_, k)| k.into())
+            .collect();
+        let tables = value.tables.into_iter().map(|(_, k)| k.into()).collect();
+        let verifications = value
+            .verifications
+            .into_iter()
+            .map(|k| k.try_into().unwrap())
+            .collect();
+        match value.op {
+            Op::And => Self::And {
+                len: value.len.unwrap().basic().unwrap(),
+                token_len: token_len.unwrap_or(0),
+                token_fields,
+                tables,
+                verifications,
+            },
+            Op::Or => Self::Or {
+                len: value.len.unwrap().basic().unwrap(),
+                token_fields,
+                tables,
+                branches: verifications,
+            },
         }
     }
-    pub fn src(&self) -> &InputSource {
-        match self {
-            Self::Constraint { src, .. } => src,
-            Self::SubPattern { src, .. } => src,
+}
+pub type FinalVerification = semantic::pattern::Verification;
+#[derive(Clone, Debug)]
+pub enum Verification {
+    ContextCheck {
+        context: GlobalReference<Context>,
+        op: CmpOp,
+        value: ConstraintValue,
+    },
+    TableBuild {
+        produced_table: ProducedTable,
+        verification: Option<(CmpOp, ConstraintValue)>,
+    },
+    TokenFieldCheck {
+        field: GlobalReference<TokenField>,
+        op: CmpOp,
+        value: ConstraintValue,
+    },
+    SubPattern {
+        location: InputSource,
+        pattern: Pattern,
+    },
+}
+impl Verification {
+    pub fn from_constraint<'a>(
+        sleigh: &Sleigh,
+        field: &'a str,
+        constraint: block::pattern::Constraint,
+        this_table: *const Table,
+    ) -> Result<Self, PatternError> {
+        let block::pattern::Constraint { op: cmp_op, value } = constraint;
+        let value = ConstraintValue::new(sleigh, value)?;
+        let src = sleigh.input_src(field);
+        let field = sleigh
+            .get_global(field)
+            .ok_or(PatternError::MissingRef(src.clone()))?;
+        match field {
+            GlobalScope::TokenField(x) => Ok(Self::TokenFieldCheck {
+                field: x.reference_from(src),
+                op: cmp_op,
+                value,
+            }),
+            //TODO create InstStart? Does start_start exists?
+            GlobalScope::Context(x) => Ok(Self::ContextCheck {
+                context: x.reference_from(src),
+                op: cmp_op,
+                value,
+            }),
+            GlobalScope::Table(x) => Ok({
+                let verification = Some((cmp_op, value));
+                let recursive = x.element_ptr() == this_table;
+                let table = x.reference_from(src);
+                Self::TableBuild {
+                    produced_table: ProducedTable {
+                        table,
+                        always: true,
+                        recursive,
+                    },
+                    verification,
+                }
+            }),
+            _ => return Err(PatternError::InvalidRef(src)),
         }
     }
-    pub fn root_len(&self) -> IntTypeU {
-        match self {
-            Self::Constraint { field, .. } => field.len(),
-            Self::SubPattern { sub, .. } => sub.root_len(),
+    pub fn new_context(
+        context: &GlobalElement<Context>,
+        src: InputSource,
+        op: CmpOp,
+        value: ConstraintValue,
+    ) -> Self {
+        Self::ContextCheck {
+            context: context.reference_from(src),
+            op,
+            value,
         }
     }
-    pub fn produce<'a>(&'a self) -> Option<FieldOrProduct<'a>> {
+    pub fn new_table(
+        this_table: *const Table,
+        table: &GlobalElement<Table>,
+        src: InputSource,
+        verification: Option<(CmpOp, ConstraintValue)>,
+    ) -> Self {
+        let recursive = table.element_ptr() == this_table;
+        let table = table.reference_from(src);
+        Self::TableBuild {
+            produced_table: ProducedTable {
+                table,
+                always: true,
+                recursive,
+            },
+            verification,
+        }
+    }
+    pub fn new_token_field(
+        field: &GlobalElement<TokenField>,
+        src: InputSource,
+        op: CmpOp,
+        value: ConstraintValue,
+    ) -> Self {
+        Self::TokenFieldCheck {
+            field: field.reference_from(src),
+            op,
+            value,
+        }
+    }
+    pub fn root_len(&self) -> usize {
         match self {
-            Self::Constraint {
-                src: _,
+            Verification::ContextCheck { .. }
+            | Verification::TableBuild { .. } => 0,
+            Verification::TokenFieldCheck {
                 field,
-                constraint: _,
-                implicit_fields: _,
-            } => field
-                .produce()
-                .map(|ass| ass.field())
-                .flatten()
-                .map(|x| &x.token)
-                .map(FieldOrProduct::Token),
-            Self::SubPattern { src: _, sub } => {
-                Some(FieldOrProduct::SubPattern(sub.produce()))
+                op: _,
+                value: _,
+            } => {
+                let bytes: usize =
+                    field.element().token.len_bytes().get().try_into().unwrap();
+                bytes * 8usize
             }
+            Verification::SubPattern {
+                location: _,
+                pattern,
+            } => pattern.root_len(),
+        }
+    }
+    fn tables<'a>(
+        &'a self,
+    ) -> Option<impl Iterator<Item = &'a ProducedTable> + 'a> {
+        match self {
+            Self::TokenFieldCheck { .. } | Self::ContextCheck { .. } => None,
+            Self::TableBuild {
+                produced_table,
+                verification: _,
+            } => {
+                let iter: Box<dyn Iterator<Item = &'a _>> =
+                    Box::new([produced_table].into_iter());
+                Some(iter)
+            }
+            Self::SubPattern {
+                location: _,
+                pattern,
+            } => {
+                let iter: Box<dyn Iterator<Item = &'a _>> = Box::new(
+                    pattern
+                        .blocks
+                        .iter()
+                        .map(|block| block.tables.values())
+                        .flatten(),
+                );
+                Some(iter)
+            }
+        }
+    }
+    fn sub_pattern(&self) -> Option<&Pattern> {
+        match self {
+            Self::TokenFieldCheck { .. }
+            | Self::ContextCheck { .. }
+            | Self::TableBuild { .. } => None,
+            Self::SubPattern {
+                location: _,
+                pattern,
+            } => Some(pattern),
+        }
+    }
+    fn sub_pattern_mut(&mut self) -> Option<&mut Pattern> {
+        match self {
+            Self::TokenFieldCheck { .. }
+            | Self::ContextCheck { .. }
+            | Self::TableBuild { .. } => None,
+            Self::SubPattern {
+                location: _,
+                pattern,
+            } => Some(pattern),
+        }
+    }
+    fn pattern_len(&self) -> Option<ConstructorPatternLen> {
+        match self {
+            Self::ContextCheck { .. } => {
+                Some(ConstructorPatternLen::Basic(PatternLen::Defined(0)))
+            }
+            Self::TableBuild {
+                produced_table:
+                    ProducedTable {
+                        table,
+                        always: _,
+                        recursive: true,
+                    },
+                verification: _,
+            } => match table.element().pattern_len() {
+                //if the table len is known, return it
+                Some(table_len) => Some(table_len.into()),
+                //otherwise the indication that this is a recursive
+                None => Some(ConstructorPatternLen::NonGrowingRecursive(
+                    PatternLen::Defined(0),
+                )),
+            },
+            Self::TableBuild {
+                produced_table:
+                    ProducedTable {
+                        table,
+                        always: _,
+                        recursive: false,
+                    },
+                verification: _,
+            } => table
+                .element()
+                .pattern_len()
+                .map(ConstructorPatternLen::Basic),
+            Self::TokenFieldCheck {
+                field,
+                op: _,
+                value: _,
+            } => Some(ConstructorPatternLen::Basic(PatternLen::Defined(
+                field.element().token.len_bytes().get(),
+            ))),
+            Self::SubPattern {
+                location: _,
+                pattern,
+            } => pattern.len(),
         }
     }
     pub fn constrain(&self, constraint: &mut BitSlice) {
         match self {
-            Self::Constraint {
-                field: ConstraintVariable::Assembly { assembly, .. },
-                constraint: Constraint { op: CmpOp::Eq, .. },
-                ..
+            Self::SubPattern {
+                location: _,
+                pattern,
+            } => pattern.constrain(constraint),
+            Self::TokenFieldCheck {
+                field,
+                op: CmpOp::Eq,
+                value: _,
             } => {
-                if let Some(field) = assembly.field() {
-                    field.bit_range.clone().into_iter().for_each(|bit| {
-                        constraint.set(bit.try_into().unwrap(), true)
-                    });
-                }
+                let field = field.element();
+                field.range().into_iter().for_each(|bit| {
+                    constraint.set(bit.try_into().unwrap(), true)
+                });
             }
             //TODO: in some cases, in the `CmpOp::L*` is possible to restrict
             //some bits. Do it?
-            Self::SubPattern { sub, .. } => sub.constrain(constraint),
-            Self::Constraint { .. } => (),
+            Self::TokenFieldCheck { .. }
+            | Self::ContextCheck { .. }
+            | Self::TableBuild { .. } => (),
         }
     }
 }
-impl TryFrom<FieldOr> for semantic::pattern::FieldOr {
-    type Error = PatternError;
-    fn try_from(value: FieldOr) -> Result<Self, Self::Error> {
+
+impl From<Verification> for FinalVerification {
+    fn from(value: Verification) -> Self {
         match value {
-            FieldOr::Constraint {
-                src,
-                field,
-                constraint,
-                implicit_fields,
-            } => {
-                let constraint = constraint.into();
-                let field = field.into();
-                Ok(Self::Constraint {
-                    src,
-                    field,
-                    constraint,
-                    implicit_fields,
-                })
-            }
-            FieldOr::SubPattern { sub, src } => {
-                let sub = sub.try_into()?;
-                Ok(Self::SubPattern { sub, src })
-            }
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum FieldAndProduct<'a> {
-    Assembly(&'a Rc<Assembly>),
-    Token(&'a Rc<Token>),
-    Table(&'a Rc<Table>),
-    SubPattern(&'a FieldProducts),
-}
-#[derive(Clone, Debug)]
-pub enum FieldAnd {
-    Constraint {
-        field: ConstraintVariable,
-        constraint: Constraint,
-    },
-    Field(Reference),
-    SubPattern {
-        src: InputSource,
-        sub: Pattern,
-    },
-}
-impl FieldAnd {
-    fn new(
-        sleigh: &Sleigh,
-        input: block::pattern::Field,
-        table: &Rc<Table>,
-    ) -> Result<Self, PatternError> {
-        use block::pattern::Field as Input;
-        let field = match input {
-            Input::Field {
-                field,
-                constraint: Some(constraint),
-            } => {
-                let field = sleigh.get_pattern_constraint_variable(field)?;
-                let constraint = Constraint::new(sleigh, constraint)?;
-                Self::Constraint { field, constraint }
-            }
-            Input::Field {
-                field,
-                constraint: None,
-            } => {
-                let field = sleigh.get_pattern_field(field, table)?;
-                Self::Field(field)
-            }
-            Input::SubPattern { src, sub } => {
-                let src = sleigh.input_src(src);
-                let sub = Pattern::new(sleigh, sub, table)?;
-                Self::SubPattern { sub, src }
-            }
-        };
-        Ok(field)
-    }
-    pub fn produce<'a>(&'a self) -> Option<FieldAndProduct<'a>> {
-        match self {
-            //if the constrain is assembly, only produce the token from it
-            Self::Constraint {
-                field,
-                constraint: _,
-            } => field
-                .produce()
-                .map(|ass| ass.field().map(|ass| &ass.token))
-                .flatten()
-                .map(FieldAndProduct::Token),
-            Self::Field(field) => field.produce(),
-            Self::SubPattern { src: _, sub } => {
-                Some(FieldAndProduct::SubPattern(sub.produce()))
-            }
-        }
-    }
-    pub fn src(&self) -> &InputSource {
-        match self {
-            Self::Constraint { field, .. } => field.src(),
-            Self::Field(field) => field.src(),
-            Self::SubPattern { src, .. } => src,
-        }
-    }
-    pub fn solve(
-        &mut self,
-        solved: &mut impl SolverStatus,
-    ) -> Result<(), PatternError> {
-        match self {
-            Self::SubPattern { sub, src: _ } => sub.solve(solved),
-            Self::Constraint { .. } | FieldAnd::Field(_) => Ok(()),
-        }
-    }
-    pub fn root_len(&self) -> IntTypeU {
-        match self {
-            Self::Constraint { field, .. } => field.len(),
-            Self::Field(field) => field.root_len(),
-            Self::SubPattern { sub, .. } => sub.root_len(),
-        }
-    }
-    fn constraint(&self, constraint: &mut BitSlice) {
-        match self {
-            Self::Constraint {
-                field: ConstraintVariable::Assembly { assembly, .. },
-                constraint: Constraint { op: CmpOp::Eq, .. },
-                ..
-            } => {
-                if let Some(field) = assembly.field() {
-                    field.bit_range.clone().into_iter().for_each(|bit| {
-                        constraint.set(bit.try_into().unwrap(), true)
-                    });
+            Verification::ContextCheck { context, op, value } => {
+                Self::ContextCheck {
+                    context: context.convert_reference(),
+                    op,
+                    value: value.into(),
                 }
             }
-            //TODO: in some cases, in the `CmpOp::L*` is possible to restrict
-            //some bits. Do it?
-            Self::SubPattern { sub, src: _ } => sub.constrain(constraint),
-            //TODO: what todo with a table?
-            Self::Field(_) | Self::Constraint { .. } => (),
-        }
-    }
-}
-impl TryFrom<FieldAnd> for semantic::pattern::FieldAnd {
-    type Error = PatternError;
-    fn try_from(value: FieldAnd) -> Result<Self, Self::Error> {
-        match value {
-            FieldAnd::Constraint { field, constraint } => {
-                let field = field.into();
-                let constraint = constraint.into();
-                Ok(Self::Constraint { field, constraint })
-            }
-            FieldAnd::Field(reference) => Ok(Self::Field(reference.into())),
-            FieldAnd::SubPattern { sub, src } => {
-                let sub = sub.try_into()?;
-                Ok(Self::SubPattern { src, sub })
-            }
-        }
-    }
-}
-
-//#[derive(Clone, Debug)]
-//pub enum FieldProduct {
-//    //value is not explicitly extracted, but the token that it belongs could
-//    //be used to extract other values
-//    Token(Rc<Token>),
-//    //value is explicitly extracted
-//    Assembly(Rc<Assembly>),
-//    //table is built, in some cases, or in all cases
-//    Table(Rc<Table>, bool),
-//}
-#[derive(Clone, Debug, Default)]
-pub struct FieldProducts {
-    tokens: HashMap<*const Token, (Rc<Token>, usize)>,
-    fields: HashMap<*const Assembly, Rc<Assembly>>,
-    tables: HashMap<*const Table, (Rc<Table>, bool, bool)>,
-}
-
-impl FieldProducts {
-    pub fn produce_assembly(&self, assembly: &Assembly) -> bool {
-        let assembly_ptr: *const _ = assembly;
-        self.fields.get(&assembly_ptr).is_some()
-    }
-    pub fn can_produce_assembly(&self, assembly: &Assembly) -> bool {
-        //if this token don't exists on the pattern, or is build multiple times,
-        //then impossible
-        //if the token if produced only once, then is possible
-        let token = &assembly.field().unwrap().token;
-        let token_ptr: *const _ = Rc::as_ptr(token);
-        match self.tokens.get(&token_ptr) {
-            Some((_, 1)) => true,
-            Some((_, 0)) => unreachable!(),
-            None | Some(_) => false,
-        }
-    }
-}
-
-impl<'a> From<FieldOrProduct<'a>> for FieldProducts {
-    fn from(value: FieldOrProduct<'a>) -> Self {
-        match value {
-            FieldOrProduct::Token(token) => {
-                let mut value = Self::default();
-                value
-                    .tokens
-                    .entry(Rc::as_ptr(token))
-                    .or_insert((Rc::clone(token), 1));
-                value
-            }
-            FieldOrProduct::SubPattern(sub) => sub.clone(),
-        }
-    }
-}
-
-impl From<FieldProducts> for semantic::pattern::FieldProducts {
-    fn from(mut value: FieldProducts) -> Self {
-        let tables = value
-            .tables
-            .drain()
-            .map(|(_, (table, always_produce, recursive))| {
-                FieldProductTable::new(
-                    table.reference(),
-                    always_produce,
-                    recursive,
-                )
-            })
-            .collect();
-        let fields = value.fields.drain().map(|(_, v)| v).collect();
-        Self::new(fields, tables)
-    }
-}
-
-//ironicly the and-block need to be `or` and the or-block need to be `and`
-impl FieldProducts {
-    pub fn and(mut self, other: &FieldProducts) -> Self {
-        let mut new = Self::default();
-        //new will contain the ass/tokens that both have, but all the tables
-        //only set the always-produce to false, if only one contains
-        for (key, field) in self.fields.drain() {
-            if other.fields.contains_key(&key) {
-                new.fields.insert(key, field);
-            }
-        }
-        for (key, (field, field_num)) in self.tokens.drain() {
-            if let Some((_, other_num)) = other.tokens.get(&key) {
-                new.tokens.insert(key, (field, field_num.max(*other_num)));
-            }
-        }
-        for (key, (table, mut always, recursive1)) in self.tables.drain() {
-            if always {
-                if let Some((_, other_always, recursive2)) =
-                    other.tables.get(&key)
-                {
-                    assert_eq!(recursive1, *recursive2);
-                    always &= other_always;
-                }
-            }
-            new.tables.insert(key, (table, always, recursive1));
-        }
-        for (key, (table, _, rec)) in other.tables.iter() {
-            new.tables
-                .entry(*key)
-                .or_insert((Rc::clone(table), false, *rec));
-        }
-        new
-    }
-    //find fields produced in a `or` block
-    pub fn or_field<'a>(
-        mut fields: impl Iterator<Item = Option<FieldOrProduct<'a>>> + 'a,
-    ) -> Self {
-        let mut base: Self = if let Some(Some(first)) = fields.next() {
-            first.into()
-        } else {
-            return Self::default();
-        };
-        for field in fields {
-            let field = if let Some(field) = field {
-                field.into()
-            } else {
-                return Self::default();
-            };
-            match field {
-                FieldOrProduct::Token(token) => {
-                    //delete anything that is not this token
-                    let token_ptr = Rc::as_ptr(token);
-                    base.tokens.retain(|&k, _v| k == token_ptr);
-                    base.fields.clear();
-                    //any tables should be set to not-always-produce
-                    base.tables.values_mut().for_each(
-                        |(_table, always_produce, _rec)| {
-                            *always_produce = false
-                        },
-                    );
-                }
-                FieldOrProduct::SubPattern(sub) => base = base.and(sub),
-            }
-        }
-        base
-    }
-    pub fn or(mut self, other: &FieldProducts) -> Result<Self, PatternError> {
-        for (key, field) in other.fields.iter() {
-            match self.fields.entry(*key) {
-                std::collections::hash_map::Entry::Occupied(_) => {
-                    //TODO return error, here, we need a src todo so
-                    todo!("Error field is dulicated on pattern {}", field.name);
-                }
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(Rc::clone(field));
-                }
-            }
-        }
-        for (key, (field, field_num)) in other.tokens.iter() {
-            let (_, num) =
-                self.tokens.entry(*key).or_insert((Rc::clone(field), 0));
-            *num += field_num;
-        }
-        for (key, (table, _, rec)) in other.tables.iter() {
-            match self.tables.entry(*key) {
-                std::collections::hash_map::Entry::Occupied(_) => {
-                    //TODO return error, here, we need a src todo so
-                    todo!("Error table is dulicated on pattern {}", table.name);
-                }
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert((Rc::clone(table), true, *rec));
-                }
-            }
-        }
-        Ok(self)
-    }
-    //find fields produced in a `and` block
-    pub fn and_field<'a>(
-        fields: impl Iterator<Item = Option<FieldAndProduct<'a>>> + 'a,
-        self_table: &Rc<Table>,
-    ) -> Result<Self, PatternError> {
-        let mut root_tokens = HashMap::new();
-        let fields = fields.filter_map(|x| x).try_fold(
-            FieldProducts::default(),
-            |mut acc, field| match field {
-                //ignore epsilon, inst_star, inst_next
-                FieldAndProduct::Assembly(ass) if ass.field().is_none() => {
-                    Ok(acc)
-                }
-                //if the ass_field already exists, this is an error, otherwise
-                //just add
-                FieldAndProduct::Assembly(ass) => {
-                    let ptr = Rc::as_ptr(ass);
-                    match acc.fields.entry(ptr) {
-                        std::collections::hash_map::Entry::Occupied(_) => {
-                            //TODO return error, here, we need a src todo so
-                            todo!(
-                                "Error field is dulicated on pattern {}",
-                                ass.name
-                            );
-                        }
-                        std::collections::hash_map::Entry::Vacant(entry) => {
-                            entry.insert(Rc::clone(ass));
-                        }
-                    }
-                    let field = ass.field().unwrap();
-                    let token = Rc::clone(&field.token);
-                    let token_ptr = Rc::as_ptr(&token);
-                    root_tokens.insert(token_ptr, token);
-                    Ok(acc)
-                }
-                //just add the token
-                FieldAndProduct::Token(token) => {
-                    let token = Rc::clone(token);
-                    let token_ptr = Rc::as_ptr(&token);
-                    root_tokens.insert(token_ptr, token);
-                    Ok(acc)
-                }
-                //table is add, if exists, return error
-                FieldAndProduct::Table(table) => {
-                    let ptr = Rc::as_ptr(table);
-                    match acc.tables.entry(ptr) {
-                        std::collections::hash_map::Entry::Occupied(_) => {
-                            //TODO return error, here, we need a src todo so
-                            todo!(
-                                "Error table is dulicated on pattern {}",
-                                table.name
-                            );
-                        }
-                        std::collections::hash_map::Entry::Vacant(entry) => {
-                            let rec =
-                                Rc::as_ptr(self_table) == Rc::as_ptr(table);
-                            entry.insert((Rc::clone(table), true, rec));
-                        }
-                    }
-                    Ok(acc)
-                }
-                FieldAndProduct::SubPattern(sub) => acc.or(sub),
+            Verification::TableBuild {
+                produced_table,
+                verification,
+            } => Self::TableBuild {
+                produced_table: produced_table.into(),
+                verification: verification
+                    .map(|(op, value)| (op, value.into())),
             },
-        )?;
-        if root_tokens.len() != 0 {
-            let root_tokens = FieldProducts {
-                tokens: root_tokens.drain().map(|(k, x)| (k, (x, 1))).collect(),
-                fields: HashMap::new(),
-                tables: HashMap::new(),
-            };
-            fields.or(&root_tokens)
-        } else {
-            Ok(fields)
+            Verification::TokenFieldCheck { field, op, value } => {
+                Self::TokenFieldCheck {
+                    field: field.convert_reference(),
+                    op,
+                    value: value.into(),
+                }
+            }
+            Verification::SubPattern { location, pattern } => {
+                Self::SubPattern {
+                    location,
+                    pattern: pattern.into(),
+                }
+            }
         }
     }
 }
 
+pub type FinalConstraintValue = semantic::pattern::ConstraintValue;
 #[derive(Clone, Debug)]
-pub enum ConstraintVariable {
-    Assembly {
-        src: InputSource,
-        assembly: Rc<Assembly>,
-    },
-    Varnode {
-        src: InputSource,
-        varnode: Rc<Varnode>,
-    },
-    //TODO Table with const export?
-}
-impl ConstraintVariable {
-    pub fn src(&self) -> &InputSource {
-        match self {
-            Self::Assembly { src, .. } | Self::Varnode { src, .. } => src,
-        }
-    }
-    pub fn len(&self) -> IntTypeU {
-        match self {
-            Self::Assembly { assembly, .. } => assembly.token_len(),
-            Self::Varnode { .. } => 0,
-        }
-    }
-    pub fn produce(&self) -> Option<&Rc<Assembly>> {
-        match self {
-            Self::Assembly { src: _, assembly } => Some(assembly),
-            Self::Varnode { .. } => None,
-        }
-    }
-}
-impl From<ConstraintVariable> for semantic::pattern::ConstraintVariable {
-    fn from(value: ConstraintVariable) -> Self {
-        match value {
-            ConstraintVariable::Assembly { src, assembly } => {
-                Self::Assembly { src, assembly }
-            }
-            ConstraintVariable::Varnode { src, varnode } => {
-                Self::Varnode { src, varnode }
-            }
-        }
-    }
+pub struct ConstraintValue {
+    pub expr: Expr,
 }
 
-#[derive(Clone, Debug)]
-pub enum Reference {
-    Assembly {
-        src: InputSource,
-        assembly: Rc<Assembly>,
-    },
-    Varnode {
-        src: InputSource,
-        varnode: Rc<Varnode>,
-    },
-    //tables that extend are not allowed here
-    Table {
-        self_ref: bool,
-        src: InputSource,
-        table: Rc<Table>,
-    },
-}
-
-impl Reference {
-    pub fn src(&self) -> &InputSource {
-        match self {
-            Self::Assembly { src, .. }
-            | Self::Varnode { src, .. }
-            | Self::Table { src, .. } => src,
-        }
-    }
-    pub fn root_len(&self) -> IntTypeU {
-        match self {
-            Self::Assembly { assembly, .. } => assembly.token_len(),
-            Self::Varnode { .. } => 0,
-            Self::Table { .. } => 0,
-        }
-    }
-    pub fn produce<'a>(&'a self) -> Option<FieldAndProduct<'a>> {
-        match self {
-            Self::Assembly { src: _, assembly } => {
-                Some(FieldAndProduct::Assembly(assembly))
-            }
-            Self::Varnode { .. } => None,
-            Self::Table {
-                table,
-                src: _,
-                self_ref: _,
-            } => Some(FieldAndProduct::Table(table)),
-        }
-    }
-}
-
-impl From<Reference> for semantic::pattern::Reference {
-    fn from(value: Reference) -> Self {
-        match value {
-            Reference::Assembly { assembly, src } => {
-                Self::Assembly { src, assembly }
-            }
-            Reference::Varnode { varnode, src } => {
-                Self::Varnode { src, varnode }
-            }
-            Reference::Table {
-                table,
-                src,
-                self_ref,
-            } => Self::Table {
-                self_ref,
-                src,
-                table: table.reference(),
-            },
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Constraint {
-    op: CmpOp,
-    value: ConstraintField,
-}
-impl From<Constraint> for semantic::pattern::Constraint {
-    fn from(value: Constraint) -> Self {
-        Self::new(value.op, value.value)
-    }
-}
-
-impl Constraint {
-    fn new<'a>(
-        sleigh: &Sleigh<'a>,
-        input: block::pattern::Constraint<'a>,
-    ) -> Result<Self, PatternError> {
-        let block::pattern::Constraint { op, value } = input;
-        let value = ConstraintField::new(sleigh, value)?;
-        Ok(Self { op, value })
-    }
-}
-
-impl ConstraintField {
+impl ConstraintValue {
     fn new<'a>(
         sleigh: &Sleigh<'a>,
         input: block::pattern::ConstraintValue<'a>,
     ) -> Result<Self, PatternError> {
         let block::pattern::ConstraintValue { expr } = input;
         let mut builder = DisassemblyBuilder { sleigh };
-        let expr = builder.new_expr(expr)?.convert();
+        let expr = builder.new_expr(expr)?;
         Ok(Self { expr })
+    }
+}
+
+impl From<ConstraintValue> for FinalConstraintValue {
+    fn from(value: ConstraintValue) -> Self {
+        Self::new(value.expr.convert())
     }
 }
 
@@ -1728,7 +1697,7 @@ impl<'a, 'b> ExprBuilder<'a> for DisassemblyBuilder<'a, 'b> {
     fn read_scope(
         &mut self,
         name: &'a str,
-    ) -> Result<Rc<dyn ReadScope>, DisassemblyError> {
+    ) -> Result<ReadScope, DisassemblyError> {
         use super::GlobalScope::*;
         let src = self.sleigh.input_src(name);
         match self
@@ -1736,9 +1705,11 @@ impl<'a, 'b> ExprBuilder<'a> for DisassemblyBuilder<'a, 'b> {
             .get_global(name)
             .ok_or(DisassemblyError::MissingRef(src.clone()))?
         {
-            Assembly(x) => Ok(x.as_read()),
-            Varnode(x) if matches!(x.varnode_type, VarnodeType::Context(_)) => {
-                Ok(x.as_read())
+            TokenField(x) => {
+                Ok(ReadScope::TokenField(GlobalReference::from_element(x, src)))
+            }
+            Context(x) => {
+                Ok(ReadScope::Context(GlobalReference::from_element(x, src)))
             }
             _ => Err(DisassemblyError::InvalidRef(src.clone())),
         }
@@ -1753,130 +1724,77 @@ pub trait PatternWalker<B = ()> {
             .try_for_each(|block| self.block(block))
     }
     fn block(&mut self, block: &Block) -> ControlFlow<B, ()> {
-        match block {
-            Block::Or { fields, .. } => {
-                fields.iter().try_for_each(|field| self.field_or(field))
-            }
-            Block::And { left, right, .. } => {
-                left.iter().try_for_each(|field| self.field_and(field))?;
-                right.iter().try_for_each(|field| self.field_and(field))
-            }
-        }
+        block
+            .tokens
+            .values()
+            .try_for_each(|(_num, token)| self.token(token))?;
+        block
+            .token_fields
+            .values()
+            .try_for_each(|field| self.token_field(&field.field))?;
+        block
+            .verifications
+            .iter()
+            .try_for_each(|x| self.verification(x))
     }
-    fn field_or(&mut self, field: &FieldOr) -> ControlFlow<B, ()> {
-        match field {
-            FieldOr::Constraint {
+    fn token(
+        &mut self,
+        _token: &GlobalAnonReference<Token>,
+    ) -> ControlFlow<B, ()> {
+        ControlFlow::Continue(())
+    }
+    fn token_field(
+        &mut self,
+        _field: &GlobalReference<TokenField>,
+    ) -> ControlFlow<B, ()> {
+        ControlFlow::Continue(())
+    }
+    fn table(&mut self, _table: &GlobalReference<Table>) -> ControlFlow<B, ()> {
+        ControlFlow::Continue(())
+    }
+    fn context(
+        &mut self,
+        _table: &GlobalReference<Context>,
+    ) -> ControlFlow<B, ()> {
+        ControlFlow::Continue(())
+    }
+    fn value(&mut self, _value: &ConstraintValue) -> ControlFlow<B, ()> {
+        ControlFlow::Continue(())
+    }
+    fn verification(
+        &mut self,
+        verification: &Verification,
+    ) -> ControlFlow<B, ()> {
+        match verification {
+            Verification::ContextCheck {
+                context,
+                op: _,
+                value,
+            } => {
+                self.context(context)?;
+                self.value(value)
+            }
+            Verification::TableBuild {
+                produced_table,
+                verification,
+            } => {
+                if let Some((_op, value)) = verification {
+                    self.value(value)?;
+                }
+                self.table(&produced_table.table)
+            }
+            Verification::SubPattern {
+                location: _,
+                pattern,
+            } => self.pattern(pattern),
+            Verification::TokenFieldCheck {
                 field,
-                constraint,
-                src: _,
-                implicit_fields: _,
+                op: _,
+                value,
             } => {
-                self.constraint(constraint)?;
-                match field {
-                    ConstraintVariable::Assembly { assembly, .. } => {
-                        self.assembly(assembly)
-                    }
-                    ConstraintVariable::Varnode { varnode, .. } => {
-                        self.varnode(varnode)
-                    }
-                }
+                self.value(value)?;
+                self.token_field(field)
             }
-            FieldOr::SubPattern { sub, .. } => self.pattern(sub),
         }
-    }
-    fn field_and(&mut self, field: &FieldAnd) -> ControlFlow<B, ()> {
-        match field {
-            FieldAnd::Constraint {
-                field, constraint, ..
-            } => {
-                self.constraint(constraint)?;
-                match field {
-                    ConstraintVariable::Assembly { assembly, .. } => {
-                        self.assembly(assembly)
-                    }
-                    ConstraintVariable::Varnode { varnode, .. } => {
-                        self.varnode(varnode)
-                    }
-                }
-            }
-            FieldAnd::Field(field) => self.reference(field),
-            FieldAnd::SubPattern { sub, .. } => self.pattern(sub),
-        }
-    }
-    fn constraint(&mut self, _constraint: &Constraint) -> ControlFlow<B, ()> {
-        ControlFlow::Continue(())
-    }
-    fn assembly(&mut self, _assembly: &Rc<Assembly>) -> ControlFlow<B, ()> {
-        ControlFlow::Continue(())
-    }
-    fn varnode(&mut self, _varnode: &Rc<Varnode>) -> ControlFlow<B, ()> {
-        ControlFlow::Continue(())
-    }
-    fn extension(&mut self, table: &Rc<Table>) -> ControlFlow<B, ()> {
-        self.table(table)
-    }
-    fn reference(&mut self, reference: &Reference) -> ControlFlow<B, ()> {
-        match reference {
-            Reference::Assembly { assembly, .. } => self.assembly(assembly),
-            Reference::Varnode { varnode, .. } => self.varnode(varnode),
-            Reference::Table { table, .. } => self.table(table),
-        }
-    }
-    fn table(&mut self, _table: &Rc<Table>) -> ControlFlow<B, ()> {
-        ControlFlow::Continue(())
-    }
-}
-
-impl<'a> Sleigh<'a> {
-    pub fn get_pattern_constraint_variable(
-        &self,
-        name: &'a str,
-    ) -> Result<ConstraintVariable, PatternError> {
-        let src = self.input_src(name);
-        let field = self
-            .get_global(name)
-            .ok_or(PatternError::MissingRef(src.clone()))?;
-        let field = match field {
-            GlobalScope::Assembly(x) => ConstraintVariable::Assembly {
-                src,
-                assembly: Rc::clone(x),
-            },
-            GlobalScope::Varnode(x) => ConstraintVariable::Varnode {
-                src,
-                varnode: Rc::clone(x),
-            },
-            _ => return Err(PatternError::InvalidRef(src)),
-        };
-        Ok(field)
-    }
-    pub fn get_pattern_field(
-        &self,
-        name: &'a str,
-        table: &Rc<Table>,
-    ) -> Result<Reference, PatternError> {
-        let src = self.input_src(name);
-        let field = self
-            .get_global(name)
-            .ok_or(PatternError::MissingRef(src.clone()))?;
-        let field = match field {
-            GlobalScope::Assembly(x) => Reference::Assembly {
-                src,
-                assembly: Rc::clone(x),
-            },
-            GlobalScope::Varnode(x) => Reference::Varnode {
-                src,
-                varnode: Rc::clone(x),
-            },
-            GlobalScope::Table(x) => {
-                let self_ref = Rc::as_ptr(table) == Rc::as_ptr(x);
-                Reference::Table {
-                    self_ref,
-                    src,
-                    table: Rc::clone(x),
-                }
-            }
-            _ => return Err(PatternError::InvalidRef(src)),
-        };
-        Ok(field)
     }
 }

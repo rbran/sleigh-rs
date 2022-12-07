@@ -1,8 +1,7 @@
-use std::rc::Rc;
-
 use crate::base::{IntTypeU, NonZeroTypeU};
 use crate::semantic::pcode_macro::PcodeMacro;
 use crate::semantic::space::Space;
+use crate::semantic::{GlobalElement, GlobalReference};
 use crate::UserFunction;
 
 // function call with variable number on params
@@ -14,8 +13,8 @@ pub enum PrimitiveFunction {
 
 #[derive(Clone, Debug)]
 pub enum DefinedFunction {
-    UserFunction(Rc<UserFunction>),
-    PcodeMacro(Rc<PcodeMacro>),
+    UserFunction(GlobalElement<UserFunction>),
+    PcodeMacro(GlobalElement<PcodeMacro>),
 }
 
 #[derive(Clone, Debug)]
@@ -26,7 +25,7 @@ pub enum Function {
 
 #[derive(Clone, Debug)]
 pub struct AddrDereference {
-    pub space: Rc<Space>,
+    pub space: GlobalReference<Space>,
     pub size: NonZeroTypeU,
 }
 impl AddrDereference {
@@ -41,8 +40,8 @@ impl AddrDereference {
 //}
 #[derive(Clone, Copy, Debug)]
 pub struct Truncate {
-    lsb: IntTypeU,
-    size: NonZeroTypeU,
+    pub lsb: IntTypeU,
+    pub size: NonZeroTypeU,
 }
 
 impl Truncate {

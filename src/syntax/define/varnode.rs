@@ -11,7 +11,7 @@ use crate::base::{
 pub struct Varnode<'a> {
     pub space_name: &'a str,
     pub offset: IntTypeU,
-    pub varnode_size: IntTypeU,
+    pub value_bytes: IntTypeU,
     pub names: Vec<Option<&'a str>>,
 }
 
@@ -40,7 +40,7 @@ impl<'a> Varnode<'a> {
             |(space_name, offset, size, names)| Varnode {
                 space_name,
                 offset,
-                varnode_size: size,
+                value_bytes: size,
                 names,
             },
         )(input)

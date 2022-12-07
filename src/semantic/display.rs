@@ -2,10 +2,11 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
-use crate::InputSource;
+use crate::{InputSource, TokenField, Varnode};
 
 use super::table::Table;
-use super::{assembly, disassembly, varnode};
+use super::varnode::Context;
+use super::{disassembly, GlobalReference, InstNext, InstStart};
 
 #[derive(Clone, Debug, Error)]
 pub enum DisplayError {
@@ -16,22 +17,26 @@ pub enum DisplayError {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Display(Vec<Element>);
+pub struct Display(Box<[DisplayScope]>);
 
 impl Display {
-    pub fn new(elements: Vec<Element>) -> Self {
+    pub fn new(elements: Box<[DisplayScope]>) -> Self {
         Self(elements)
     }
-    pub fn elements(&self) -> &[Element] {
+    pub fn elements(&self) -> &[DisplayScope] {
         &self.0
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum Element {
-    Varnode(Rc<varnode::Varnode>),
-    Assembly(Rc<assembly::Assembly>),
+pub enum DisplayScope {
+    Varnode(GlobalReference<Varnode>),
+    //Bitrange(GlobalReference<Bitrange>),
+    Context(GlobalReference<Context>),
+    TokenField(GlobalReference<TokenField>),
+    InstStart(GlobalReference<InstStart>),
+    InstNext(GlobalReference<InstNext>),
     Disassembly(Rc<disassembly::Variable>),
-    Table(Rc<Table>),
+    Table(GlobalReference<Table>),
     Literal(String),
 }

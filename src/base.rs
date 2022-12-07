@@ -147,11 +147,11 @@ pub(crate) fn number_sig_option(
 ) -> IResult<&str, Option<IntTypeS>> {
     alt((map(number_sig, |x| Some(x)), value(None, tag("_"))))(input)
 }
-pub(crate) fn number_unsig_option(
-    input: &str,
-) -> IResult<&str, Option<IntTypeU>> {
-    alt((map(number_unsig, |x| Some(x)), value(None, tag("_"))))(input)
-}
+//pub(crate) fn number_unsig_option(
+//    input: &str,
+//) -> IResult<&str, Option<IntTypeU>> {
+//    alt((map(number_unsig, |x| Some(x)), value(None, tag("_"))))(input)
+//}
 
 pub(crate) fn line_comment(input: &str) -> IResult<&str, &str> {
     recognize(tuple((

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use thiserror::Error;
@@ -7,8 +6,10 @@ use crate::base::IntTypeU;
 use crate::semantic::varnode::Varnode;
 use crate::InputSource;
 
-use super::assembly::Assembly;
 use super::table::Table;
+use super::token::TokenField;
+use super::varnode::Context;
+use super::{GlobalReference, InstNext, InstStart};
 
 #[derive(Clone, Debug, Error)]
 pub enum DisassemblyError {
@@ -32,7 +33,7 @@ pub enum OpUnary {
     Negative,
 }
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Op {
     Add,
     Sub,
@@ -48,37 +49,59 @@ pub enum Op {
 #[derive(Clone, Debug)]
 pub enum ReadScope {
     //TODO: table??? Handle tables that the execution is just export Disassembly
-    //Table(Rc<Table>),
+    //Table(Reference<GlobalElement<Table>>),
     Integer(IntTypeU),
-    Varnode(Rc<Varnode>),
-    Assembly(Rc<Assembly>), //not including epsilon
+    Context(GlobalReference<Context>),
+    TokenField(GlobalReference<TokenField>),
+    InstStart(GlobalReference<InstStart>),
+    InstNext(GlobalReference<InstNext>),
     Local(Rc<Variable>),
 }
 
 #[derive(Clone, Debug)]
 pub enum WriteScope {
-    Varnode(Rc<Varnode>), //context only
+    Context(GlobalReference<Context>),
     Local(Rc<Variable>),
 }
 
 #[derive(Clone, Debug)]
 pub enum AddrScope {
-    Int(IntTypeU),
-    Table(Rc<Table>),
-    Varnode(Rc<Varnode>),
-    Assembly(Rc<Assembly>),
+    Integer(IntTypeU),
+    Table(GlobalReference<Table>),
+    Varnode(GlobalReference<Varnode>),
+    //TokenField(GlobalReference<TokenField>),
+    //InstStart(GlobalReference<InstStart>),
+    InstNext(GlobalReference<InstNext>),
     Local(Rc<Variable>),
 }
 
 #[derive(Clone, Debug)]
 pub struct Variable {
-    pub name: Rc<str>,
+    name: Rc<str>,
     //TODO
+}
+
+impl Variable {
+    pub(crate) fn new(name: Rc<str>) -> Self {
+        Self { name }
+    }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct Expr {
-    pub rpn: Vec<ExprElement>,
+    rpn: Box<[ExprElement]>,
+}
+
+impl Expr {
+    pub(crate) fn new(rpn: Box<[ExprElement]>) -> Self {
+        Self { rpn }
+    }
+    pub fn elements(&self) -> &[ExprElement] {
+        &self.rpn
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -111,14 +134,42 @@ pub enum ExprElement {
 
 #[derive(Clone, Debug)]
 pub struct GlobalSet {
+    //pub src: InputSource,
     pub address: AddrScope,
-    pub context: Rc<Varnode>, //context only
+    pub context: GlobalReference<Context>,
+}
+
+impl GlobalSet {
+    pub fn new(address: AddrScope, context: GlobalReference<Context>) -> Self {
+        Self { address, context }
+    }
+    pub fn address(&self) -> &AddrScope {
+        &self.address
+    }
+    pub fn context(&self) -> &GlobalReference<Context> {
+        &self.context
+    }
+    //pub fn src(&self) -> &InputSource {
+    //    &self.src
+    //}
 }
 
 #[derive(Clone, Debug)]
 pub struct Assignment {
     pub left: WriteScope,
     pub right: Expr,
+}
+
+impl Assignment {
+    pub(crate) fn new(left: WriteScope, right: Expr) -> Self {
+        Self { left, right }
+    }
+    pub fn left(&self) -> &WriteScope {
+        &self.left
+    }
+    pub fn right(&self) -> &Expr {
+        &self.right
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -132,12 +183,11 @@ pub struct Disassembly {
     //TODO disassembly need to be separated between before and after pattern
     //match but for now it is just a flag that make everything before or
     //after if there is an inst_next on the execution.
-    pub pos: bool,
-    pub vars: HashMap<Rc<str>, Rc<Variable>>,
-    pub assertations: Vec<Assertation>,
+    pub vars: Box<[Rc<Variable>]>,
+    pub assertations: Box<[Assertation]>,
 }
 impl Disassembly {
-    pub fn variable(&self, name: &str) -> Option<Rc<Variable>> {
-        self.vars.get(name).map(|x| Rc::clone(x))
-    }
+    //pub fn variable(&self, name: &str) -> Option<Rc<Variable>> {
+    //    self.vars.get(name).map(|x| Rc::clone(x))
+    //}
 }

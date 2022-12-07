@@ -1,6 +1,5 @@
-use crate::semantic::inner::FieldSizeCell;
-use crate::semantic::inner::FieldSizeMut;
-use crate::semantic::inner::FIELD_SIZE_BOOL;
+use crate::semantic::varnode::Bitrange;
+use crate::semantic::GlobalReference;
 use core::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -13,9 +12,10 @@ use crate::{InputSource, Varnode};
 
 use super::pcode_macro::{Parameter, PcodeMacroInstance};
 use super::table::Table;
+use super::token::TokenField;
+use super::varnode::Context;
 use super::{
-    assembly, disassembly, FieldSize, PcodeMacro, Sleigh, SolverStatus, Space,
-    UserFunction,
+    disassembly, PcodeMacro, Sleigh, SolverStatus, Space, UserFunction,
 };
 
 mod builder;
@@ -27,22 +27,25 @@ pub use expr::*;
 mod op;
 pub use op::*;
 
+mod len;
+pub use len::*;
+
 pub type FinalExportConst = semantic::execution::ExportConst;
 #[derive(Clone, Debug)]
 pub enum ExportConst {
     //Int(IntTypeU),
     DisVar(InputSource, Rc<disassembly::Variable>),
-    Assembly(InputSource, Rc<assembly::Assembly>),
-    Context(InputSource, Rc<Varnode>),
-    Table(InputSource, Rc<Table>),
+    TokenField(GlobalReference<TokenField>),
+    Context(GlobalReference<Context>),
+    Table(GlobalReference<Table>),
 }
 impl ExportConst {
     pub fn src(&self) -> &InputSource {
         match self {
-            Self::DisVar(src, _)
-            | Self::Assembly(src, _)
-            | Self::Context(src, _)
-            | Self::Table(src, _) => src,
+            Self::DisVar(src, _) => src,
+            Self::TokenField(x) => x.location(),
+            Self::Context(x) => x.location(),
+            Self::Table(x) => x.location(),
         }
     }
     pub fn convert(self) -> FinalExportConst {
@@ -50,9 +53,15 @@ impl ExportConst {
             Self::DisVar(_, variable) => {
                 FinalExportConst::DisVar(variable.convert())
             }
-            Self::Assembly(_, ass) => FinalExportConst::Assembly(ass),
-            Self::Context(_, ass) => FinalExportConst::Context(ass),
-            Self::Table(_, table) => FinalExportConst::Table(table.convert()),
+            Self::TokenField(ass) => {
+                FinalExportConst::TokenField(ass.convert_reference())
+            }
+            Self::Context(ass) => {
+                FinalExportConst::Context(ass.convert_reference())
+            }
+            Self::Table(table) => {
+                FinalExportConst::Table(table.convert_reference())
+            }
         }
     }
 }
@@ -72,13 +81,14 @@ impl Export {
     pub fn new_const(size: FieldSize, value: ExportConst) -> Self {
         Self::Const(size, value)
     }
-    pub fn new_reference(addr: Expr, space: AddrDereference) -> Self {
-        let mut addr = addr;
+    pub fn new_reference(mut addr: Expr, space: AddrDereference) -> Self {
         //addr expr is the addr to access the space, so it need to be space
         //addr size
         addr.size_mut()
             .update_action(|size| {
-                size.intersection(space.space.memory().addr_size())
+                size.intersection(
+                    FieldSize::new_bytes(space.space.element().addr_bytes())
+                )
             })
             .unwrap(/*TODO*/);
         Self::Reference(addr, space)
@@ -106,12 +116,14 @@ impl Export {
             Self::Const(size, _) => *size,
         }
     }
-    pub fn output_size_mut(&mut self) -> FieldSizeCell {
+    pub fn output_size_mut<'a>(&'a mut self) -> Box<dyn FieldSizeMut + 'a> {
         match self {
             Self::Value(expr) => expr.size_mut(),
             //TODO verify this
-            Self::Reference(_, deref) => deref.output_size_mut().into(),
-            Self::Const(size, _) => size.into(),
+            Self::Reference(_, deref) => {
+                Box::new(FieldSizeMutRef::from(deref.output_size_mut()))
+            }
+            Self::Const(size, _) => Box::new(FieldSizeMutRef::from(size)),
         }
     }
     pub fn solve(
@@ -187,7 +199,8 @@ impl MemWrite {
 
         //addr expr is the addr to access the space, so it need to be space
         //addr size
-        addr.size_mut().set(mem.space.memory().addr_size());
+        addr.size_mut()
+            .set(FieldSize::new_bytes(mem.space.element().addr_bytes()));
         Self {
             addr,
             mem,
@@ -331,18 +344,20 @@ impl Assignment {
 
         //left and right sizes are the same
         if let Some(trunc) = &mut self.op {
-            let modified = FieldSize::all_same_size(&mut [
-                trunc.output_size_mut().into(),
-                self.right.size_mut(),
-            ]);
+            let modified = [
+                &mut self.right.size_mut() as &mut dyn FieldSizeMut,
+                &mut FieldSizeMutRef::from(trunc.output_size_mut()),
+            ]
+            .all_same_lenght();
             if modified.ok_or_else(error)? {
                 solved.i_did_a_thing()
             }
         } else {
-            let modified = FieldSize::all_same_size(&mut [
-                self.var.size_mut().into(),
-                self.right.size_mut(),
-            ]);
+            let modified = [
+                &mut self.right.size_mut() as &mut dyn FieldSizeMut,
+                &mut self.var.size_mut() as &mut dyn FieldSizeMut,
+            ]
+            .all_same_lenght();
 
             //if right size is possible min, so does left if size is not defined
             if self.var.size().is_undefined()
@@ -380,34 +395,51 @@ impl Assignment {
 pub type FinalWriteValue = execution::WriteValue;
 #[derive(Clone, Debug)]
 pub enum WriteValue {
-    Varnode(InputSource, Rc<Varnode>),
-    Table(InputSource, Rc<Table>),
+    Varnode(GlobalReference<Varnode>),
+    Bitrange(GlobalReference<Bitrange>),
+    Table(GlobalReference<Table>),
+    TokenField(GlobalReference<TokenField>),
     ExeVar(InputSource, Rc<Variable>),
-    Assembly(InputSource, Rc<assembly::Assembly>),
     Param(InputSource, Rc<Parameter>),
 }
 
 impl WriteValue {
     pub fn size(&self) -> FieldSize {
         match self {
-            Self::Varnode(_, var) => FieldSize::new_bits(var.value_bits()),
-            Self::Table(_, value) => {
-                *value.export().borrow().as_ref().unwrap().size().unwrap()
+            Self::Varnode(var) => {
+                FieldSize::new_bytes(var.element().len_bytes)
             }
-            Self::ExeVar(_, var) => var.size().get(),
-            Self::Assembly(_, ass) => ass.value_len(),
+            Self::Bitrange(var) => {
+                FieldSize::new_bits(var.element().range.len_bits())
+            }
+            Self::Table(value) => *value
+                .element()
+                .export()
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .size()
+                .unwrap(),
+            Self::TokenField(ass) => ass.element().exec_value_len(),
+            Self::ExeVar(_, var) => var.len().get(),
             Self::Param(_, param) => param.size().get(),
         }
     }
-    pub fn size_mut(&mut self) -> FieldSizeCell {
+    pub fn size_mut<'a>(&'a mut self) -> Box<dyn FieldSizeMut + 'a> {
         match self {
-            Self::Varnode(_, var) => {
-                FieldSize::new_bits(var.value_bits()).into()
-            }
-            Self::Table(_, value) => value.export().into(),
-            Self::ExeVar(_, var) => var.size().into(),
-            Self::Assembly(_, ass) => ass.value_len().into(),
-            Self::Param(_, param) => param.size().into(),
+            Self::Varnode(var) => Box::new(FieldSizeMutOwned::from(
+                FieldSize::new_bytes(var.element().len_bytes),
+            )),
+            Self::Bitrange(var) => Box::new(FieldSizeMutOwned::from(
+                FieldSize::new_bits(var.element().range.len_bits()),
+            )),
+            Self::Table(value) => Box::new(value.element()),
+            Self::ExeVar(_, var) => Box::new(var.len()),
+            //NOTE token_field is only valid if it contains attach to variable
+            Self::TokenField(ass) => Box::new(FieldSizeMutOwned::from(
+                ass.element().exec_value_len(),
+            )),
+            Self::Param(_, param) => Box::new(param.size()),
         }
     }
     pub fn solve(
@@ -416,19 +448,23 @@ impl WriteValue {
     ) -> Result<(), ExecutionError> {
         match self {
             //NOTE call table solve on the main loop only
-            Self::Varnode(_, _)
+            Self::Varnode(_)
+            | Self::Bitrange(_)
             | Self::Param(_, _)
-            | Self::Assembly(_, _)
-            | Self::Table(_, _) => Ok(()),
+            | Self::TokenField(_)
+            | Self::Table(_) => Ok(()),
             Self::ExeVar(_, var) => var.solve(solved),
         }
     }
     pub fn convert(self) -> FinalWriteValue {
         match self {
-            Self::Varnode(_, var) => FinalWriteValue::Varnode(var),
-            Self::Assembly(_, ass) => FinalWriteValue::Assembly(ass),
-            Self::Table(_, table) => {
-                FinalWriteValue::TableExport(table.convert())
+            Self::Varnode(var) => FinalWriteValue::Varnode(var),
+            Self::Bitrange(var) => FinalWriteValue::Bitrange(var),
+            Self::TokenField(ass) => {
+                FinalWriteValue::TokenField(ass.convert_reference())
+            }
+            Self::Table(table) => {
+                FinalWriteValue::TableExport(table.convert_reference())
             }
             Self::ExeVar(_, var) => FinalWriteValue::Local(var.convert()),
             //TODO param need to change? maybe replace it into a local variable
@@ -439,28 +475,31 @@ impl WriteValue {
 
 #[derive(Clone, Debug)]
 pub struct Build {
-    pub table: Rc<Table>,
+    pub table: GlobalReference<Table>,
 }
 impl Build {
-    pub fn new(table: Rc<Table>) -> Self {
+    pub fn new(table: GlobalReference<Table>) -> Self {
         Self { table }
     }
     pub fn convert(self) -> semantic::execution::Build {
         semantic::execution::Build {
-            table: self.table.reference(),
+            table: self.table.convert_reference(),
         }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct MacroCall {
-    function: Rc<PcodeMacro>,
+    function: GlobalReference<PcodeMacro>,
     instance: Option<Rc<PcodeMacroInstance>>,
     pub params: Vec<Expr>,
 }
 
 impl MacroCall {
-    pub fn new(params: Vec<Expr>, function: Rc<PcodeMacro>) -> Self {
+    pub fn new(
+        params: Vec<Expr>,
+        function: GlobalReference<PcodeMacro>,
+    ) -> Self {
         Self {
             params,
             function,
@@ -471,39 +510,43 @@ impl MacroCall {
     where
         T: SolverStatus + Default,
     {
+        let mut correlated_params_instance = |params| {
+            for (param, macro_param) in self.params.iter_mut().zip(params) {
+                let src = param.src().clone();
+                if param
+                    .size_mut()
+                    .update_action(|size| size.intersection(macro_param))
+                    .ok_or(ExecutionError::VarSize(src))?
+                {
+                    solved.we_did_a_thing();
+                }
+                param.solve(solved)?;
+            }
+            Ok(())
+        };
         //update the param expencted size with the macro expected param size
         //and solved it
-        let params = if let Some(instance) = &self.instance {
-            instance.params()
-        } else {
-            self.function.params()
-        };
-        for (param, macro_param) in self.params.iter_mut().zip(params) {
-            if param
-                .size_mut()
-                .update_action(|size| {
-                    size.intersection(macro_param.size().get())
-                })
-                .ok_or(ExecutionError::VarSize(param.src().clone()))?
-            {
-                solved.we_did_a_thing();
-            }
-            param.solve(solved)?;
-        }
-
         if let Some(instance) = &self.instance {
+            let mut iter = instance.params().iter().map(|x| x.size().get());
+            let iter: &mut dyn Iterator<Item = FieldSize> = &mut iter;
+            correlated_params_instance(iter)?;
             instance.solve(solved).unwrap(/*TODO*/);
         } else {
+            let element = self.function.element();
+            let default_params = element.params();
+            let mut iter = default_params.iter().map(|x| x.size().get());
+            let iter: &mut dyn Iterator<Item = FieldSize> = &mut iter;
+            correlated_params_instance(iter)?;
             //try to specialize the macro call
-            self.function.solve(solved).unwrap(/*TODO*/);
-
+            self.function.element().solve(solved).unwrap(/*TODO*/);
             let params_size = self
                 .params
                 .iter()
                 .map(|x| x.size().final_value())
                 .collect::<Option<Vec<_>>>();
             if let Some(params_size) = params_size {
-                self.instance = self.function.try_specialize(&params_size);
+                self.instance =
+                    Some(self.function.element().specialize(&params_size));
                 if self.instance.is_none() {
                     solved.iam_not_finished_location(
                         &self.function.src,
@@ -517,8 +560,8 @@ impl MacroCall {
         }
         Ok(())
     }
-    pub fn convert(mut self) -> semantic::execution::MacroCall {
-        let params = self.params.drain(..).map(|x| x.convert()).collect();
+    pub fn convert(self) -> semantic::execution::MacroCall {
+        let params = self.params.into_iter().map(|x| x.convert()).collect();
         semantic::execution::MacroCall::new(
             params,
             self.instance.unwrap().convert(),
@@ -528,21 +571,19 @@ impl MacroCall {
 
 #[derive(Clone, Debug)]
 pub struct UserCall {
-    src: InputSource,
-    pub function: Rc<UserFunction>,
+    pub function: GlobalReference<UserFunction>,
     pub params: Vec<Expr>,
 }
 impl std::ops::Deref for UserCall {
-    type Target = UserFunction;
+    type Target = GlobalReference<UserFunction>;
     fn deref(&self) -> &Self::Target {
         &self.function
     }
 }
 impl UserCall {
     pub fn new(
-        src: InputSource,
         mut params: Vec<Expr>,
-        function: Rc<UserFunction>,
+        function: GlobalReference<UserFunction>,
     ) -> Self {
         //TODO how to handle user functions with variable number of parameter???
         //function.set_param_num(params.len()).unwrap(/*TODO*/);
@@ -555,14 +596,10 @@ impl UserCall {
                 .update_action(|size| Some(size.set_possible_min()))
                 .unwrap();
         });
-        Self {
-            src,
-            params,
-            function,
-        }
+        Self { params, function }
     }
     pub fn src(&self) -> &InputSource {
-        &self.src
+        self.function.location()
     }
     pub fn solve(
         &mut self,
@@ -573,9 +610,9 @@ impl UserCall {
             .map(|x| x.solve(solved))
             .collect::<Result<_, _>>()
     }
-    pub fn convert(mut self) -> semantic::execution::UserCall {
-        let params = self.params.drain(..).map(|x| x.convert()).collect();
-        semantic::execution::UserCall::new(params, self.function.convert())
+    pub fn convert(self) -> semantic::execution::UserCall {
+        let params = self.params.into_iter().map(|x| x.convert()).collect();
+        semantic::execution::UserCall::new(params, self.function)
     }
 }
 
@@ -625,7 +662,7 @@ pub struct CpuBranch {
     pub dst: Expr,
     //TODO: HACK: this this is not adequated, it requires that the addr size
     //being deduced some how
-    exec_addr_size: Rc<Cell<FieldSize>>,
+    exec_addr_size: FieldSize,
 }
 
 impl CpuBranch {
@@ -634,7 +671,7 @@ impl CpuBranch {
         call: BranchCall,
         direct: bool,
         dst: Expr,
-        exec_addr_size: Rc<Cell<FieldSize>>,
+        exec_addr_size: FieldSize,
     ) -> Self {
         //condition can have any size, preferencially 1 bit for true/false
         cond.iter_mut().for_each(|cond| {
@@ -663,10 +700,11 @@ impl CpuBranch {
         }
         //correlate the addr execution size and the jmp dest addr size
         let error = ExecutionError::VarSize(self.dst.src().clone());
-        modified |= FieldSize::all_same_size(&mut [
-            self.dst.size_mut(),
-            self.exec_addr_size.as_ref().into(),
-        ])
+        modified |= [
+            &mut self.dst.size_mut() as &mut dyn FieldSizeMut,
+            &mut FieldSizeMutRef::from(&mut self.exec_addr_size),
+        ]
+        .all_same_lenght()
         .ok_or_else(|| error)?;
 
         self.dst.solve(solved)?;
@@ -776,10 +814,10 @@ impl Block {
                 Some(Rc::clone(&next_block.result));
         }
 
-        let statements = self
-            .statements
-            .borrow_mut()
-            .drain(..)
+        let statements: Vec<_> =
+            std::mem::take(self.statements.borrow_mut().as_mut());
+        let statements = statements
+            .into_iter()
             .map(|statement| statement.convert())
             .collect();
         *self.result.statements.borrow_mut() = statements;
@@ -813,7 +851,7 @@ impl Variable {
     pub fn me(&self) -> Rc<Self> {
         self.me.upgrade().unwrap()
     }
-    fn size(&self) -> &Cell<FieldSize> {
+    fn len(&self) -> &Cell<FieldSize> {
         &self.size
     }
     fn solve<T: SolverStatus>(
@@ -863,22 +901,20 @@ impl ExecutionExport {
     }
     pub fn size(&self) -> Option<&FieldSize> {
         match self {
-            ExecutionExport::None => None,
-            //       ExecutionExport::Undefined(size)
-            ExecutionExport::Const(size)
-            | ExecutionExport::Value(size)
-            | ExecutionExport::Reference(size)
-            | ExecutionExport::Multiple(size) => Some(size),
+            Self::None => None,
+            Self::Const(size)
+            | Self::Value(size)
+            | Self::Reference(size)
+            | Self::Multiple(size) => Some(size),
         }
     }
     pub fn size_mut(&mut self) -> Option<&mut FieldSize> {
         match self {
-            ExecutionExport::None => None,
-            //      ExecutionExport::Undefined(size)
-            ExecutionExport::Const(size)
-            | ExecutionExport::Value(size)
-            | ExecutionExport::Reference(size)
-            | ExecutionExport::Multiple(size) => Some(size),
+            Self::None => None,
+            Self::Const(size)
+            | Self::Value(size)
+            | Self::Reference(size)
+            | Self::Multiple(size) => Some(size),
         }
     }
     pub fn combine(self, other: Self) -> Option<Self> {
@@ -1012,14 +1048,19 @@ impl Execution {
         //update all the export output sizes
         self.blocks()
             .filter(|block| block.next.borrow().is_none())
-            .for_each(|block| match block.statements.borrow_mut().last_mut() {
-                Some(Statement::Export(export)) => {
-                    modified |= export
-                        .output_size_mut()
-                        .update_action(|size| size.intersection(return_size))
-                        .unwrap();
+            .for_each(|block| {
+                let mut statements = block.statements.borrow_mut();
+                match statements.last_mut() {
+                    Some(Statement::Export(export)) => {
+                        modified |= export
+                            .output_size_mut()
+                            .update_action(|size| {
+                                size.intersection(return_size)
+                            })
+                            .unwrap();
+                    }
+                    _ => (),
                 }
-                _ => (),
             });
         modified |= self
             .return_size_mut()

@@ -5,8 +5,9 @@ use crate::semantic::inner::execution::{
     Block, Execution, ExecutionBuilder, ExprValue, WriteValue,
 };
 use crate::semantic::inner::{FieldSize, Sleigh};
+use crate::semantic::meaning::Meaning;
 use crate::semantic::table::ExecutionError;
-use crate::semantic::varnode::VarnodeType;
+use crate::semantic::GlobalReference;
 use crate::InputSource;
 
 #[derive(Clone, Debug)]
@@ -80,12 +81,22 @@ impl<'a, 'b, 'c> ExecutionBuilder<'a> for Builder<'a, 'b, 'c> {
                     .ok_or(ExecutionError::MissingRef(src()))?
                 {
                     //TODO filter out epsilon
-                    Assembly(x) => {
-                        Ok(ExprValue::new_assembly(src(), Rc::clone(x)))
+                    //TODO make sure all fields used on execution can be
+                    //produced by the pattern
+                    TokenField(x) => Ok(ExprValue::new_token_field(src(), x)),
+                    InstStart(x) => {
+                        //TODO error
+                        let len = self.sleigh().exec_addr_size().unwrap();
+                        Ok(ExprValue::new_inst_start(src(), *len, x))
                     }
-                    Varnode(x) => {
-                        Ok(ExprValue::new_varnode(src(), Rc::clone(x)))
+                    InstNext(x) => {
+                        //TODO error
+                        let len = self.sleigh().exec_addr_size().unwrap();
+                        Ok(ExprValue::new_inst_next(src(), *len, x))
                     }
+                    Varnode(x) => Ok(ExprValue::new_varnode(src(), x)),
+                    Bitrange(x) => Ok(ExprValue::new_bitrange(src(), x)),
+                    Context(x) => Ok(ExprValue::new_context(src(), x)),
                     //only if table export some kind of value
                     Table(table)
                         if table
@@ -95,7 +106,10 @@ impl<'a, 'b, 'c> ExecutionBuilder<'a> for Builder<'a, 'b, 'c> {
                             .map(|x| !x.export_nothing())
                             .unwrap_or(false) =>
                     {
-                        Ok(ExprValue::Table(src(), Rc::clone(table)))
+                        Ok(ExprValue::Table(GlobalReference::from_element(
+                            table,
+                            src(),
+                        )))
                     }
                     _ => Err(ExecutionError::InvalidRef(src())),
                 }
@@ -116,21 +130,25 @@ impl<'a, 'b, 'c> ExecutionBuilder<'a> for Builder<'a, 'b, 'c> {
                     .get_global(name)
                     .ok_or(ExecutionError::MissingRef(src()))?
                 {
-                    GlobalScope::Varnode(varnode)
-                        if matches!(
-                            varnode.varnode_type,
-                            VarnodeType::Memory(_) | VarnodeType::BitRange(_)
-                        ) =>
-                    {
-                        Ok(WriteValue::Varnode(src(), Rc::clone(varnode)))
+                    GlobalScope::Varnode(varnode) => Ok(WriteValue::Varnode(
+                        GlobalReference::from_element(varnode, src()),
+                    )),
+                    GlobalScope::TokenField(token_field) => {
+                        let meaning = token_field.meaning();
+                        //filter field with meaning to variable
+                        if !matches!(
+                            meaning.as_ref(),
+                            Some(Meaning::Variable(_))
+                        ) {
+                            return Err(ExecutionError::InvalidRef(src()));
+                        }
+                        Ok(WriteValue::TokenField(
+                            GlobalReference::from_element(token_field, src()),
+                        ))
                     }
-                    //TODO: filter field with meaning to variable
-                    GlobalScope::Assembly(assembly) => {
-                        Ok(WriteValue::Assembly(src(), Rc::clone(assembly)))
-                    }
-                    GlobalScope::Table(table) => {
-                        Ok(WriteValue::Table(src(), Rc::clone(table)))
-                    }
+                    GlobalScope::Table(table) => Ok(WriteValue::Table(
+                        GlobalReference::from_element(table, src()),
+                    )),
                     _ => Err(ExecutionError::InvalidRef(src())),
                 }
             })

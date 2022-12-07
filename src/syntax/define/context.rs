@@ -7,7 +7,8 @@ use nom::sequence::{
 use nom::IResult;
 
 use crate::base::{empty_space0, empty_space1, ident, number_unsig, IntTypeU};
-use crate::syntax::define::PrintFmt;
+
+use super::TokenFieldAttribute;
 
 #[derive(Clone, Debug)]
 pub struct Context<'a> {
@@ -72,23 +73,26 @@ impl<'a> ContextField<'a> {
 
 #[derive(Clone, Copy, Debug)]
 pub enum ContextFieldAttribute {
-    PrintFmt(PrintFmt),
-    Signed,
+    Token(TokenFieldAttribute),
     Noflow,
 }
 
 impl ContextFieldAttribute {
+    pub(crate) fn from_str(name: &str) -> Option<Self> {
+        TokenFieldAttribute::from_str(name)
+            .map(Self::Token)
+            .or_else(|| match name {
+                "noflow" => Some(Self::Noflow),
+                _ => None,
+            })
+    }
     fn parse(input_ori: &str) -> IResult<&str, Self> {
         let (input, att) = ident(input_ori)?;
-        match att {
-            "signed" => Ok((input, Self::Signed)),
-            "noflow" => Ok((input, Self::Noflow)),
-            name => PrintFmt::find(name)
-                .map(|x| (input, Self::PrintFmt(x)))
-                .ok_or(nom::Err::Error(nom::error::Error {
-                    input,
-                    code: nom::error::ErrorKind::MapOpt,
-                })),
-        }
+        Self::from_str(att)
+            .map(|att| (input, att))
+            .ok_or(nom::Err::Error(nom::error::Error {
+                input,
+                code: nom::error::ErrorKind::MapOpt,
+            }))
     }
 }

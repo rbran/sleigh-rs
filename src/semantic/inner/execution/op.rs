@@ -1,21 +1,23 @@
-use std::rc::Rc;
-
 use crate::base::{FloatType, IntTypeS, IntTypeU, NonZeroTypeU};
 use crate::semantic::inner::{FieldSize, SolverStatus};
 use crate::semantic::space::Space;
 use crate::InputSource;
 
-use crate::semantic::execution;
+use crate::semantic::{execution, GlobalReference};
 
 pub type FinalAddrDereference = execution::AddrDereference;
 #[derive(Clone, Debug)]
 pub struct AddrDereference {
-    pub space: Rc<Space>,
+    pub space: GlobalReference<Space>,
     pub size: FieldSize,
     pub src: InputSource,
 }
 impl AddrDereference {
-    pub fn new(space: Rc<Space>, size: FieldSize, src: InputSource) -> Self {
+    pub fn new(
+        space: GlobalReference<Space>,
+        size: FieldSize,
+        src: InputSource,
+    ) -> Self {
         Self { space, size, src }
     }
     pub fn output_size(&self) -> &FieldSize {

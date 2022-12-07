@@ -18,7 +18,7 @@ use self::macros::Block;
 
 #[derive(Error, Debug)]
 pub enum ParseError {
-    #[error("IO Error")]
+    #[error("IO Error {0}")]
     File(#[from] std::io::Error),
     #[error("Preprocessor Parsing error at\n{0}\n")]
     Parse(#[from] nom::Err<nom::error::Error<InputSource>>),
@@ -77,7 +77,7 @@ impl Parser {
             return Ok(Rc::clone(blocks));
         }
         let filename = self.root_path.join(filename);
-        let mut file = File::open(&filename)?;
+        let mut file = File::open(&filename).unwrap();
         let mut data = String::new();
         file.read_to_string(&mut data)?;
         //NOTE to avoid some parse problems, all files must end with \n

@@ -18,12 +18,12 @@ use crate::base::{empty_space0, empty_space1};
 pub use self::alignment::Alignment;
 pub use self::bitrange::{BitRangeDef, VarnodeField};
 pub use self::context::{Context, ContextField, ContextFieldAttribute};
-pub use self::space::{Attribute, Space, SpaceType};
+pub use self::space::{Attribute, Space};
 pub use self::token::{Token, TokenField, TokenFieldAttribute};
 pub use self::user_function::UserFunction;
 pub use self::varnode::Varnode;
 
-pub use crate::semantic::{Endian, PrintFmt};
+pub use crate::semantic::Endian;
 
 #[derive(Clone, Debug)]
 pub enum Define<'a> {
@@ -56,16 +56,6 @@ impl<'a> Define<'a> {
                 pair(empty_space0, tag(";")),
             )),
         )(input)
-    }
-}
-
-impl PrintFmt {
-    fn find(name: &str) -> Option<Self> {
-        match name {
-            "hex" => Some(Self::Hex),
-            "dec" => Some(Self::Dec),
-            _ => None,
-        }
     }
 }
 

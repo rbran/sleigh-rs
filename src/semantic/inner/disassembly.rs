@@ -1,30 +1,34 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 use std::rc::{Rc, Weak};
 
 use block::disassembly::{Op, OpUnary};
 
 use crate::base::{IntTypeU, Value};
 use crate::semantic::varnode::Varnode;
-use crate::semantic::{self, DisassemblyError};
+use crate::semantic::{
+    self, DisassemblyError, GlobalReference, InstNext, InstStart,
+};
 use crate::syntax::block;
 use crate::InputSource;
 
-use super::assembly::Assembly;
+use super::token::TokenField;
+use super::varnode::Context;
 use super::Table;
 
 pub trait ExprBuilder<'a> {
     fn read_scope(
         &mut self,
         name: &'a str,
-    ) -> Result<Rc<dyn ReadScope>, DisassemblyError>;
+    ) -> Result<ReadScope, DisassemblyError>;
     fn new_expr(
         &mut self,
-        mut input: block::disassembly::Expr<'a>,
+        input: block::disassembly::Expr<'a>,
     ) -> Result<Expr, DisassemblyError> {
         let rpn = input
             .rpn
-            .drain(..)
+            .into_iter()
             .map(|x| self.new_expr_element(x))
             .collect::<Result<_, _>>()?;
         Ok(Expr { rpn })
@@ -33,19 +37,18 @@ pub trait ExprBuilder<'a> {
         &mut self,
         input: block::disassembly::ExprElement<'a>,
     ) -> Result<ExprElement, DisassemblyError> {
-        let ele = match input {
+        match input {
             block::disassembly::ExprElement::Value(Value::Number(_, int)) => {
-                ExprElement::Value(int.as_read())
+                Ok(ExprElement::Value(ReadScope::Integer(int)))
             }
             block::disassembly::ExprElement::Value(Value::Ident(ident)) => {
-                self.read_scope(ident).map(ExprElement::Value)?
+                self.read_scope(ident).map(ExprElement::Value)
             }
-            block::disassembly::ExprElement::Op(x) => ExprElement::Op(x),
+            block::disassembly::ExprElement::Op(x) => Ok(ExprElement::Op(x)),
             block::disassembly::ExprElement::OpUnary(x) => {
-                ExprElement::OpUnary(x)
+                Ok(ExprElement::OpUnary(x))
             }
-        };
-        Ok(ele)
+        }
     }
 }
 
@@ -59,18 +62,18 @@ pub trait DisassemblyBuilder<'a>: ExprBuilder<'a> {
     fn write_scope(
         &mut self,
         name: &'a str,
-    ) -> Result<Rc<dyn WriteScope>, DisassemblyError>;
+    ) -> Result<WriteScope, DisassemblyError>;
     fn context(
         &mut self,
         name: &'a str,
-    ) -> Result<Rc<Varnode>, DisassemblyError>;
+    ) -> Result<GlobalReference<Context>, DisassemblyError>;
 
     fn new_globalset(
         &mut self,
         input: block::disassembly::GlobalSet<'a>,
     ) -> Result<GlobalSet, DisassemblyError> {
         let address = match input.address {
-            Value::Number(_, int) => AddrScope::Int(int),
+            Value::Number(_, int) => AddrScope::Interger(int),
             Value::Ident(ident) => self.addr_scope(ident)?,
         };
         let context = self.context(input.context)?;
@@ -97,13 +100,13 @@ pub trait DisassemblyBuilder<'a>: ExprBuilder<'a> {
             }
         }
     }
-    fn extend(
+    fn build(
         &mut self,
-        mut input: block::disassembly::Disassembly<'a>,
+        input: block::disassembly::Disassembly<'a>,
     ) -> Result<(), DisassemblyError> {
         input
             .assertations
-            .drain(..)
+            .into_iter()
             .map(|input| {
                 self.new_assertation(input)
                     .map(|ass| self.insert_assertation(ass))
@@ -113,88 +116,66 @@ pub trait DisassemblyBuilder<'a>: ExprBuilder<'a> {
 }
 
 pub type FinalReadScope = semantic::disassembly::ReadScope;
-pub trait ReadScope: std::fmt::Debug {
-    fn as_read(&self) -> Rc<dyn ReadScope>;
-    fn convert(&self) -> FinalReadScope;
-    fn value(&self) -> Option<IntTypeU> {
-        None
-    }
+#[derive(Clone, Debug)]
+pub enum ReadScope {
+    //TODO: table??? Handle tables that the execution is just export Disassembly
+    //Table(Reference<GlobalElement<Table>>),
+    Integer(IntTypeU),
+    Context(GlobalReference<Context>),
+    TokenField(GlobalReference<TokenField>),
+    InstStart(GlobalReference<InstStart>),
+    InstNext(GlobalReference<InstNext>),
+    Local(Rc<Variable>),
 }
-impl ReadScope for IntTypeU {
-    fn as_read(&self) -> Rc<dyn ReadScope> {
-        Rc::new(*self)
-    }
-    fn convert(&self) -> FinalReadScope {
-        FinalReadScope::Integer(*self)
-    }
-    fn value(&self) -> Option<IntTypeU> {
-        Some(*self)
-    }
-}
-impl ReadScope for Varnode {
-    fn as_read(&self) -> Rc<dyn ReadScope> {
-        self.me()
-    }
-    fn convert(&self) -> FinalReadScope {
-        FinalReadScope::Varnode(self.me())
-    }
-}
-impl ReadScope for Assembly {
-    fn as_read(&self) -> Rc<dyn ReadScope> {
-        self.me()
-    }
-    fn convert(&self) -> FinalReadScope {
-        FinalReadScope::Assembly(self.me())
-    }
-}
-impl ReadScope for Variable {
-    fn as_read(&self) -> Rc<dyn ReadScope> {
-        self.me()
-    }
-    fn convert(&self) -> FinalReadScope {
-        FinalReadScope::Local(self.convert())
+
+impl From<ReadScope> for FinalReadScope {
+    fn from(input: ReadScope) -> Self {
+        match input {
+            ReadScope::Integer(x) => Self::Integer(x),
+            ReadScope::Context(x) => Self::Context(x.convert_reference()),
+            ReadScope::TokenField(x) => Self::TokenField(x.convert_reference()),
+            ReadScope::InstStart(x) => Self::InstStart(x),
+            ReadScope::InstNext(x) => Self::InstNext(x),
+            ReadScope::Local(x) => Self::Local(x.convert()),
+        }
     }
 }
 
 pub type FinalWriteScope = semantic::disassembly::WriteScope;
-pub trait WriteScope: std::fmt::Debug {
-    fn as_write(&self) -> Rc<dyn WriteScope>;
-    fn convert(&self) -> FinalWriteScope;
+#[derive(Clone, Debug)]
+pub enum WriteScope {
+    Context(GlobalReference<Context>),
+    Local(Rc<Variable>),
 }
-impl WriteScope for Varnode {
-    fn as_write(&self) -> Rc<dyn WriteScope> {
-        self.me()
-    }
-    fn convert(&self) -> FinalWriteScope {
-        FinalWriteScope::Varnode(self.me())
-    }
-}
-impl WriteScope for Variable {
-    fn as_write(&self) -> Rc<dyn WriteScope> {
-        self.me()
-    }
-    fn convert(&self) -> FinalWriteScope {
-        FinalWriteScope::Local(self.convert())
+impl From<WriteScope> for FinalWriteScope {
+    fn from(input: WriteScope) -> Self {
+        match input {
+            WriteScope::Context(x) => Self::Context(x.convert_reference()),
+            WriteScope::Local(x) => Self::Local(x.convert()),
+        }
     }
 }
 
 #[derive(Clone, Debug)]
 pub enum AddrScope {
-    Int(IntTypeU),
-    Table(Rc<Table>),
-    Varnode(Rc<Varnode>),
-    Assembly(Rc<Assembly>),
+    Interger(IntTypeU),
+    Table(GlobalReference<Table>),
+    Varnode(GlobalReference<Varnode>),
+    //TokenField(GlobalReference<TokenField>),
+    //InstStart(GlobalReference<InstStart>),
+    InstNext(GlobalReference<InstNext>),
     Local(Rc<Variable>),
 }
 pub type FinalAddrScope = semantic::disassembly::AddrScope;
-impl AddrScope {
-    fn convert(&self) -> FinalAddrScope {
-        match self {
-            AddrScope::Int(x) => FinalAddrScope::Int(*x),
-            AddrScope::Table(x) => FinalAddrScope::Table(x.reference()),
-            AddrScope::Varnode(x) => FinalAddrScope::Varnode(Rc::clone(x)),
-            AddrScope::Assembly(x) => FinalAddrScope::Assembly(Rc::clone(x)),
-            AddrScope::Local(x) => FinalAddrScope::Local(x.convert()),
+impl From<AddrScope> for FinalAddrScope {
+    fn from(input: AddrScope) -> Self {
+        match input {
+            AddrScope::Interger(x) => Self::Integer(x),
+            AddrScope::Varnode(x) => Self::Varnode(x.clone()),
+            //AddrScope::TokenField(x) => Self::TokenField(x.convert_reference()),
+            AddrScope::InstNext(x) => Self::InstNext(x),
+            AddrScope::Table(x) => Self::Table(x.convert_reference()),
+            AddrScope::Local(x) => Self::Local(x.convert()),
         }
     }
 }
@@ -232,9 +213,9 @@ impl Variable {
         let create = self.result.borrow().is_none();
         if create {
             let mut result = self.result.borrow_mut();
-            *result = Some(Rc::new(semantic::disassembly::Variable {
-                name: Rc::clone(&self.name),
-            }));
+            *result = Some(Rc::new(semantic::disassembly::Variable::new(
+                Rc::clone(&self.name),
+            )));
         }
         self.reference()
     }
@@ -247,26 +228,24 @@ pub struct Expr {
 }
 
 impl Expr {
-    pub fn convert(mut self) -> FinalExpr {
-        FinalExpr {
-            rpn: self.rpn.drain(..).map(|x| x.convert()).collect(),
-        }
+    pub fn convert(self) -> FinalExpr {
+        FinalExpr::new(self.rpn.into_iter().map(|x| x.convert()).collect())
     }
 }
 
 pub type FinalExprElement = semantic::disassembly::ExprElement;
 #[derive(Clone, Debug)]
 pub enum ExprElement {
-    Value(Rc<dyn ReadScope>),
+    Value(ReadScope),
     Op(Op),
     OpUnary(OpUnary),
 }
 impl ExprElement {
     pub fn convert(self) -> FinalExprElement {
         match self {
-            ExprElement::Value(x) => FinalExprElement::Value(x.convert()),
-            ExprElement::Op(x) => FinalExprElement::Op(x),
-            ExprElement::OpUnary(x) => FinalExprElement::OpUnary(x),
+            Self::Value(x) => FinalExprElement::Value(x.into()),
+            Self::Op(x) => FinalExprElement::Op(x),
+            Self::OpUnary(x) => FinalExprElement::OpUnary(x),
         }
     }
 }
@@ -274,28 +253,30 @@ impl ExprElement {
 pub type FinalGlobalSet = semantic::disassembly::GlobalSet;
 #[derive(Clone, Debug)]
 pub struct GlobalSet {
+    //pub src: InputSource,
     pub address: AddrScope,
-    pub context: Rc<Varnode>, //context only
+    pub context: GlobalReference<Context>,
 }
 impl GlobalSet {
     pub fn convert(self) -> FinalGlobalSet {
-        let address = self.address.convert();
-        let context = Rc::clone(&self.context);
-        FinalGlobalSet { address, context }
+        //let src = self.src;
+        let address = self.address.into();
+        let context = self.context.convert_reference();
+        FinalGlobalSet::new(address, context)
     }
 }
 
 pub type FinalAssignment = semantic::disassembly::Assignment;
 #[derive(Clone, Debug)]
 pub struct Assignment {
-    pub left: Rc<dyn WriteScope>,
+    pub left: WriteScope,
     pub right: Expr,
 }
 impl Assignment {
     pub fn convert(self) -> FinalAssignment {
-        let left = self.left.convert();
+        let left = self.left.into();
         let right = self.right.convert();
-        FinalAssignment { left, right }
+        FinalAssignment::new(left, right)
     }
 }
 
@@ -330,47 +311,78 @@ impl Disassembly {
     pub fn variable(&self, name: &str) -> Option<&Rc<Variable>> {
         self.vars.get(name)
     }
-    pub fn convert(mut self) -> FinalDisassembly {
-        let vars = self
+    pub fn convert(self) -> FinalDisassembly {
+        let vars = self.vars.values().map(|var| var.convert()).collect();
+        let assertations: Box<[_]> =
+            self.assertations.into_iter().map(|x| x.convert()).collect();
+        FinalDisassembly { vars, assertations }
+    }
+}
+
+pub trait WalkerDisassembly<Break = ()> {
+    fn disassembly(
+        &mut self,
+        disassembly: &Disassembly,
+    ) -> ControlFlow<Break, ()> {
+        disassembly
             .vars
+            .values()
+            .try_for_each(|var| self.declare_variable(var))?;
+        disassembly
+            .assertations
             .iter()
-            .map(|(name, var)| (Rc::clone(name), var.convert()))
-            .collect();
-        let assertations: Vec<_> =
-            self.assertations.drain(..).map(|x| x.convert()).collect();
-        //TODO can pre-disassembly call global-set?
-        //TODO disassembly need to be separated between before and after pattern
-        //match but for now it is just a flag that make everything before or
-        //after if there is an inst_next on the execution.
-        let pos_match = assertations.iter().any(|asser| match asser {
-            semantic::disassembly::Assertation::Assignment(
-                semantic::disassembly::Assignment { left: _, right },
-            ) => right.rpn.iter().any(|ele| match ele {
-                semantic::disassembly::ExprElement::Value(
-                    semantic::disassembly::ReadScope::Assembly(ass),
-                ) => matches!(
-                    &ass.assembly_type,
-                    semantic::assembly::AssemblyType::Next(_)
-                ),
-                _ => false,
-            }),
-            semantic::disassembly::Assertation::GlobalSet(
-                semantic::disassembly::GlobalSet {
-                    address,
-                    context: _,
-                },
-            ) => match address {
-                semantic::disassembly::AddrScope::Assembly(ass) => matches!(
-                    &ass.assembly_type,
-                    semantic::assembly::AssemblyType::Next(_)
-                ),
-                _ => false,
-            },
-        });
-        FinalDisassembly {
-            pos: pos_match,
-            vars,
-            assertations,
+            .try_for_each(|ass| self.assertation(ass))
+    }
+    fn declare_variable(
+        &mut self,
+        _var: &Rc<Variable>,
+    ) -> ControlFlow<Break, ()> {
+        ControlFlow::Continue(())
+    }
+    fn assertation(&mut self, ass: &Assertation) -> ControlFlow<Break, ()> {
+        match ass {
+            Assertation::GlobalSet(gs) => self.global_set(gs),
+            Assertation::Assignment(ass) => self.assignment(ass),
         }
+    }
+    fn global_set(&mut self, global_set: &GlobalSet) -> ControlFlow<Break, ()> {
+        self.global_set_address(&global_set.address)?;
+        self.global_set_context(&global_set.context)
+    }
+    fn assignment(
+        &mut self,
+        assignment: &Assignment,
+    ) -> ControlFlow<Break, ()> {
+        self.write(&assignment.left)?;
+        self.expr(&assignment.right)
+    }
+    fn write(&mut self, _var: &WriteScope) -> ControlFlow<Break, ()> {
+        ControlFlow::Continue(())
+    }
+    fn global_set_address(
+        &mut self,
+        _address: &AddrScope,
+    ) -> ControlFlow<Break, ()> {
+        ControlFlow::Continue(())
+    }
+    fn global_set_context(
+        &mut self,
+        _context: &GlobalReference<Context>,
+    ) -> ControlFlow<Break, ()> {
+        ControlFlow::Continue(())
+    }
+    fn expr(&mut self, expr: &Expr) -> ControlFlow<Break, ()> {
+        expr.rpn.iter().try_for_each(|ele| self.element(ele))
+    }
+    fn element(&mut self, element: &ExprElement) -> ControlFlow<Break, ()> {
+        match element {
+            ExprElement::Value(value) => self.read(value),
+            ExprElement::Op(_) | ExprElement::OpUnary(_) => {
+                ControlFlow::Continue(())
+            }
+        }
+    }
+    fn read(&mut self, _value: &ReadScope) -> ControlFlow<Break, ()> {
+        ControlFlow::Continue(())
     }
 }

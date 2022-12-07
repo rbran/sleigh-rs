@@ -1,10 +1,9 @@
-use crate::semantic::inner::FieldSize;
-use std::rc::Rc;
-
 use thiserror::Error;
 
 use crate::base::NonZeroTypeU;
 use crate::InputSource;
+
+use super::GlobalElement;
 
 #[derive(Clone, Debug, Error)]
 pub enum SpaceError {
@@ -14,49 +13,72 @@ pub enum SpaceError {
 
 #[derive(Clone, Debug)]
 pub struct Space {
-    pub name: Rc<str>,
+    pub location: InputSource,
     pub space_type: SpaceType,
+    pub wordsize: NonZeroTypeU,
+    pub addr_size: NonZeroTypeU,
+    //pub(crate) registers: ..,
 }
 impl Space {
-    pub fn memory(&self) -> &Memory {
-        match &self.space_type {
-            SpaceType::Ram(mem)
-            | SpaceType::Rom(mem)
-            | SpaceType::Register(mem) => &mem,
+    pub(crate) fn new(
+        src: InputSource,
+        space_type: SpaceType,
+        word_bytes: NonZeroTypeU,
+        addr_bytes: NonZeroTypeU,
+    ) -> Self {
+        Self {
+            location: src,
+            space_type,
+            wordsize: word_bytes,
+            addr_size: addr_bytes,
+        }
+    }
+    pub fn can_write(&self) -> bool {
+        self.space_type.can_write()
+    }
+    pub fn space_type(&self) -> SpaceType {
+        self.space_type
+    }
+    ///wordsize len in bytes, AKA number of bytes that each address store,
+    ///usually memory store only a u8 for each address, but kinds of memory
+    ///can store more that one byte for each address.
+    pub fn word_bytes(&self) -> NonZeroTypeU {
+        self.wordsize
+    }
+    ///address len in bytes, eg 4bytes in 32bits arch and 8bytes in a 64bits
+    pub fn addr_bytes(&self) -> NonZeroTypeU {
+        self.addr_size
+    }
+    pub fn src(&self) -> &InputSource {
+        &self.location
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum SpaceType {
+    Ram,
+    Rom,
+    Register,
+}
+
+impl SpaceType {
+    pub fn can_write(&self) -> bool {
+        match self {
+            SpaceType::Rom => false,
+            SpaceType::Ram |
+            SpaceType::Register => true,
         }
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum SpaceType {
-    Ram(Memory),
-    Rom(Memory),
-    Register(Memory),
-}
-
-impl SpaceType {
-    pub fn can_read(&self) -> bool {
-        matches!(self, Self::Ram(_) | Self::Rom(_) | Self::Register(_))
-    }
-    pub fn can_write(&self) -> bool {
-        matches!(self, Self::Ram(_) | Self::Register(_))
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Memory {
-    //num of bytes for the wordsize
-    pub wordsize: NonZeroTypeU,
-    //num of bytes for the address size
-    pub addr_size: NonZeroTypeU,
-    //pub(crate) registers: RefCell<Vec<Rc<Register>>>,
-}
-
-impl Memory {
-    pub fn addr_len(&self) -> NonZeroTypeU {
-        self.addr_size
-    }
-    pub fn addr_size(&self) -> FieldSize {
-        FieldSize::new_bytes(self.addr_size)
+impl GlobalElement<Space> {
+    pub fn new_space(
+        name: &str,
+        src: InputSource,
+        space_type: SpaceType,
+        word_size: NonZeroTypeU,
+        addr_size: NonZeroTypeU,
+    ) -> Self {
+        Self::new_from(name, Space::new(src, space_type, word_size, addr_size))
     }
 }

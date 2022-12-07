@@ -6,13 +6,8 @@ use nom::sequence::{pair, preceded, tuple};
 use nom::IResult;
 
 use crate::base::{empty_space0, empty_space1, ident, number_unsig, IntTypeU};
+use crate::semantic::space::SpaceType;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub enum SpaceType {
-    Ram,
-    Rom,
-    Register,
-}
 impl SpaceType {
     fn parse(input: &str) -> IResult<&str, SpaceType> {
         alt((

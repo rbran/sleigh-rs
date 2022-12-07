@@ -1,8 +1,8 @@
-use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use super::assembly::Assembly;
-use super::varnode::Varnode;
+use super::token::TokenField;
+use super::varnode::{Bitrange, Context, Varnode};
+use super::{GlobalReference, InstNext, InstStart};
 use thiserror::Error;
 
 use crate::{from_error, InputSource};
@@ -49,24 +49,32 @@ from_error!(PcodeMacroErrorSub, ExecutionError, Execution);
 
 #[derive(Clone, Debug)]
 pub struct Parameter {
-    name: Rc<str>,
+    pub name: Rc<str>,
     //TODO
 }
 impl Parameter {
-    pub fn new(name: Rc<str>) -> Self {
-        Parameter { name }
+    pub fn new(name: &str) -> Self {
+        Parameter {
+            name: Rc::from(name),
+        }
     }
 }
 
 #[derive(Clone, Debug)]
 pub enum ReadScope {
-    Varnode(Rc<Varnode>),
-    Assembly(Rc<Assembly>),
+    Varnode(GlobalReference<Varnode>),
+    Context(GlobalReference<Context>),
+    Bitrange(GlobalReference<Bitrange>),
+    TokenField(GlobalReference<TokenField>),
+    InstStart(GlobalReference<InstStart>),
+    InstNext(GlobalReference<InstNext>),
     Parameter(Rc<Parameter>),
 }
 #[derive(Clone, Debug)]
 pub enum WriteScope {
-    Varnode(Rc<Varnode>),
+    Varnode(GlobalReference<Varnode>),
+    Context(GlobalReference<Context>),
+    Bitrange(GlobalReference<Bitrange>),
     Parameter(Rc<Parameter>),
 }
 
@@ -78,10 +86,19 @@ pub struct PcodeMacroInstance {
     pub parent: Weak<PcodeMacro>,
 }
 
+impl PcodeMacroInstance {
+    pub fn new(
+        execution: Execution,
+        //me: Weak<Self>,
+        parent: Weak<PcodeMacro>,
+    ) -> Self {
+        Self { execution, parent }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PcodeMacro {
-    pub name: Rc<str>,
-    pub instances: RefCell<Vec<Rc<PcodeMacroInstance>>>,
+    instances: Box<[Rc<PcodeMacroInstance>]>,
     //TODO use Parameter and not Variable
     //TODO but first imple dyn Read/Write Scope for final Execution
     //pub params: RefCell<HashMap<Rc<str>, Rc<Variable>>>,
@@ -91,10 +108,10 @@ pub struct PcodeMacro {
 
 //use crate::processor;
 impl PcodeMacro {
-    pub fn new_empty(name: Rc<str>) -> Self {
-        PcodeMacro {
-            name,
-            instances: RefCell::default(),
-        }
+    pub fn new(instances: Box<[Rc<PcodeMacroInstance>]>) -> Self {
+        Self { instances }
+    }
+    pub fn instances(&self) -> &[Rc<PcodeMacroInstance>] {
+        &self.instances
     }
 }

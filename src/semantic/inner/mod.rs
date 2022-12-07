@@ -7,389 +7,78 @@ pub mod pcode_macro;
 pub mod space;
 pub mod table;
 pub mod token;
-pub mod user_function;
 pub mod varnode;
 pub mod with_block;
 
-use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::ops::{Bound, RangeBounds};
 use std::rc::Rc;
 
-use crate::base::{IntTypeU, NonZeroTypeU};
+use crate::base::IntTypeU;
 use crate::preprocessor::PreProcOutput;
-use crate::semantic::assembly::Assembly;
-use crate::InputSource;
+use crate::syntax::define::TokenFieldAttribute;
 use crate::{
-    syntax, IDENT_EPSILON, IDENT_INSTRUCTION, IDENT_INST_NEXT, IDENT_INST_START,
+    syntax, Space, Token, Varnode, IDENT_EPSILON, IDENT_INSTRUCTION,
+    IDENT_INST_NEXT, IDENT_INST_START,
 };
+use crate::{InputSource, UserFunction};
 
-use self::execution::ExecutionExport;
+pub use self::execution::{FieldAuto, FieldRange, FieldSize, FieldSizeMut};
 pub use self::pattern::{Block, Pattern};
 pub use self::pcode_macro::PcodeMacro;
 pub use self::table::{Constructor, Table};
-use self::user_function::UserFunction;
+use self::token::TokenField;
+use self::varnode::Context;
 use self::with_block::WithBlockCurrent;
 
-pub use super::space::Space;
-pub use super::varnode::Varnode;
-pub use super::{assembly, Endian, Meaning, SemanticError};
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct FieldRange {
-    min: NonZeroTypeU,
-    max: NonZeroTypeU,
-}
-impl FieldRange {
-    fn new(min: NonZeroTypeU, max: Option<NonZeroTypeU>) -> Self {
-        Self {
-            min,
-            max: max.unwrap_or(NonZeroTypeU::new(IntTypeU::MAX).unwrap()),
-        }
-    }
-    fn new_unsize() -> Self {
-        Self::new(1.try_into().unwrap(), None)
-    }
-    fn set_min(self, new_min: NonZeroTypeU) -> Option<Self> {
-        if self.max < new_min {
-            //max is less then the new_min, unable to set this value
-            return None;
-        }
-        let min = self.min.max(new_min);
-        Some(Self { min, max: self.max })
-    }
-    fn set_max(self, new_max: NonZeroTypeU) -> Option<Self> {
-        if self.min > new_max {
-            //unable to set this max value
-            return None;
-        }
-        let max = self.max.min(new_max);
-        Some(Self { min: self.min, max })
-    }
-    fn value(&self) -> Option<NonZeroTypeU> {
-        (self.min == self.max).then_some(self.min)
-    }
-}
-impl RangeBounds<NonZeroTypeU> for FieldRange {
-    fn start_bound(&self) -> Bound<&NonZeroTypeU> {
-        Bound::Included(&self.min)
-    }
-
-    fn end_bound(&self) -> Bound<&NonZeroTypeU> {
-        Bound::Included(&self.max)
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum FieldAuto {
-    None,
-    Min,
-    Value(NonZeroTypeU),
-}
-impl FieldAuto {
-    fn in_range(self, range: &FieldRange) -> Self {
-        match &self {
-            Self::None | Self::Min => self,
-            Self::Value(value) if range.contains(value) => self,
-            Self::Value(_) => Self::None,
-        }
-    }
-}
-
-pub const FIELD_SIZE_BOOL: FieldSize = FieldSize::Unsized {
-    range: FieldRange {
-        min: unsafe { NonZeroTypeU::new_unchecked(1) },
-        max: unsafe { NonZeroTypeU::new_unchecked(IntTypeU::MAX) },
-    },
-    possible: FieldAuto::Min,
+use super::varnode::Bitrange;
+pub use super::{Endian, SemanticError};
+use super::{
+    Epsilon, GlobalAnonReference, GlobalElement, GlobalReference, InstNext,
+    InstStart, PrintBase, PrintFmt,
 };
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum FieldSize {
-    Unsized {
-        range: FieldRange,
-        possible: FieldAuto,
-    },
-    Value(NonZeroTypeU),
+
+#[derive(Copy, Clone, Debug)]
+pub struct PrintFlags {
+    ///flag if signed was set
+    pub signed_set: bool,
+    ///flag if hex or dec was set
+    pub base: Option<PrintBase>,
 }
-impl FieldSize {
-    pub fn new_bits(bits: NonZeroTypeU) -> Self {
-        Self::Value(bits)
-    }
-    pub fn new_bytes(bytes: NonZeroTypeU) -> Self {
-        Self::Value(
-            NonZeroTypeU::new(bytes.get().checked_mul(8).unwrap()).unwrap(),
-        )
-    }
-    pub fn new_unsized() -> Self {
-        Self::Unsized {
-            range: FieldRange::new_unsize(),
-            possible: FieldAuto::None,
-        }
-    }
-    pub fn is_undefined(&self) -> bool {
-        matches!(
-            self,
-            Self::Unsized {
-                possible: FieldAuto::None,
-                ..
-            }
-        )
-    }
-    pub fn final_value(&self) -> Option<NonZeroTypeU> {
-        match self {
-            Self::Value(value) => Some(*value),
-            Self::Unsized { .. } => None,
-        }
-    }
-    pub fn is_final(&self) -> bool {
-        self.final_value().is_some()
-    }
-    pub fn update_action<F>(&mut self, mut action: F) -> Option<bool>
-    where
-        F: FnMut(Self) -> Option<Self>,
-    {
-        let new_size = action(*self)?;
-        let changed = *self != new_size;
-        *self = new_size;
-        Some(changed)
-    }
-    pub fn set_final_value(self, final_value: NonZeroTypeU) -> Option<Self> {
-        match self {
-            //if already value, check if value is eq
-            Self::Value(value) => (value == final_value).then_some(self),
-            //if not in range, invalid
-            Self::Unsized { range, .. } if !range.contains(&final_value) => {
-                None
-            }
-            //if in range, valid
-            Self::Unsized { .. } => Some(Self::Value(final_value)),
-        }
-    }
-    pub fn min(&self) -> NonZeroTypeU {
-        match self {
-            Self::Value(value) => *value,
-            Self::Unsized { range, .. } => range.min,
-        }
-    }
-    pub fn set_min(self, min: NonZeroTypeU) -> Option<Self> {
-        match self {
-            Self::Value(value) => (min <= value).then_some(self),
-            Self::Unsized { range, possible } => {
-                let range = range.set_min(min)?;
-                if let Some(value) = range.value() {
-                    return Some(Self::Value(value));
+
+impl PrintFlags {
+    pub fn from_token_att<'a>(
+        src: &InputSource,
+        att: impl Iterator<Item = &'a TokenFieldAttribute>,
+    ) -> Result<Self, SemanticError> {
+        let (mut signed_set, mut base) = (false, None);
+        for att in att {
+            use syntax::define::TokenFieldAttribute::*;
+            match att {
+                Hex if base.is_none() => base = Some(PrintBase::Hex),
+                Dec if base.is_none() => base = Some(PrintBase::Dec),
+                Hex | Dec => {
+                    return Err(SemanticError::TokenFieldAttachDup(src.clone()))
                 }
-                let possible = possible.in_range(&range);
-                Some(Self::Unsized { range, possible })
-            }
-        }
-    }
-    pub fn max(&self) -> NonZeroTypeU {
-        match self {
-            Self::Value(value) => *value,
-            Self::Unsized { range, .. } => range.max,
-        }
-    }
-    pub fn set_max(self, max: NonZeroTypeU) -> Option<Self> {
-        match self {
-            Self::Value(value) => (max >= value).then_some(self),
-            Self::Unsized { range, possible } => {
-                let range = range.set_max(max)?;
-                if let Some(value) = range.value() {
-                    return Some(Self::Value(value));
+                Signed if !signed_set => signed_set = true,
+                Signed => {
+                    return Err(SemanticError::TokenFieldAttDup(src.clone()))
                 }
-                let possible = possible.in_range(&range);
-                Some(Self::Unsized { range, possible })
             }
         }
+        Ok(Self { signed_set, base })
     }
-    pub fn possible_value(&self) -> Option<NonZeroTypeU> {
-        match self {
-            Self::Value(value) => Some(*value),
-            Self::Unsized {
-                possible: FieldAuto::Value(value),
-                ..
-            } => Some(*value),
-            Self::Unsized {
-                possible: FieldAuto::Min,
-                ..
-            } => Some(self.min()),
-            Self::Unsized {
-                possible: FieldAuto::None,
-                ..
-            } => None,
-        }
-    }
-    pub fn possible_min(&self) -> bool {
-        matches!(
-            self,
-            Self::Unsized {
-                possible: FieldAuto::Min,
-                ..
-            }
-        )
-    }
-    pub fn set_possible_min(mut self) -> Self {
-        match self {
-            Self::Value(_)
-            | Self::Unsized {
-                possible: FieldAuto::Value(_),
-                ..
-            } => self,
-            Self::Unsized {
-                ref mut possible, ..
-            } => {
-                *possible = FieldAuto::Min;
-                self
-            }
-        }
-    }
-    pub fn set_possible_value(
-        mut self,
-        pos_value: NonZeroTypeU,
-    ) -> Option<Self> {
-        match self {
-            Self::Unsized { range, .. } if !range.contains(&pos_value) => None,
-            Self::Unsized {
-                ref mut possible, ..
-            } => {
-                *possible = FieldAuto::Value(pos_value);
-                Some(self)
-            }
-            Self::Value(value) => (value == pos_value).then_some(self),
-        }
-    }
-    pub fn intersection(self, other: Self) -> Option<Self> {
-        Self::new_unsized()
-            .set_min(self.min().max(other.min()))?
-            .set_max(self.max().min(other.max()))
-    }
-
-    pub fn all_same_size(sizes: &mut [FieldSizeCell]) -> Option<bool> {
-        //find the result size
-        let new_size = sizes
-            .iter()
-            .try_fold(FieldSize::new_unsized(), |acc, size| {
-                acc.intersection(size.get())
-            })?;
-        //update all the sizes
-        let modified = sizes.iter_mut().fold(false, |acc, size| {
-            let modified = match (new_size, size.get()) {
-                (x @ FieldSize::Value(_), _) => size.set(x),
-                (_, FieldSize::Value(_)) => unreachable!(),
-                (
-                    FieldSize::Unsized { range, .. },
-                    FieldSize::Unsized { possible, .. },
-                ) => {
-                    let possible = possible.in_range(&range);
-                    size.set(FieldSize::Unsized { range, possible })
-                }
-            };
-            acc | modified
-        });
-        Some(modified)
-    }
-}
-impl Default for FieldSize {
-    fn default() -> Self {
-        Self::new_unsized()
+    pub fn is_set(&self) -> bool {
+        self.signed_set || self.base.is_some()
     }
 }
 
-pub trait FieldSizeMut {
-    fn get(&self) -> FieldSize;
-    fn set(&mut self, size: FieldSize) -> bool;
-    fn update_action(
-        &mut self,
-        mut action: impl FnMut(FieldSize) -> Option<FieldSize>,
-    ) -> Option<bool> {
-        let new_size = action(self.get())?;
-        Some(self.set(new_size))
-    }
-}
-
-impl<'a> FieldSizeMut for &'a mut FieldSize {
-    fn get(&self) -> FieldSize {
-        **self
-    }
-    fn set(&mut self, size: FieldSize) -> bool {
-        let old = std::mem::replace(*self, size);
-        old != **self
-    }
-}
-impl<'a> FieldSizeMut for &'a Cell<FieldSize> {
-    fn get(&self) -> FieldSize {
-        (*self).get()
-    }
-    fn set(&mut self, size: FieldSize) -> bool {
-        let old = self.replace(size);
-        old != self.get()
-    }
-}
-impl FieldSizeMut for FieldSize {
-    fn get(&self) -> FieldSize {
-        *self
-    }
-    fn set(&mut self, size: FieldSize) -> bool {
-        if *self != size {
-            unreachable!("Try to modify FieldSizeMut owned");
-        }
-        false
-    }
-}
-
-pub enum FieldSizeCell<'a> {
-    Borrow(&'a mut FieldSize),
-    Cell(&'a Cell<FieldSize>),
-    ReturnType(&'a RefCell<Option<ExecutionExport>>),
-    ///Values that don't need to be updated, eg Varnodes
-    Owned(FieldSize),
-}
-impl<'a> From<&'a mut FieldSize> for FieldSizeCell<'a> {
-    fn from(value: &'a mut FieldSize) -> Self {
-        Self::Borrow(value)
-    }
-}
-impl<'a> From<&'a Cell<FieldSize>> for FieldSizeCell<'a> {
-    fn from(value: &'a Cell<FieldSize>) -> Self {
-        Self::Cell(value)
-    }
-}
-impl<'a> From<&'a RefCell<Option<ExecutionExport>>> for FieldSizeCell<'a> {
-    fn from(value: &'a RefCell<Option<ExecutionExport>>) -> Self {
-        Self::ReturnType(value)
-    }
-}
-impl<'a> From<FieldSize> for FieldSizeCell<'a> {
-    fn from(value: FieldSize) -> Self {
-        Self::Owned(value)
-    }
-}
-impl<'a> FieldSizeMut for FieldSizeCell<'a> {
-    fn get(&self) -> FieldSize {
-        match self {
-            Self::Borrow(x) => x.get(),
-            Self::Cell(x) => x.get(),
-            Self::ReturnType(x) => {
-                *x.borrow().as_ref().unwrap().size().unwrap()
-            }
-            Self::Owned(x) => x.get(),
-        }
-    }
-    fn set(&mut self, size: FieldSize) -> bool {
-        match self {
-            Self::Borrow(x) => x.set(size),
-            Self::Cell(x) => x.set(size),
-            Self::ReturnType(x) => x
-                .borrow_mut()
-                .as_mut()
-                .unwrap()
-                .size_mut()
-                .unwrap()
-                .update_action(|_| Some(size))
-                .unwrap(),
-            Self::Owned(x) => x.set(size),
-        }
+impl From<PrintFlags> for PrintFmt {
+    fn from(flags: PrintFlags) -> Self {
+        //if signed is set, this is signed, otherwise is unsigned
+        let signed = flags.signed_set;
+        //use the set base, if unset, use the default: hex
+        let base = flags.base.unwrap_or(PrintBase::Hex);
+        PrintFmt { signed, base }
     }
 }
 
@@ -484,83 +173,119 @@ impl SolverStatus for SolvedLocation {
     }
 }
 
-//TODO convert this to From trait
-pub trait ConvertScope<T> {
-    fn convert(&self) -> T;
+pub trait GlobalConvert {
+    type FinalType;
+    fn convert(&self) -> Rc<Self::FinalType>;
+}
+
+impl<T: GlobalConvert> GlobalAnonReference<T> {
+    pub fn convert_reference(&self) -> GlobalAnonReference<T::FinalType> {
+        let ele = self.element();
+        let value = ele.convert();
+        GlobalAnonReference {
+            name: Rc::clone(&self.name),
+            value: Rc::downgrade(&value),
+        }
+    }
+}
+impl<T: GlobalConvert> GlobalReference<T> {
+    pub fn convert_reference(&self) -> GlobalReference<T::FinalType> {
+        let ele = self.element();
+        let value = ele.convert();
+        GlobalReference {
+            src: self.src.clone(),
+            name: Rc::clone(&self.name),
+            value: Rc::downgrade(&value),
+        }
+    }
+}
+impl<T: GlobalConvert> GlobalElement<T> {
+    pub fn element_convert(&self) -> GlobalElement<T::FinalType> {
+        GlobalElement::new(
+            Rc::clone(self.name_raw()),
+            Rc::clone(&self.element().convert()),
+        )
+    }
 }
 
 /// All identifiers, this is used to enforce a unique name for each.
 #[derive(Clone, Debug)]
 pub enum GlobalScope {
-    Space(Rc<Space>),
-    Token(Rc<assembly::Token>),
-    Assembly(Rc<assembly::Assembly>),
-    UserFunction(Rc<UserFunction>),
-    Varnode(Rc<Varnode>),
-    PcodeMacro(Rc<PcodeMacro>),
-    Table(Rc<Table>),
+    Space(GlobalElement<Space>),
+    Varnode(GlobalElement<Varnode>),
+    Context(GlobalElement<Context>),
+    Bitrange(GlobalElement<Bitrange>),
+    Token(GlobalElement<Token>),
+    TokenField(GlobalElement<TokenField>),
+    InstStart(GlobalElement<InstStart>),
+    InstNext(GlobalElement<InstNext>),
+    Epsilon(GlobalElement<Epsilon>),
+    UserFunction(GlobalElement<UserFunction>),
+    PcodeMacro(GlobalElement<PcodeMacro>),
+    Table(GlobalElement<Table>),
 }
 
 impl GlobalScope {
-    //TODO Why? replace this by FnMut and remove clone from `unwrap_*`
-    pub fn space_or<T>(&self, err: T) -> Result<Rc<Space>, T> {
+    pub fn name_raw(&self) -> &Rc<str> {
         match self {
-            GlobalScope::Space(x) => Ok(Rc::clone(x)),
-            _ => Err(err),
+            GlobalScope::Space(x) => x.name_raw(),
+            GlobalScope::Token(x) => x.name_raw(),
+            GlobalScope::TokenField(x) => x.name_raw(),
+            GlobalScope::UserFunction(x) => x.name_raw(),
+            GlobalScope::Varnode(x) => x.name_raw(),
+            GlobalScope::PcodeMacro(x) => x.name_raw(),
+            GlobalScope::Table(x) => x.name_raw(),
+            GlobalScope::Context(x) => x.name_raw(),
+            GlobalScope::Bitrange(x) => x.name_raw(),
+            GlobalScope::InstStart(x) => x.name_raw(),
+            GlobalScope::InstNext(x) => x.name_raw(),
+            GlobalScope::Epsilon(x) => x.name_raw(),
         }
     }
-    pub fn varnode_or<T>(&self, err: T) -> Result<Rc<Varnode>, T> {
-        match self {
-            GlobalScope::Varnode(x) => Ok(Rc::clone(x)),
-            _ => Err(err),
-        }
+    pub fn name(&self) -> &str {
+        Rc::as_ref(self.name_raw())
     }
-    pub fn token_field_or<T>(
-        &self,
-        err: T,
-    ) -> Result<Rc<assembly::Assembly>, T> {
-        match self {
-            GlobalScope::Assembly(x) => Ok(Rc::clone(x)),
-            _ => Err(err),
+}
+
+macro_rules! global_scope_something_or {
+    ($type:ident, $var:ident, $name:ident) => {
+        pub fn $name<T>(&self, err: T) -> Result<&GlobalElement<$type>, T> {
+            match self {
+                GlobalScope::$var(x) => Ok(x),
+                _ => Err(err),
+            }
         }
-    }
-    pub fn table_or<T>(&self, err: T) -> Result<Rc<Table>, T> {
-        match self {
-            GlobalScope::Table(x) => Ok(Rc::clone(x)),
-            _ => Err(err),
+    };
+}
+macro_rules! global_scope_something_unwrap {
+    ($type:ident, $var:ident, $name:ident) => {
+        pub fn $name(&self) -> Option<&GlobalElement<$type>> {
+            match self {
+                GlobalScope::$var(x) => Some(x),
+                _ => None,
+            }
         }
-    }
-    pub fn unwrap_table(&self) -> Option<Rc<Table>> {
-        match self {
-            GlobalScope::Table(x) => Some(Rc::clone(x)),
-            _ => None,
-        }
-    }
-    pub fn unwrap_space(&self) -> Option<Rc<Space>> {
-        match self {
-            GlobalScope::Space(x) => Some(Rc::clone(x)),
-            _ => None,
-        }
-    }
-    pub fn unwrap_varnode(&self) -> Option<Rc<Varnode>> {
-        match self {
-            GlobalScope::Varnode(x) => Some(Rc::clone(x)),
-            _ => None,
-        }
-    }
-    pub fn unwrap_assembly(&self) -> Option<Rc<assembly::Assembly>> {
-        match self {
-            GlobalScope::Assembly(x) => Some(Rc::clone(x)),
-            _ => None,
-        }
-    }
+    };
+}
+impl GlobalScope {
+    //TODO implement *_or_else
+    global_scope_something_or!(Space, Space, space_or);
+    global_scope_something_or!(Varnode, Varnode, varnode_or);
+    global_scope_something_or!(Context, Context, context_or);
+    global_scope_something_or!(TokenField, TokenField, token_field_or);
+    global_scope_something_or!(Table, Table, table_or);
+    global_scope_something_unwrap!(Space, Space, unwrap_space);
+    global_scope_something_unwrap!(Varnode, Varnode, unwrap_varnode);
+    global_scope_something_unwrap!(Context, Context, unwrap_context);
+    global_scope_something_unwrap!(TokenField, TokenField, unwrap_token_field);
+    global_scope_something_unwrap!(Table, Table, unwrap_table);
 }
 
 #[derive(Clone, Debug)]
 pub struct Sleigh<'a> {
     root: &'a PreProcOutput,
     /// the default address space
-    pub(crate) default_space: Option<Rc<Space>>,
+    pub(crate) default_space: Option<GlobalElement<Space>>,
 
     //data that will be passed to the final struct
     /// processor endian
@@ -572,12 +297,21 @@ pub struct Sleigh<'a> {
 
     //TODO: HACK: this this is not adequated, it requires that the addr size
     //being deduced some how
-    pub(crate) exec_addr_size: Rc<Cell<FieldSize>>,
+    pub exec_addr_size: Option<FieldSize>,
 }
 
 impl<'a> Sleigh<'a> {
-    pub fn exec_addr_size(&self) -> Rc<Cell<FieldSize>> {
-        Rc::clone(&self.exec_addr_size)
+    pub fn insert_global(
+        &mut self,
+        item: GlobalScope,
+    ) -> Result<(), SemanticError> {
+        self.idents
+            .insert(Rc::clone(&item.name_raw()), item)
+            .map(|_| Err(SemanticError::NameDuplicated))
+            .unwrap_or(Ok(()))
+    }
+    pub fn exec_addr_size(&self) -> Option<&FieldSize> {
+        self.exec_addr_size.as_ref()
     }
     //pub fn exec_addr_size(&self) -> FieldSize {
     //    self.exec_addr_size.get()
@@ -598,8 +332,8 @@ impl<'a> Sleigh<'a> {
     pub fn input_src(&self, src: &'a str) -> InputSource {
         self.root.source_data_start(src).unwrap().clone()
     }
-    pub fn default_space(&self) -> Option<Rc<Space>> {
-        self.default_space.as_ref().map(|x| Rc::clone(x))
+    pub fn default_space(&self) -> Option<&GlobalElement<Space>> {
+        self.default_space.as_ref()
     }
     pub fn get_global<'b>(&'b self, name: &'a str) -> Option<&'b GlobalScope> {
         self.idents.get(name)
@@ -622,17 +356,6 @@ impl<'a> Sleigh<'a> {
             .map(|_| Err(SemanticError::AlignmentMult))
             .unwrap_or(Ok(()))
     }
-    pub fn create_user_function(
-        &mut self,
-        func: syntax::define::UserFunction<'a>,
-    ) -> Result<(), SemanticError> {
-        let src = self.input_src(func.0);
-        let user = UserFunction::new(&func.0, src);
-        self.idents
-            .insert(Rc::clone(user.name()), GlobalScope::UserFunction(user))
-            .map(|_| Err(SemanticError::NameDuplicated))
-            .unwrap_or(Ok(()))
-    }
     fn process(
         &mut self,
         with_block_current: &mut WithBlockCurrent<'a>,
@@ -650,7 +373,7 @@ impl<'a> Sleigh<'a> {
                 Define(UserFunction(x)) => self.create_user_function(x)?,
                 Define(Context(x)) => self.create_context(x)?,
                 Define(Token(x)) => self.create_token(x)?,
-                Attach(x) => self.create_attach(x)?,
+                Attach(x) => self.attach_meaning(x)?,
                 TableConstructor(x) => {
                     self.insert_table_constructor(with_block_current, x)?
                 }
@@ -676,33 +399,36 @@ impl<'a> Sleigh<'a> {
             endian: None,
             alignment: None,
             idents: HashMap::default(),
-            exec_addr_size: Rc::new(Cell::new(FieldSize::new_unsized())),
+            exec_addr_size: None,
         };
         //TODO better default creation
         //insert defaults
-        let def = Assembly::new_start(
-            IDENT_INST_START,
-            Rc::clone(&sleigh.exec_addr_size),
+        let def = GlobalElement::new(
+            Rc::from(IDENT_INST_START),
+            Rc::new(InstStart(())),
         );
         sleigh
             .idents
-            .insert(Rc::clone(def.name()), GlobalScope::Assembly(def));
-        let def = Assembly::new_next(
-            IDENT_INST_NEXT,
-            Rc::clone(&sleigh.exec_addr_size),
+            .insert(Rc::clone(def.name_raw()), GlobalScope::InstStart(def));
+        let def = GlobalElement::new(
+            Rc::from(IDENT_INST_NEXT),
+            Rc::new(InstNext(())),
         );
         sleigh
             .idents
-            .insert(Rc::clone(def.name()), GlobalScope::Assembly(def));
-        let def = Assembly::new_epsilon(IDENT_EPSILON);
+            .insert(Rc::clone(def.name_raw()), GlobalScope::InstNext(def));
+        let def =
+            GlobalElement::new(Rc::from(IDENT_EPSILON), Rc::new(Epsilon(())));
         sleigh
             .idents
-            .insert(Rc::clone(def.name()), GlobalScope::Assembly(def));
-        let name = Rc::from(IDENT_INSTRUCTION);
-        let def = Table::new_empty(name);
+            .insert(Rc::clone(def.name_raw()), GlobalScope::Epsilon(def));
+        let def = GlobalElement::new(
+            Rc::from(IDENT_INSTRUCTION),
+            Table::new_empty(true),
+        );
         sleigh
             .idents
-            .insert(Rc::clone(def.name()), GlobalScope::Table(def));
+            .insert(Rc::clone(def.name_raw()), GlobalScope::Table(def));
 
         sleigh.process(&mut WithBlockCurrent::default(), syntax)?;
 

@@ -1,19 +1,28 @@
+use crate::semantic::inner::execution::FieldSizeIntersectIter;
+use crate::semantic::inner::execution::FieldSizeMutRef;
 use crate::semantic::inner::execution::FinalTruncate;
-use crate::semantic::inner::FieldSizeCell;
-use crate::semantic::inner::FieldSizeMut;
-use crate::semantic::inner::FIELD_SIZE_BOOL;
+use crate::semantic::inner::token::TokenField;
+use crate::semantic::inner::varnode::Context;
+use crate::semantic::inner::Solved;
+use crate::semantic::varnode::Bitrange;
+use crate::semantic::GlobalElement;
+use crate::semantic::GlobalReference;
+use crate::semantic::InstNext;
+use crate::semantic::InstStart;
 use std::rc::Rc;
 
 use crate::base::{IntTypeU, NonZeroTypeU};
 use crate::semantic;
-use crate::semantic::assembly;
 use crate::semantic::execution::{Binary, ExecutionError};
 use crate::semantic::inner::pcode_macro::Parameter;
 use crate::semantic::inner::{disassembly, FieldSize, SolverStatus, Table};
 use crate::{InputSource, Varnode};
 
-use super::ExecutionExport;
-use super::{AddrDereference, Truncate, Unary, UserCall, Variable};
+use super::FieldSizeMutOwned;
+use super::{
+    AddrDereference, ExecutionExport, FieldSizeMut, Truncate, Unary, UserCall,
+    Variable, FIELD_SIZE_BOOL,
+};
 
 pub type FinalExpr = semantic::execution::Expr;
 #[derive(Clone, Debug)]
@@ -79,44 +88,48 @@ impl Expr {
             Expr::Op(_, out_size, _, _, _) => *out_size,
         }
     }
-    pub fn size_mut<'a>(&'a mut self) -> FieldSizeCell<'a> {
+    pub fn size_mut<'a>(&'a mut self) -> Box<dyn FieldSizeMut + 'a> {
         match self {
             Expr::Value(value) => value.size_mut(),
-            Expr::Op(_, out_size, _, _, _) => out_size.into(),
+            Expr::Op(_, out_size, _, _, _) => {
+                Box::new(FieldSizeMutRef::from(out_size))
+            }
         }
     }
     pub fn solve(
         &mut self,
         solved: &mut impl SolverStatus,
     ) -> Result<(), ExecutionError> {
-        let (src, mut out_size, op, mut left, mut right) = match self {
+        let (self_moved, src, mut out_size, op, left, right) = match self {
             Expr::Value(value) => return value.solve(solved),
-            _ => {
+            self_moved @ Expr::Op(_, _, _, _, _) => {
                 //TODO make this less akward and remove the unecessary deref
-                //and recreation of boxes
+                //and recreation of Box's
                 //akwardly move values from self, replacing with a dummy value
-                let mut bureaucracy = Expr::Value(ExprElement::Value(
-                    ExprValue::Int(self.src().clone(), FieldSize::default(), 0),
+                let dummy_src = InputSource {
+                    line: 0,
+                    column: 0,
+                    file: Rc::from(std::path::Path::new("")),
+                };
+                let mut self_tmp = Expr::Value(ExprElement::Value(
+                    ExprValue::Int(dummy_src, FieldSize::default(), 0),
                 ));
-                std::mem::swap(self, &mut bureaucracy);
-                match bureaucracy {
+                std::mem::swap(self_moved, &mut self_tmp);
+                match self_tmp {
                     Expr::Op(src, out_size, op, left, right) => {
-                        (src, out_size, op, left, right)
+                        (self_moved, src, out_size, op, left, right)
                     }
                     _ => unreachable!(),
                 }
             }
         };
 
-        left.solve(solved)?;
-        right.solve(solved)?;
-
         use ExprElement as Ele;
         use ExprValue as Value;
 
         let mut modified = false;
         //TODO make the moves and mut ref more elegant
-        *self = match (*left, op, *right) {
+        *self_moved = match (*left, op, *right) {
             //if two Integer, calculate it and replace self with the result.
             (
                 Expr::Value(Ele::Value(Value::Int(src, _, left))),
@@ -129,9 +142,8 @@ impl Expr {
                     //TODO better error
                     ExecutionError::InvalidExport
                 })?;
-                let value = Value::new_int(src.clone(), value);
                 //replace self with our new value
-                Expr::Value(Ele::Value(value))
+                Expr::Value(Ele::Value(Value::new_int(src, value)))
             }
 
             //convert some kinds of bit_and into bitrange if the value is a an
@@ -179,8 +191,9 @@ impl Expr {
             ) if out_size
                 .final_value()
                 .zip(value.size().final_value())
-                .map(|(out, val)| {
-                    val.get() >= lsb && out.get() == (val.get() - lsb)
+                .map(|(out_bits, val_bits)| (out_bits.get(), val_bits.get()))
+                .map(|(out_bits, val_bits)| {
+                    val_bits >= lsb && out_bits == (val_bits - lsb)
                 })
                 .unwrap_or(false) =>
             {
@@ -194,6 +207,37 @@ impl Expr {
                     Truncate::new(lsb, size),
                     Box::new(value),
                 ))
+            }
+
+            //output and left have the same size, right can have any size
+            (mut left, Binary::Lsl | Binary::Lsr | Binary::Asr, mut right) => {
+                left.solve(solved)?;
+                //NOTE right defaults to 32bits
+                right.solve(solved)?;
+
+                let error = || ExecutionError::VarSize(src.clone());
+                modified |= [
+                    &mut left.size_mut() as &mut dyn FieldSizeMut,
+                    &mut FieldSizeMutRef::from(&mut out_size),
+                ]
+                .all_same_lenght()
+                .ok_or_else(error)?;
+                if out_size.is_undefined() {
+                    solved.iam_not_finished_location(&src, file!(), line!());
+                }
+                Expr::Op(src, out_size, op, Box::new(left), Box::new(right))
+            }
+
+            //left/right/output can have any size, they are all just `0` or `!=0`
+            (mut left, Binary::And | Binary::Xor | Binary::Or, mut right) => {
+                //left/right can have any lenght, so just try to solve the len
+                //if possible, otherwise just ignore it
+                left.solve(&mut Solved::default())?;
+                right.solve(&mut Solved::default())?;
+                if out_size.is_undefined() {
+                    solved.iam_not_finished_location(&src, file!(), line!());
+                }
+                Expr::Op(src, out_size, op, Box::new(left), Box::new(right))
             }
 
             //All sides need to have the same number of bits.
@@ -215,37 +259,27 @@ impl Expr {
                 | Binary::BitOr,
                 mut right,
             ) => {
+                left.solve(solved)?;
+                right.solve(solved)?;
                 let error = || ExecutionError::VarSize(src.clone());
-                modified |= FieldSize::all_same_size(&mut [
-                    (&mut out_size).into(),
-                    left.size_mut(),
-                    right.size_mut(),
-                ])
+                modified |= [
+                    &mut left.size_mut() as &mut dyn FieldSizeMut,
+                    &mut right.size_mut(),
+                    &mut FieldSizeMutRef::from(&mut out_size),
+                ]
+                .all_same_lenght()
                 .ok_or_else(error)?;
-                if out_size.is_undefined() {
-                    solved.iam_not_finished_location(&src, file!(), line!());
+                //TODO is that really right?
+                //if the output have a possible size, make left/right also have
+                if let Some(possible) = out_size.possible_value() {
+                    let new_left = left.size().set_possible_value(possible);
+                    let new_right = right.size().set_possible_value(possible);
+                    if let Some((new_left, new_right)) = new_left.zip(new_right)
+                    {
+                        left.size_mut().set(new_left);
+                        right.size_mut().set(new_right);
+                    }
                 }
-                Expr::Op(src, out_size, op, Box::new(left), Box::new(right))
-            }
-
-            //output is the same size in bits of the left (rotated) element
-            //right (rotated value) can have any size
-            (mut left, Binary::Lsl | Binary::Lsr | Binary::Asr, right) => {
-                let error = || ExecutionError::VarSize(src.clone());
-                modified |= FieldSize::all_same_size(&mut [
-                    (&mut out_size).into(),
-                    left.size_mut(),
-                ])
-                .ok_or_else(error)?;
-                if out_size.is_undefined() {
-                    solved.iam_not_finished_location(&src, file!(), line!());
-                }
-                Expr::Op(src, out_size, op, Box::new(left), Box::new(right))
-            }
-
-            //left and right can have any size, output can have any size because
-            //is always value false/true, 0/1
-            (left, Binary::And | Binary::Xor | Binary::Or, right) => {
                 if out_size.is_undefined() {
                     solved.iam_not_finished_location(&src, file!(), line!());
                 }
@@ -276,13 +310,16 @@ impl Expr {
                 | Binary::SBorrow,
                 mut right,
             ) => {
+                left.solve(solved)?;
+                right.solve(solved)?;
                 //Both sides need to have the same number of bits.
                 //output can have any size because is always 0/1
                 let error = || ExecutionError::VarSize(src.clone());
-                modified |= FieldSize::all_same_size(&mut [
-                    left.size_mut(),
-                    right.size_mut(),
-                ])
+                modified |= [
+                    &mut left.size_mut() as &mut dyn FieldSizeMut,
+                    &mut right.size_mut(),
+                ]
+                .all_same_lenght()
                 .ok_or_else(error)?;
                 if left.size().is_undefined() || right.size().is_undefined() {
                     solved.iam_not_finished_location(&src, file!(), line!());
@@ -312,27 +349,33 @@ pub type FinalReferencedValue = semantic::execution::ReferencedValue;
 #[derive(Clone, Debug)]
 pub enum ReferencedValue {
     //only if translate into varnode
-    Assembly(InputSource, Rc<assembly::Assembly>),
-    //Varnode(InputSource, Rc<Varnode>),
-    Table(InputSource, Rc<Table>),
+    TokenField(GlobalReference<TokenField>),
+    //InstStart(GlobalReference<InstStart>),
+    //InstNext(GlobalReference<InstNext>),
+    //Context(InputSource, Rc<Context>),
+    Table(GlobalReference<Table>),
     //Param(InputSource, Rc<Parameter>),
 }
 
 impl ReferencedValue {
     pub fn src(&self) -> &InputSource {
         match self {
-            Self::Assembly(src, _)
-            //| Self::Varnode(src, _)
-            | Self::Table(src, _) => src,
+            Self::TokenField(x) => x.location(),
+            Self::Table(x) => x.location(),
+            //Self::InstStart(x) => x.location(),
+            //Self::InstNext(x) => x.location(),
         }
     }
     pub fn convert(self) -> FinalReferencedValue {
         match self {
-            Self::Assembly(_, value) => FinalReferencedValue::Assembly(value),
-            //Self::Varnode(_, _value) => todo!(),
-            Self::Table(_, value) => {
-                FinalReferencedValue::Table(value.convert())
+            Self::TokenField(value) => {
+                FinalReferencedValue::TokenField(value.convert_reference())
+            }
+            Self::Table(value) => {
+                FinalReferencedValue::Table(value.convert_reference())
             } //Self::Param(_, value) => FinalExprValue::Param(value.convert()),
+            //Self::InstStart(x) => FinalReferencedValue::InstStart(x),
+            //Self::InstNext(x) => FinalReferencedValue::InstNext(x),
         }
     }
 }
@@ -365,7 +408,8 @@ impl ExprElement {
         mut addr: Expr,
     ) -> Self {
         //addr expr, need to be the space_addr size
-        addr.size_mut().set(deref.space.memory().addr_size());
+        addr.size_mut()
+            .set(FieldSize::new_bytes(deref.space.element().addr_bytes()));
         Self::DeReference(src, deref, Box::new(addr))
     }
     pub fn new_op(src: InputSource, mut op: Unary, expr: Expr) -> Self {
@@ -397,15 +441,12 @@ impl ExprElement {
         let mut modified = false;
         match self {
             Self::Value(value) => value.solve(solved)?,
-            Self::Reference(
-                src,
-                _size,
-                ReferencedValue::Table(_src, table),
-            ) => {
+            Self::Reference(src, _size, ReferencedValue::Table(table)) => {
                 let _error = || ExecutionError::VarSize(src.clone());
                 //if the table reference is return space references
                 //(like varnode) update the output size with the addr size
-                match table.export().borrow().as_ref().unwrap(/*TODO*/) {
+                match table.element().export().borrow().as_ref().unwrap(/*TODO*/)
+                {
                     ExecutionExport::Reference(_) => (/*TODO*/),
                     ExecutionExport::None
                     | ExecutionExport::Const(_)
@@ -413,9 +454,14 @@ impl ExprElement {
                     | ExecutionExport::Multiple(_) => (/*TODO*/),
                 }
             }
-            Self::Reference(_, _, ReferencedValue::Assembly(_, _)) => {
+            Self::Reference(_, _, ReferencedValue::TokenField(_)) => {
                 (/*TODO*/)
             }
+            //Self::Reference(
+            //    _,
+            //    _,
+            //    ReferencedValue::InstStart(_) | ReferencedValue::InstNext(_),
+            //) => (),
             Self::Truncate(src, Truncate { size, lsb }, value) => {
                 let error = || ExecutionError::VarSize(src.clone());
                 //value min size need to be lsb + size, if size is unknown
@@ -462,12 +508,6 @@ impl ExprElement {
                 input,
             ) => {
                 let error = || ExecutionError::VarSize(src.clone());
-                //the input and output have the same number of bits
-                modified |= FieldSize::all_same_size(&mut [
-                    size.into(),
-                    input.size_mut(),
-                ])
-                .ok_or_else(error)?;
                 //if one can be min size, both can be
                 if size.possible_min() || input.size().possible_min() {
                     let set_min =
@@ -476,7 +516,15 @@ impl ExprElement {
                     modified |=
                         input.size_mut().update_action(set_min).unwrap();
                 }
-                if size.is_undefined() {
+                //the input and output have the same number of bits
+                {
+                    let mut input_size = input.size_mut();
+                    let mut size = FieldSizeMutRef::from(size);
+                    let mut lens: [&mut dyn FieldSizeMut; 2] =
+                        [&mut *input_size, &mut size];
+                    modified |= lens.all_same_lenght().ok_or_else(error)?;
+                }
+                if input.size().is_undefined() {
                     solved.iam_not_finished_location(&src, file!(), line!());
                 }
                 input.solve(solved)?;
@@ -630,20 +678,24 @@ impl ExprElement {
                 Box::new(param0.convert()),
                 param1.map(|param| param.convert()).map(Box::new),
             ),
-            Self::CPool(_, mut params) => FinalExprElement::CPool(
-                params.drain(..).map(|x| x.convert()).collect(),
+            Self::CPool(_, params) => FinalExprElement::CPool(
+                params.into_iter().map(|x| x.convert()).collect(),
             ),
         }
     }
     //return the size of the value with unary ops apply to it
-    pub fn size_mut<'a>(&'a mut self) -> FieldSizeCell<'a> {
+    pub fn size_mut<'a>(&'a mut self) -> Box<dyn FieldSizeMut + 'a> {
         match self {
             Self::Value(value) => value.size_mut(),
-            Self::DeReference(_, deref, _) => (&mut deref.size).into(),
-            Self::Truncate(_, trunc, _) => (&mut trunc.size).into(),
+            Self::DeReference(_, deref, _) => {
+                Box::new(FieldSizeMutRef::from(&mut deref.size))
+            }
+            Self::Truncate(_, trunc, _) => {
+                Box::new(FieldSizeMutRef::from(&mut trunc.size))
+            }
             Self::Reference(_, size, _)
             | Self::Op(_, size, _, _)
-            | Self::UserCall(size, _) => size.into(),
+            | Self::UserCall(size, _) => Box::new(FieldSizeMutRef::from(size)),
             Self::New(_, _, _) => todo!(),
             Self::CPool(_, _) => todo!(),
         }
@@ -667,12 +719,14 @@ pub type FinalExprValue = semantic::execution::ExprValue;
 pub enum ExprValue {
     Int(InputSource, FieldSize, IntTypeU),
     DisVar(InputSource, FieldSize, Rc<disassembly::Variable>),
-    Assembly(InputSource, FieldSize, Rc<assembly::Assembly>),
-    Varnode(InputSource, Rc<Varnode>),
+    TokenField(FieldSize, GlobalReference<TokenField>),
+    InstStart(FieldSize, GlobalReference<InstStart>),
+    InstNext(FieldSize, GlobalReference<InstNext>),
+    Varnode(GlobalReference<Varnode>),
     //context may be extend (like zext and assembly) based on the context
-    Context(InputSource, FieldSize, Rc<Varnode>),
-    BitRange(InputSource, FieldSize, Rc<Varnode>),
-    Table(InputSource, Rc<Table>),
+    Context(FieldSize, GlobalReference<Context>),
+    Bitrange(FieldSize, GlobalReference<Bitrange>),
+    Table(GlobalReference<Table>),
     ExeVar(InputSource, Rc<Variable>),
     Param(InputSource, Rc<Parameter>),
 }
@@ -688,83 +742,110 @@ impl ExprValue {
             .unwrap();
         Self::Int(src, new_size, value)
     }
-    pub fn new_assembly(
+    pub fn new_token_field(
         src: InputSource,
-        value: Rc<assembly::Assembly>,
+        value: &GlobalElement<TokenField>,
     ) -> Self {
-        Self::Assembly(src, value.value_len(), value)
+        Self::TokenField(
+            value.exec_value_len().set_possible_min(),
+            GlobalReference::from_element(value, src),
+        )
     }
-    pub fn new_varnode(src: InputSource, value: Rc<Varnode>) -> Self {
-        match &value.varnode_type {
-            semantic::varnode::VarnodeType::Memory(_) => {
-                Self::Varnode(src, value)
-            }
-            semantic::varnode::VarnodeType::BitRange(x) => {
-                let size = FieldSize::new_unsized()
-                    .set_min(x.value_bits())
-                    .unwrap()
-                    .set_possible_min();
-                Self::BitRange(src, size, value)
-            }
-            semantic::varnode::VarnodeType::Context(x) => {
-                //if context meaning translate into regular varnode
-                if x.attach
-                    .borrow()
-                    .as_ref()
-                    .map(|meaning| meaning.is_variable())
-                    .unwrap_or(false)
-                {
-                    Self::Varnode(src, value)
-                } else {
-                    let size = FieldSize::new_unsized()
-                        .set_min(x.value_bits())
-                        .unwrap()
-                        .set_possible_min();
-                    Self::Context(src, size, value)
-                }
-            }
-        }
+    pub fn new_inst_start(
+        src: InputSource,
+        len: FieldSize,
+        value: &GlobalElement<InstStart>,
+    ) -> Self {
+        Self::InstStart(len, value.reference_from(src))
+    }
+    pub fn new_inst_next(
+        src: InputSource,
+        len: FieldSize,
+        value: &GlobalElement<InstNext>,
+    ) -> Self {
+        Self::InstNext(len, value.reference_from(src))
+    }
+    pub fn new_varnode(
+        src: InputSource,
+        value: &GlobalElement<Varnode>,
+    ) -> Self {
+        Self::Varnode(GlobalReference::from_element(value, src))
+    }
+    pub fn new_context(
+        src: InputSource,
+        value: &GlobalElement<Context>,
+    ) -> Self {
+        Self::Context(
+            value.exec_out_value_bits(),
+            GlobalReference::from_element(value, src),
+        )
+    }
+    pub fn new_bitrange(
+        src: InputSource,
+        value: &GlobalElement<Bitrange>,
+    ) -> Self {
+        let size = FieldSize::new_unsized()
+            .set_possible_min()
+            .set_min(value.range.len_bits())
+            .unwrap()
+            .set_possible_min();
+        Self::Bitrange(size, GlobalReference::from_element(value, src))
     }
     pub fn src(&self) -> &InputSource {
         match self {
             Self::Int(src, _, _)
             | Self::DisVar(src, _, _)
-            | Self::Assembly(src, _, _)
-            | Self::Varnode(src, _)
-            | Self::Context(src, _, _)
-            | Self::BitRange(src, _, _)
-            | Self::Table(src, _)
             | Self::ExeVar(src, _)
             | Self::Param(src, _) => src,
+            Self::TokenField(_, x) => x.location(),
+            Self::Varnode(x) => x.location(),
+            Self::Context(_, x) => x.location(),
+            Self::Bitrange(_, x) => x.location(),
+            Self::Table(x) => x.location(),
+            Self::InstStart(_, x) => x.location(),
+            Self::InstNext(_, x) => x.location(),
         }
     }
-    pub fn size_mut<'a>(&'a mut self) -> FieldSizeCell<'a> {
+    pub fn size_mut<'a>(&'a mut self) -> Box<dyn FieldSizeMut + 'a> {
         match self {
             Self::Int(_, size, _)
             | Self::DisVar(_, size, _)
-            | Self::Context(_, size, _)
-            | Self::BitRange(_, size, _)
-            | Self::Assembly(_, size, _) => size.into(),
-            Self::Varnode(_, var) => {
-                FieldSize::new_bits(var.value_bits()).into()
+            | Self::Context(size, _)
+            | Self::Bitrange(size, _)
+            | Self::InstStart(size, _)
+            | Self::InstNext(size, _)
+            | Self::TokenField(size, _) => {
+                Box::new(FieldSizeMutRef::from(size))
             }
-            Self::Table(_, value) => value.export().into(),
-            Self::ExeVar(_, value) => value.size().into(),
-            Self::Param(_, value) => value.size().into(),
+            Self::Varnode(var) => Box::new(FieldSizeMutOwned::from(
+                FieldSize::new_bytes(var.element().len_bytes),
+            )),
+            Self::Table(value) => Box::new(value.element()),
+            Self::ExeVar(_, value) => Box::new(value.len()),
+            Self::Param(_, value) => Box::new(value.size()),
         }
     }
     pub fn size(&self) -> FieldSize {
         match self {
             Self::Int(_, size, _)
             | Self::DisVar(_, size, _)
-            | Self::Context(_, size, _)
-            | Self::BitRange(_, size, _)
-            | Self::Assembly(_, size, _) => *size,
-            Self::Varnode(_, var) => FieldSize::new_bits(var.value_bits()),
-            Self::Table(_, value) => {
-                *value.export().borrow().as_ref().unwrap().size().unwrap()
+            | Self::Context(size, _)
+            | Self::Bitrange(size, _)
+            | Self::InstStart(size, _)
+            | Self::InstNext(size, _)
+            | Self::TokenField(size, _) => *size,
+            Self::Varnode(var) => {
+                FieldSize::new_bytes(var.element().len_bytes)
             }
-            Self::ExeVar(_, value) => value.size().get(),
+            Self::Table(value) => *value
+                .element()
+                .export()
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .size()
+                .unwrap(),
+            Self::ExeVar(_, value) => value.len().get(),
             Self::Param(_, value) => value.size().get(),
         }
     }
@@ -773,28 +854,62 @@ impl ExprValue {
         solved: &mut impl SolverStatus,
     ) -> Result<(), ExecutionError> {
         match self {
-            //int, context, assembly and bitrange have the possible min, so it
-            //doesn't block the solve loop
-            Self::Int(_, _, _)
-            | Self::DisVar(_, _, _)
-            | Self::Varnode(_, _)
-            | Self::Context(_, _, _)
-            | Self::BitRange(_, _, _)
-            | Self::Param(_, _) => Ok(()),
-            //inst_start/inst_next could be updated externally
-            Self::Assembly(src, size, ass) => {
-                if size
-                    .update_action(|size| size.intersection(ass.value_len()))
-                    .ok_or_else(|| ExecutionError::VarSize(src.clone()))?
-                {
-                    solved.i_did_a_thing();
-                }
-                Ok(())
-            }
+            Self::Varnode(_) | Self::Param(_, _) => (),
             //don't call table solve directly, let the main loop do it
-            Self::Table(_, _) => Ok(()),
-            Self::ExeVar(_, var) => var.solve(solved),
+            Self::Table(_) => (),
+            Self::ExeVar(_, var) => var.solve(solved)?,
+            Self::Int(src, size, _) | Self::DisVar(src, size, _) => {
+                if size.is_undefined() {
+                    solved.iam_not_finished_location(src, file!(), line!())
+                }
+            }
+            Self::TokenField(size, ass) => {
+                if size.is_undefined() {
+                    solved.iam_not_finished_location(
+                        ass.location(),
+                        file!(),
+                        line!(),
+                    );
+                }
+            }
+            Self::Context(size, x) => {
+                if size.is_undefined() {
+                    solved.iam_not_finished_location(
+                        x.location(),
+                        file!(),
+                        line!(),
+                    )
+                }
+            }
+            Self::Bitrange(size, x) => {
+                if size.is_undefined() {
+                    solved.iam_not_finished_location(
+                        x.location(),
+                        file!(),
+                        line!(),
+                    )
+                }
+            }
+            Self::InstStart(size, x) => {
+                if !size.is_final() {
+                    solved.iam_not_finished_location(
+                        x.location(),
+                        file!(),
+                        line!(),
+                    )
+                }
+            }
+            Self::InstNext(size, x) => {
+                if !size.is_final() {
+                    solved.iam_not_finished_location(
+                        x.location(),
+                        file!(),
+                        line!(),
+                    )
+                }
+            }
         }
+        Ok(())
     }
     pub fn convert(self) -> FinalExprValue {
         match self {
@@ -802,14 +917,22 @@ impl ExprValue {
             Self::DisVar(_, _, value) => {
                 FinalExprValue::DisVar(value.convert())
             }
-            Self::Assembly(_, _, value) => FinalExprValue::Assembly(value),
-            Self::Varnode(_, value) => FinalExprValue::Varnode(value),
-            Self::Context(_, _, value) => FinalExprValue::Varnode(value),
-            Self::BitRange(_, _, value) => FinalExprValue::Varnode(value),
-            Self::Table(_, value) => FinalExprValue::Table(value.convert()),
+            Self::TokenField(_, value) => {
+                FinalExprValue::TokenField(value.convert_reference())
+            }
+            Self::Varnode(value) => FinalExprValue::Varnode(value),
+            Self::Context(_, value) => {
+                FinalExprValue::Context(value.convert_reference())
+            }
+            Self::Bitrange(_, value) => FinalExprValue::Bitrange(value),
+            Self::Table(value) => {
+                FinalExprValue::Table(value.convert_reference())
+            }
             Self::ExeVar(_, value) => FinalExprValue::ExeVar(value.convert()),
             //Self::Param(_, value) => FinalExprValue::Param(value.convert()),
             Self::Param(_, value) => FinalExprValue::ExeVar(value.convert()),
+            Self::InstStart(_, x) => FinalExprValue::InstStart(x),
+            Self::InstNext(_, x) => FinalExprValue::InstNext(x),
         }
     }
 }
