@@ -163,7 +163,8 @@ impl<'a> InnerExpr<'a> {
     ) -> IResult<&'a str, Vec<ExprElement<'a>>> {
         let mut rpn = Self::default();
         let (input, _) = rpn.expr(input, safe)?;
-        for ele in rpn.operators.into_iter() {
+        //pop all operators into the output
+        for ele in rpn.operators.into_iter().rev() {
             let ele = match ele {
                 InnerExprOperators::Op(op) => ExprElement::Op(op),
                 InnerExprOperators::OpUnary(op) => ExprElement::OpUnary(op),
