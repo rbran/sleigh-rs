@@ -101,7 +101,7 @@ pub struct PcodeMacro {
     instances: Box<[Rc<PcodeMacroInstance>]>,
     //TODO use Parameter and not Variable
     //TODO but first imple dyn Read/Write Scope for final Execution
-    //pub params: RefCell<HashMap<Rc<str>, Rc<Variable>>>,
+    //pub params: RefCell<IndexMap<Rc<str>, Rc<Variable>>>,
     //pub execution: RefCell<Execution>,
     //TODO
 }

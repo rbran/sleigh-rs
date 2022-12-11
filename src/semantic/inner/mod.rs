@@ -10,7 +10,7 @@ pub mod token;
 pub mod varnode;
 pub mod with_block;
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::rc::Rc;
 
 use crate::base::IntTypeU;
@@ -293,7 +293,7 @@ pub struct Sleigh<'a> {
     /// memory access alignemnt
     pub(crate) alignment: Option<IntTypeU>,
     /// all the unique ident types, such Tables, Macros, Varnodes, etc.
-    pub(crate) idents: HashMap<Rc<str>, GlobalScope>,
+    pub(crate) idents: IndexMap<Rc<str>, GlobalScope>,
 
     //TODO: HACK: this this is not adequated, it requires that the addr size
     //being deduced some how
@@ -398,7 +398,7 @@ impl<'a> Sleigh<'a> {
             default_space: None,
             endian: None,
             alignment: None,
-            idents: HashMap::default(),
+            idents: IndexMap::default(),
             exec_addr_size: None,
         };
         //TODO better default creation

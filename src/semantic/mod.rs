@@ -14,7 +14,7 @@ pub mod varnode;
 // represenatation
 mod inner;
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::fmt::Formatter;
 use std::rc::Rc;
 use std::rc::Weak;
@@ -353,7 +353,7 @@ pub struct Sleigh {
     addr_len_bytes: NonZeroTypeU,
 
     //scope with all the global identifiers
-    pub global_scope: HashMap<Rc<str>, GlobalScope>,
+    pub global_scope: IndexMap<Rc<str>, GlobalScope>,
 }
 
 impl Sleigh {
@@ -541,7 +541,7 @@ impl Sleigh {
 
         let mut tables = vec![];
         let mut pcode = vec![];
-        let mut global_scope: HashMap<Rc<str>, GlobalScope> = inner
+        let mut global_scope: IndexMap<Rc<str>, GlobalScope> = inner
             .idents
             .iter()
             .filter_map(|(k, v)| {

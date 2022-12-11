@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::rc::Rc;
 
 use thiserror::Error;
@@ -296,8 +296,8 @@ impl Block {
 
 #[derive(Clone, Debug)]
 pub struct Execution {
-    pub blocks: HashMap<Rc<str>, Rc<Block>>,
-    pub vars: HashMap<Rc<str>, Rc<Variable>>,
+    pub blocks: IndexMap<Rc<str>, Rc<Block>>,
+    pub vars: IndexMap<Rc<str>, Rc<Variable>>,
 
     //entry_block have no name and is not on self.labels
     pub entry_block: Rc<Block>,
@@ -307,8 +307,8 @@ impl Default for Execution {
     fn default() -> Self {
         let entry_block = Block::new_empty(None);
         Execution {
-            blocks: HashMap::default(),
-            vars: HashMap::default(),
+            blocks: IndexMap::default(),
+            vars: IndexMap::default(),
             entry_block: Rc::new(entry_block),
         }
     }

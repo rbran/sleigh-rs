@@ -4,7 +4,7 @@ pub mod macros;
 use thiserror::Error;
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::fs::File;
 use std::io::Read;
 use std::ops::Range;
@@ -45,18 +45,18 @@ struct ParsedFile {
 }
 
 pub struct Parser {
-    files: HashMap<Rc<Path>, Rc<ParsedFile>>,
+    files: IndexMap<Rc<Path>, Rc<ParsedFile>>,
     root_path: PathBuf,
     //TODO use Rc<str> here and in Block to avoid duplication?
-    defines: HashMap<String, String>,
+    defines: IndexMap<String, String>,
 }
 
 impl Parser {
     pub fn new(root_path: PathBuf) -> Self {
         Self {
-            files: HashMap::default(),
+            files: IndexMap::default(),
             root_path,
-            defines: HashMap::default(),
+            defines: IndexMap::default(),
         }
     }
     pub fn preprocess(

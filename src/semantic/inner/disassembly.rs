@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::ops::ControlFlow;
 use std::rc::{Rc, Weak};
 
@@ -303,7 +303,7 @@ impl Assertation {
 pub type FinalDisassembly = semantic::disassembly::Disassembly;
 #[derive(Clone, Debug, Default)]
 pub struct Disassembly {
-    pub vars: HashMap<Rc<str>, Rc<Variable>>,
+    pub vars: IndexMap<Rc<str>, Rc<Variable>>,
     pub assertations: Vec<Assertation>,
 }
 

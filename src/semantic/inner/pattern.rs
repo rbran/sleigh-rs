@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::convert::TryFrom;
 use std::ops::ControlFlow;
 
@@ -44,8 +44,7 @@ impl PatternConstraint {
             //Some(false) means `a`/`b` are identical.
             //Some(true) means `b` is fully contained in `a`
             .try_fold(false, |acc, (a, b)| match (*a, *b) {
-                (false, false) |
-                (true, true) => Some(acc),
+                (false, false) | (true, true) => Some(acc),
                 (true, false) => Some(true),
                 (false, true) => None,
             })
@@ -241,12 +240,12 @@ fn is_len_finished(len: &Option<ConstructorPatternLen>) -> bool {
         None => false,
     }
 }
-struct FindValues(HashMap<*const TokenField, GlobalReference<TokenField>>);
+struct FindValues(IndexMap<*const TokenField, GlobalReference<TokenField>>);
 impl FindValues {
     fn search<'a>(
         verifications: impl Iterator<Item = &'a Verification>,
-    ) -> HashMap<*const TokenField, GlobalReference<TokenField>> {
-        let mut find = Self(HashMap::new());
+    ) -> IndexMap<*const TokenField, GlobalReference<TokenField>> {
+        let mut find = Self(IndexMap::new());
         for ver in verifications {
             find.verification(ver);
         }
@@ -320,9 +319,9 @@ pub struct Pattern {
     //start, thats because it could be mixed with the `with_block` pattern
     pub src: InputSource,
     pub len: Option<ConstructorPatternLen>,
-    pub tables: HashMap<*const Table, ProducedTable>,
-    pub tokens: HashMap<*const Token, (usize, GlobalAnonReference<Token>)>,
-    pub token_fields: HashMap<*const TokenField, ProducedTokenField>,
+    pub tables: IndexMap<*const Table, ProducedTable>,
+    pub tokens: IndexMap<*const Token, (usize, GlobalAnonReference<Token>)>,
+    pub token_fields: IndexMap<*const TokenField, ProducedTokenField>,
     //products: FieldProducts,
     pub blocks: Vec<Block>,
     ////token fields required by value checking, not produced locally, maybe
@@ -345,9 +344,9 @@ impl Pattern {
         let len = blocks.is_empty().then(|| PatternLen::Defined(0).into());
 
         //make sure the fields are not duplicated
-        let mut token_fields: HashMap<*const TokenField, ProducedTokenField> =
-            HashMap::new();
-        use std::collections::hash_map::Entry::*;
+        let mut token_fields: IndexMap<*const TokenField, ProducedTokenField> =
+            IndexMap::new();
+        use indexmap::map::Entry::*;
         for (k, produced_field) in
             blocks.iter().map(|block| &block.token_fields).flatten()
         {
@@ -364,7 +363,7 @@ impl Pattern {
             }
         }
         //make sure the tables are not duplicated
-        let mut tables: HashMap<*const Table, ProducedTable> = HashMap::new();
+        let mut tables: IndexMap<*const Table, ProducedTable> = IndexMap::new();
         for (k, produced_table) in
             blocks.iter().map(|block| &block.tables).flatten()
         {
@@ -380,7 +379,7 @@ impl Pattern {
                 }
             }
         }
-        let mut tokens = HashMap::new();
+        let mut tokens = IndexMap::new();
         let tokens_iter =
             blocks.iter().map(|block| block.tokens.values()).flatten();
         for (num, token) in tokens_iter {
@@ -404,8 +403,8 @@ impl Pattern {
     //itself
     pub fn unresolved_token_fields(
         &self,
-    ) -> HashMap<*const TokenField, GlobalReference<TokenField>> {
-        let mut all_unresolved = HashMap::new();
+    ) -> IndexMap<*const TokenField, GlobalReference<TokenField>> {
+        let mut all_unresolved = IndexMap::new();
         for (index, block) in self.blocks.iter().enumerate() {
             let mut block_unresolved = block.unresolved_token_fields();
             //remove unresolveds already produced by previous blocks
@@ -541,12 +540,12 @@ pub struct Block {
     //root_len: usize,
 
     //block produces this token this number of times
-    pub tokens: HashMap<*const Token, (usize, GlobalAnonReference<Token>)>,
+    pub tokens: IndexMap<*const Token, (usize, GlobalAnonReference<Token>)>,
     //map to make sure token_fields are produced only once
     //fields extracted, implicitly or explicity, localy or in sub_pattern
-    pub token_fields: HashMap<*const TokenField, ProducedTokenField>,
+    pub token_fields: IndexMap<*const TokenField, ProducedTokenField>,
     //produced tables
-    pub tables: HashMap<*const Table, ProducedTable>,
+    pub tables: IndexMap<*const Table, ProducedTable>,
 
     //verification in the order they are defined
     pub verifications: Vec<Verification>,
@@ -561,8 +560,8 @@ impl Block {
     ) -> Result<Self, PatternError> {
         //convert the verifications and generate the tokens/token_fields that
         //all branches produces.
-        let mut tokens: Option<HashMap<_, (usize, _)>> = None;
-        let mut token_fields: Option<HashMap<_, _>> = None;
+        let mut tokens: Option<IndexMap<_, (usize, _)>> = None;
+        let mut token_fields: Option<IndexMap<_, _>> = None;
         let branches = elements
             //convert into Verifications
             .map(|element| {
@@ -586,11 +585,13 @@ impl Block {
                                 //token/token_fields, so clean/empty it
                                 match &mut tokens {
                                     Some(tokens) => tokens.clear(),
-                                    None => tokens = Some(HashMap::new()),
+                                    None => tokens = Some(IndexMap::new()),
                                 }
                                 match &mut token_fields {
                                     Some(token_fields) => token_fields.clear(),
-                                    None => token_fields = Some(HashMap::new()),
+                                    None => {
+                                        token_fields = Some(IndexMap::new())
+                                    }
                                 }
                                 Ok(Verification::new_table(
                                     this_table, table, src, None,
@@ -613,11 +614,13 @@ impl Block {
                                 //so no token/token_fields, so clean/empty it
                                 match &mut tokens {
                                     Some(tokens) => tokens.clear(),
-                                    None => tokens = Some(HashMap::new()),
+                                    None => tokens = Some(IndexMap::new()),
                                 }
                                 match &mut token_fields {
                                     Some(token_fields) => token_fields.clear(),
-                                    None => token_fields = Some(HashMap::new()),
+                                    None => {
+                                        token_fields = Some(IndexMap::new())
+                                    }
                                 }
                             }
                             Verification::TokenFieldCheck { field, .. } => {
@@ -632,7 +635,7 @@ impl Block {
                                         })
                                     }
                                     None => {
-                                        tokens = Some(HashMap::from([(
+                                        tokens = Some(IndexMap::from([(
                                             token.element_ptr(),
                                             (1, token.reference()),
                                         )]))
@@ -641,7 +644,9 @@ impl Block {
                                 //to token_fields are produced, clean/empty it
                                 match &mut token_fields {
                                     Some(token_fields) => token_fields.clear(),
-                                    None => token_fields = Some(HashMap::new()),
+                                    None => {
+                                        token_fields = Some(IndexMap::new())
+                                    }
                                 }
                             }
                             Verification::SubPattern { .. } => {
@@ -695,16 +700,16 @@ impl Block {
         //all tables produced should be included on the final tables list,
         //but mark always=true only tables produced in all branches
         let mut tables_iter = branches.iter();
-        let mut tables: HashMap<*const Table, ProducedTable> =
+        let mut tables: IndexMap<*const Table, ProducedTable> =
             match tables_iter.next().expect("LOGIC_ERROR: empty OR pattern") {
                 //no tables in branch/no_branch
                 Verification::ContextCheck { .. }
-                | Verification::TokenFieldCheck { .. } => HashMap::new(),
+                | Verification::TokenFieldCheck { .. } => IndexMap::new(),
                 //branch produces only one table, add this table
                 Verification::TableBuild {
                     produced_table,
                     verification: _,
-                } => HashMap::from([(
+                } => IndexMap::from([(
                     produced_table.table.element_ptr(),
                     produced_table.clone(),
                 )]),
@@ -758,7 +763,7 @@ impl Block {
                     //mark all other tables as not always produce
                     tables
                         .iter_mut()
-                        .filter(|(k, _v)| !pattern.tables.contains_key(k))
+                        .filter(|(k, _v)| !pattern.tables.contains_key(*k))
                         .for_each(|(_k, v)| v.always = false);
                 }
             }
@@ -767,15 +772,15 @@ impl Block {
         //tokens that are present in all branches of the or can produce
         //fields,
         let mut tokens_iter = branches.iter();
-        let mut tokens: HashMap<
+        let mut tokens: IndexMap<
             *const Token,
             (usize, GlobalAnonReference<Token>),
         > = match tokens_iter.next().expect("LOGIC_ERROR: empty OR pattern") {
             //no fields exported
             Verification::ContextCheck { .. }
-            | Verification::TableBuild { .. } => HashMap::new(),
+            | Verification::TableBuild { .. } => IndexMap::new(),
             //TODO: sub_pattern export tokens?
-            Verification::SubPattern { .. } => HashMap::new(),
+            Verification::SubPattern { .. } => IndexMap::new(),
             //one fields exported
             Verification::TokenFieldCheck {
                 field,
@@ -784,7 +789,7 @@ impl Block {
             } => {
                 let token_field = field.element();
                 let token = &token_field.token;
-                HashMap::from([(token.element_ptr(), (1, token.reference()))])
+                IndexMap::from([(token.element_ptr(), (1, token.reference()))])
             }
         };
         for verification in tokens_iter {
@@ -816,14 +821,14 @@ impl Block {
         //fields explicitly produced by all branches, are produced by the or
         //pattern
         let mut fields_iter = branches.iter();
-        let mut fields: HashMap<*const TokenField, ProducedTokenField> =
+        let mut fields: IndexMap<*const TokenField, ProducedTokenField> =
             match fields_iter.next().expect("LOGIC_ERROR: empty OR pattern") {
                 //no fields exported
                 Verification::ContextCheck { .. }
                 | Verification::TokenFieldCheck { .. }
-                | Verification::TableBuild { .. } => HashMap::new(),
+                | Verification::TableBuild { .. } => IndexMap::new(),
                 //TODO: sub_pattern export tokens?
-                Verification::SubPattern { .. } => HashMap::new(),
+                Verification::SubPattern { .. } => IndexMap::new(),
                 //one fields exported
             };
         for verification in fields_iter {
@@ -865,20 +870,21 @@ impl Block {
         this_table: *const Table,
     ) -> Result<Self, PatternError> {
         //convert into Verifications, also capturing the explicit fields
-        let mut token_fields = HashMap::new();
+        let mut token_fields = IndexMap::new();
+        use indexmap::map::Entry::*;
         //closure for identation sake
         let mut add_explicit_token_field =
             |token_field: ProducedTokenField| match token_fields
                 .entry(token_field.field.element_ptr())
             {
-                std::collections::hash_map::Entry::Occupied(entry) => {
+                Occupied(entry) => {
                     let field_old: &ProducedTokenField = entry.get();
                     Err(PatternError::MultipleProduction(
                         field_old.field.location().clone(),
                         token_field.field.location().clone(),
                     ))
                 }
-                std::collections::hash_map::Entry::Vacant(entry) => {
+                Vacant(entry) => {
                     entry.insert(token_field);
                     Ok(())
                 }
@@ -995,7 +1001,7 @@ impl Block {
         let token_from_pattern = fields_from_explicit_fields
             .chain(fields_from_verifications)
             .map(|field| field.token.reference());
-        let mut tokens = HashMap::new();
+        let mut tokens = IndexMap::new();
         for token in token_from_pattern {
             tokens
                 .entry(token.element_ptr())
@@ -1066,7 +1072,7 @@ impl Block {
     //itself
     pub fn unresolved_token_fields(
         &self,
-    ) -> HashMap<*const TokenField, GlobalReference<TokenField>> {
+    ) -> IndexMap<*const TokenField, GlobalReference<TokenField>> {
         let mut this_unresolved = FindValues::search(self.verifications.iter());
         //remove all token_fields that can be produced locally
         this_unresolved.retain(|_key, token_field| {

@@ -2,7 +2,7 @@ use crate::semantic::varnode::Bitrange;
 use crate::semantic::GlobalReference;
 use core::cell::Cell;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::rc::{Rc, Weak};
 
 use crate::base::IntTypeU;
@@ -980,8 +980,8 @@ impl ExecutionExport {
 #[derive(Clone, Debug)]
 pub struct Execution {
     src: InputSource,
-    pub blocks: HashMap<Rc<str>, Rc<Block>>,
-    pub vars: HashMap<Rc<str>, Rc<Variable>>,
+    pub blocks: IndexMap<Rc<str>, Rc<Block>>,
+    pub vars: IndexMap<Rc<str>, Rc<Variable>>,
 
     pub return_value: ExecutionExport,
 
@@ -1011,8 +1011,8 @@ impl Execution {
         let entry_block = Rc::new(Block::new_empty(None));
         Execution {
             src: src.clone(),
-            blocks: HashMap::default(),
-            vars: HashMap::default(),
+            blocks: IndexMap::default(),
+            vars: IndexMap::default(),
             return_value: ExecutionExport::default(),
             entry_block,
         }
@@ -1076,15 +1076,15 @@ impl Execution {
         Ok(())
     }
     pub fn convert(mut self) -> FinalExecution {
+        let blocks = std::mem::take(&mut self.blocks);
+        let vars = std::mem::take(&mut self.vars);
         let entry_block = self.entry_block.convert();
-        let blocks = self
-            .blocks
-            .drain()
+        let blocks = blocks
+            .into_iter()
             .map(|(name, block)| (name, block.convert()))
             .collect();
-        let vars = self
-            .vars
-            .drain()
+        let vars = vars
+            .into_iter()
             .map(|(name, var)| (name, var.convert()))
             .collect();
         FinalExecution {
