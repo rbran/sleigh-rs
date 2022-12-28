@@ -65,9 +65,9 @@ impl<'a, 'b> DisassemblyBuilder<'a> for Builder<'a, 'b> {
                     Table(x) => Ok(AddrScope::Table(
                         GlobalReference::from_element(x, src),
                     )),
-                    //InstStart(x) => Ok(AddrScope::InstStart(
-                    //    GlobalReference::from_element(x, src),
-                    //)),
+                    InstStart(x) => Ok(AddrScope::InstStart(
+                        GlobalReference::from_element(x, src),
+                    )),
                     InstNext(x) => Ok(AddrScope::InstNext(
                         GlobalReference::from_element(x, src),
                     )),

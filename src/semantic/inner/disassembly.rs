@@ -162,7 +162,7 @@ pub enum AddrScope {
     Table(GlobalReference<Table>),
     Varnode(GlobalReference<Varnode>),
     //TokenField(GlobalReference<TokenField>),
-    //InstStart(GlobalReference<InstStart>),
+    InstStart(GlobalReference<InstStart>),
     InstNext(GlobalReference<InstNext>),
     Local(Rc<Variable>),
 }
@@ -173,6 +173,7 @@ impl From<AddrScope> for FinalAddrScope {
             AddrScope::Interger(x) => Self::Integer(x),
             AddrScope::Varnode(x) => Self::Varnode(x.clone()),
             //AddrScope::TokenField(x) => Self::TokenField(x.convert_reference()),
+            AddrScope::InstStart(x) => Self::InstStart(x),
             AddrScope::InstNext(x) => Self::InstNext(x),
             AddrScope::Table(x) => Self::Table(x.convert_reference()),
             AddrScope::Local(x) => Self::Local(x.convert()),

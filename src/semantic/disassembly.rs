@@ -70,7 +70,7 @@ pub enum AddrScope {
     Table(GlobalReference<Table>),
     Varnode(GlobalReference<Varnode>),
     //TokenField(GlobalReference<TokenField>),
-    //InstStart(GlobalReference<InstStart>),
+    InstStart(GlobalReference<InstStart>),
     InstNext(GlobalReference<InstNext>),
     Local(Rc<Variable>),
 }

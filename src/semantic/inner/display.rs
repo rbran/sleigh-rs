@@ -84,6 +84,9 @@ fn get_display_ref<'a>(
                 Table(x) => Ok(DisplayElement::Table(
                     GlobalReference::from_element(x, src),
                 )),
+                Context(x) => Ok(DisplayElement::Context(
+                    GlobalReference::from_element(x, src),
+                )),
                 _ => Err(DisplayError::InvalidRef(src)),
             }
         })
