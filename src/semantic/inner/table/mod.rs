@@ -1,4 +1,3 @@
-pub mod disassembly;
 pub mod execution;
 
 use std::cell::{Cell, RefCell};
@@ -10,7 +9,7 @@ use crate::semantic::{self, GlobalElement, GlobalReference, TableError};
 use crate::syntax::block;
 use crate::{InputSource, PatternLen};
 
-use super::disassembly::Disassembly;
+use super::disassembly::{self, Disassembly};
 use super::display::Display;
 use super::execution::ExecutionExport;
 use super::execution::{Execution, ExecutionBuilder};
@@ -508,11 +507,16 @@ impl<'a> Sleigh<'a> {
             },
         )?;
 
-        let disassembly =
+        let disassembly_raw =
             with_block_current.disassembly(constructor.dissasembly);
-        let disassembly = disassembly
-            .map(|disassembly| {
-                self.table_disassembly(&mut pattern, disassembly)
+        let disassembly = disassembly_raw
+            .map(|disassembly_raw| {
+                disassembly::Builder::new(
+                    self,
+                    &mut pattern,
+                    Disassembly::default(),
+                )
+                .build(disassembly_raw)
             })
             .transpose()
             .to_table(table_pos.clone())?

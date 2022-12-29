@@ -1,5 +1,5 @@
-use std::cell::RefCell;
 use indexmap::IndexMap;
+use std::cell::RefCell;
 use std::ops::ControlFlow;
 use std::rc::{Rc, Weak};
 
@@ -15,7 +15,7 @@ use crate::InputSource;
 
 use super::token::TokenField;
 use super::varnode::Context;
-use super::Table;
+use super::{Pattern, Sleigh, Table};
 
 pub trait ExprBuilder<'a> {
     fn read_scope(
@@ -52,21 +52,155 @@ pub trait ExprBuilder<'a> {
     }
 }
 
-pub trait DisassemblyBuilder<'a>: ExprBuilder<'a> {
-    fn insert_assertation(&mut self, ass: Assertation);
+#[derive(Debug)]
+pub struct Builder<'a, 'b> {
+    sleigh: &'b Sleigh<'a>,
+    pattern: &'a mut Pattern,
+    output: Disassembly,
+}
+
+impl<'a, 'b> ExprBuilder<'a> for Builder<'a, 'b> {
+    fn read_scope(
+        &mut self,
+        name: &'b str,
+    ) -> Result<ReadScope, DisassemblyError> {
+        use super::GlobalScope::*;
+        let src = self.sleigh.input_src(name);
+        self.output
+            .vars
+            .get(name)
+            .map(|local| Ok(ReadScope::Local(Rc::clone(local))))
+            .unwrap_or_else(|| {
+                match self
+                    .sleigh
+                    .get_global(name)
+                    .ok_or(DisassemblyError::MissingRef(src.clone()))?
+                {
+                    InstNext(x) => Ok(ReadScope::InstNext(
+                        GlobalReference::from_element(x, src),
+                    )),
+                    InstStart(x) => Ok(ReadScope::InstStart(
+                        GlobalReference::from_element(x, src),
+                    )),
+                    TokenField(x) => {
+                        //check the pattern will produce this field
+                        match self.pattern.add_implicit_token_field(
+                            &GlobalReference::from_element(x, src.clone()),
+                        ) {
+                            Ok(true) => (),
+                            Err(_) | Ok(false) => {
+                                return Err(DisassemblyError::InvalidRef(src))
+                            }
+                        }
+                        Ok(ReadScope::TokenField(
+                            GlobalReference::from_element(x, src),
+                        ))
+                    }
+                    Context(x) => Ok(ReadScope::Context(
+                        GlobalReference::from_element(x, src),
+                    )),
+                    _ => Err(DisassemblyError::InvalidRef(src.clone())),
+                }
+            })
+    }
+}
+
+impl<'a, 'b> Builder<'a, 'b> {
+    pub fn new(
+        sleigh: &'b Sleigh<'a>,
+        pattern: &'a mut Pattern,
+        output: Disassembly,
+    ) -> Self {
+        Self {
+            sleigh,
+            pattern,
+            output,
+        }
+    }
+    fn insert_assertation(&mut self, ass: Assertation) {
+        self.output.assertations.push(ass)
+    }
     fn addr_scope(
         &mut self,
         name: &'a str,
-    ) -> Result<AddrScope, DisassemblyError>;
+    ) -> Result<AddrScope, DisassemblyError> {
+        use super::GlobalScope::*;
+        //get from local, otherwise get from global
+        let src = self.sleigh.input_src(name);
+        self.output
+            .vars
+            .get(name)
+            .map(|local| Ok(AddrScope::Local(Rc::clone(local))))
+            .unwrap_or_else(|| {
+                match self
+                    .sleigh
+                    .get_global(name)
+                    .ok_or(DisassemblyError::MissingRef(src.clone()))?
+                {
+                    //TODO make sure the pattern will produce this table
+                    Table(x) => Ok(AddrScope::Table(
+                        GlobalReference::from_element(x, src),
+                    )),
+                    InstStart(x) => Ok(AddrScope::InstStart(
+                        GlobalReference::from_element(x, src),
+                    )),
+                    InstNext(x) => Ok(AddrScope::InstNext(
+                        GlobalReference::from_element(x, src),
+                    )),
+                    //TokenField(x) => Ok(AddrScope::TokenField(
+                    //    GlobalReference::from_element(x, src),
+                    //)),
+                    Varnode(x) => Ok(AddrScope::Varnode(
+                        GlobalReference::from_element(x, src),
+                    )),
+                    _ => Err(DisassemblyError::InvalidRef(src)),
+                }
+            })
+    }
     //TODO Write Scope shold never fail, leave the Result just in case
     fn write_scope(
         &mut self,
         name: &'a str,
-    ) -> Result<WriteScope, DisassemblyError>;
+    ) -> Result<WriteScope, DisassemblyError> {
+        //if variable exists, return it
+        let var = self
+            .output
+            .vars
+            .get(name)
+            .map(|var| WriteScope::Local(Rc::clone(var)))
+            .or_else(|| {
+                //check the global context, if context return it
+                //NOTE if other thing with the same name, but is not context,
+                //create the variable to shadow global context
+                let src = self.sleigh.input_src(name);
+                let context = self.sleigh.get_global(name)?.unwrap_context()?;
+                Some(WriteScope::Context(GlobalReference::from_element(
+                    context, src,
+                )))
+            })
+            .unwrap_or_else(|| {
+                //otherwise create the variable
+                let src = self.sleigh.input_src(name);
+                let var = Variable::new(name, src);
+                self.output
+                    .vars
+                    .insert(Rc::clone(var.name()), Rc::clone(&var));
+                WriteScope::Local(var)
+            });
+        Ok(var)
+    }
     fn context(
         &mut self,
         name: &'a str,
-    ) -> Result<GlobalReference<Context>, DisassemblyError>;
+    ) -> Result<GlobalReference<Context>, DisassemblyError> {
+        let src = self.sleigh.input_src(name);
+        let context = self
+            .sleigh
+            .get_global(name)
+            .ok_or(DisassemblyError::MissingRef(src.clone()))?
+            .context_or(DisassemblyError::InvalidRef(src.clone()))?;
+        Ok(GlobalReference::from_element(context, src))
+    }
 
     fn new_globalset(
         &mut self,
@@ -100,10 +234,10 @@ pub trait DisassemblyBuilder<'a>: ExprBuilder<'a> {
             }
         }
     }
-    fn build(
-        &mut self,
+    pub fn build(
+        mut self,
         input: block::disassembly::Disassembly<'a>,
-    ) -> Result<(), DisassemblyError> {
+    ) -> Result<Disassembly, DisassemblyError> {
         input
             .assertations
             .into_iter()
@@ -111,7 +245,8 @@ pub trait DisassemblyBuilder<'a>: ExprBuilder<'a> {
                 self.new_assertation(input)
                     .map(|ass| self.insert_assertation(ass))
             })
-            .collect::<Result<_, _>>()
+            .collect::<Result<_, _>>()?;
+        Ok(self.output)
     }
 }
 
