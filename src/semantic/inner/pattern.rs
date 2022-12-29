@@ -1618,7 +1618,7 @@ impl Verification {
             } => pattern.constrain(constraint),
             Self::TokenFieldCheck {
                 field,
-                op: CmpOp::Eq,
+                op: CmpOp::Eq | CmpOp::Ne,
                 value: _,
             } => {
                 let field = field.element();
