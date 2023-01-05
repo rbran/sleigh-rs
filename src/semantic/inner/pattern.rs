@@ -77,7 +77,7 @@ impl PatternLen {
             ) => {
                 let min = ix + iy;
                 let max = ax + ay;
-                Self::Range { min, max }
+                Self::new_range(min, max)
             }
             (
                 Self::Min(x) | Self::Defined(x) | Self::Range { min: x, .. },
@@ -1175,9 +1175,8 @@ impl Block {
     ) -> Result<(), PatternError> {
         //each branch of the or is represented by each verification
         enum OrLenPossible {
-            Recursive,    //recursive in `OR` is not allowed
-            Unknown,      //at least one branch len is not known
-            DiferenceLen, //all branchs need to have the same len
+            Recursive, //recursive in `OR` is not allowed
+            Unknown,   //at least one branch len is not known
         }
         let mut branch_len_iter = self
             .verifications
@@ -1194,16 +1193,10 @@ impl Block {
         //unwrap never happen because empty pattern default to `Op::And`
         let first = branch_len_iter.next().unwrap();
         let new_len = first.and_then(|first| {
-            branch_len_iter.try_fold(first, |acc, x| {
-                if x? == first {
-                    Ok(acc)
-                } else {
-                    Err(OrLenPossible::DiferenceLen)
-                }
-            })
+            branch_len_iter.try_fold(first, |acc, x| Ok(acc.intersection(x?)))
         });
         match new_len {
-            //all the lens are valid, and equal
+            //all the lens are valid
             Ok(new_len) => {
                 solved.i_did_a_thing();
                 self.len = Some(ConstructorPatternLen::Basic(new_len));
@@ -1216,10 +1209,6 @@ impl Block {
                     file!(),
                     line!(),
                 );
-            }
-            //at least one len is diferent from the others
-            Err(OrLenPossible::DiferenceLen) => {
-                return Err(PatternError::InvalidOrLen(self.location.clone()))
             }
             //at least one len is recursive
             Err(OrLenPossible::Recursive) => {
