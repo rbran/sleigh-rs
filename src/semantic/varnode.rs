@@ -31,7 +31,7 @@ impl Bitrange {
     pub fn range(&self) -> &RangeBits {
         &self.range
     }
-    pub fn varnode(&self) -> &GlobalElement<Varnode>{
+    pub fn varnode(&self) -> &GlobalElement<Varnode> {
         &self.varnode
     }
 }
@@ -67,7 +67,7 @@ impl Context {
     pub fn range(&self) -> &RangeBits {
         &self.range
     }
-    pub fn varnode(&self) -> &GlobalElement<Varnode>{
+    pub fn varnode(&self) -> &GlobalElement<Varnode> {
         &self.varnode
     }
     pub fn noflow(&self) -> bool {
@@ -101,7 +101,7 @@ impl Varnode {
     pub fn len_bytes(&self) -> NonZeroTypeU {
         self.len_bytes
     }
-    pub fn space(&self) -> &GlobalElement<Space>{
+    pub fn space(&self) -> &GlobalElement<Space> {
         &self.space
     }
 }

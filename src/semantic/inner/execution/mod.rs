@@ -1,8 +1,8 @@
 use crate::semantic::varnode::Bitrange;
 use crate::semantic::GlobalReference;
 use core::cell::Cell;
-use std::cell::RefCell;
 use indexmap::IndexMap;
+use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use crate::base::IntTypeU;
@@ -406,9 +406,7 @@ pub enum WriteValue {
 impl WriteValue {
     pub fn size(&self) -> FieldSize {
         match self {
-            Self::Varnode(var) => {
-                FieldSize::new_bytes(var.element().len_bytes)
-            }
+            Self::Varnode(var) => FieldSize::new_bytes(var.element().len_bytes),
             Self::Bitrange(var) => {
                 FieldSize::new_bits(var.element().range.len_bits())
             }

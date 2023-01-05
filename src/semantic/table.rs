@@ -5,7 +5,6 @@ use thiserror::Error;
 use crate::base::NonZeroTypeU;
 use crate::{from_error, InputSource};
 
-use super::disassembly::Disassembly;
 pub use super::disassembly::DisassemblyError;
 pub use super::display::{Display, DisplayError};
 use super::execution::Execution;
@@ -101,7 +100,6 @@ impl ExecutionExport {
 pub struct Constructor {
     pub pattern: Pattern,
     pub display: Display,
-    pub disassembly: Disassembly,
     pub execution: Option<Execution>,
     pub src: InputSource,
 }

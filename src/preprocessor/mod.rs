@@ -3,8 +3,8 @@ pub mod macros;
 
 use thiserror::Error;
 
-use std::cmp::Ordering;
 use indexmap::IndexMap;
+use std::cmp::Ordering;
 use std::fs::File;
 use std::io::Read;
 use std::ops::Range;

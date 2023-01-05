@@ -51,12 +51,40 @@ pub trait ExprBuilder<'a> {
         }
     }
 }
+//block number, but the last bit is if it pre/pos, None means after the
+//whole pattern is matched
+#[derive(Debug)]
+struct BlockCounter(Option<usize>);
+impl BlockCounter {
+    fn disassembly_at(&mut self, pos: bool, num: usize) {
+        let num = num << 1 | usize::from(pos);
+        match &mut self.0 {
+            None => (),
+            Some(current) => *current = num.max(*current),
+        }
+    }
+    fn pre_disassembly_at(&mut self, num: usize) {
+        self.disassembly_at(false, num)
+    }
+    fn pos_disassembly_at(&mut self, num: usize) {
+        self.disassembly_at(true, num)
+    }
+    fn post_match(&mut self) {
+        self.0 = None;
+    }
+}
+impl Default for BlockCounter {
+    fn default() -> Self {
+        //first block on pre disassembly
+        Self(Some(0))
+    }
+}
 
 #[derive(Debug)]
 pub struct Builder<'a, 'b> {
     sleigh: &'b Sleigh<'a>,
     pattern: &'a mut Pattern,
-    output: Disassembly,
+    block_counter: BlockCounter,
 }
 
 impl<'a, 'b> ExprBuilder<'a> for Builder<'a, 'b> {
@@ -66,8 +94,8 @@ impl<'a, 'b> ExprBuilder<'a> for Builder<'a, 'b> {
     ) -> Result<ReadScope, DisassemblyError> {
         use super::GlobalScope::*;
         let src = self.sleigh.input_src(name);
-        self.output
-            .vars
+        self.pattern
+            .disassembly_vars
             .get(name)
             .map(|local| Ok(ReadScope::Local(Rc::clone(local))))
             .unwrap_or_else(|| {
@@ -76,22 +104,25 @@ impl<'a, 'b> ExprBuilder<'a> for Builder<'a, 'b> {
                     .get_global(name)
                     .ok_or(DisassemblyError::MissingRef(src.clone()))?
                 {
-                    InstNext(x) => Ok(ReadScope::InstNext(
-                        GlobalReference::from_element(x, src),
-                    )),
+                    InstNext(x) => {
+                        //inst_next can only be known after the pattern is
+                        //completly match
+                        self.block_counter.post_match();
+                        Ok(ReadScope::InstNext(
+                            GlobalReference::from_element(x, src),
+                        ))
+                    }
                     InstStart(x) => Ok(ReadScope::InstStart(
                         GlobalReference::from_element(x, src),
                     )),
                     TokenField(x) => {
                         //check the pattern will produce this field
-                        match self.pattern.add_implicit_token_field(
+                        let Ok(Some(block_num)) = self.pattern.produce_token_field(
                             &GlobalReference::from_element(x, src.clone()),
-                        ) {
-                            Ok(true) => (),
-                            Err(_) | Ok(false) => {
-                                return Err(DisassemblyError::InvalidRef(src))
-                            }
-                        }
+                        ) else {
+                            return Err(DisassemblyError::InvalidRef(src))
+                        };
+                        self.block_counter.pre_disassembly_at(block_num);
                         Ok(ReadScope::TokenField(
                             GlobalReference::from_element(x, src),
                         ))
@@ -106,19 +137,28 @@ impl<'a, 'b> ExprBuilder<'a> for Builder<'a, 'b> {
 }
 
 impl<'a, 'b> Builder<'a, 'b> {
-    pub fn new(
-        sleigh: &'b Sleigh<'a>,
-        pattern: &'a mut Pattern,
-        output: Disassembly,
-    ) -> Self {
+    pub fn new(sleigh: &'b Sleigh<'a>, pattern: &'a mut Pattern) -> Self {
         Self {
             sleigh,
             pattern,
-            output,
+            block_counter: BlockCounter::default(),
         }
     }
     fn insert_assertation(&mut self, ass: Assertation) {
-        self.output.assertations.push(ass)
+        let ass_pos = match self.block_counter.0 {
+            None => &mut self.pattern.pos,
+            Some(block_counter) => {
+                let block_num = block_counter >> 1;
+                let block_pre = block_counter & 1 == 0;
+                let block = &mut self.pattern.blocks[block_num];
+                if block_pre {
+                    &mut block.pre
+                } else {
+                    &mut block.pos
+                }
+            }
+        };
+        ass_pos.push(ass);
     }
     fn addr_scope(
         &mut self,
@@ -127,8 +167,8 @@ impl<'a, 'b> Builder<'a, 'b> {
         use super::GlobalScope::*;
         //get from local, otherwise get from global
         let src = self.sleigh.input_src(name);
-        self.output
-            .vars
+        self.pattern
+            .disassembly_vars
             .get(name)
             .map(|local| Ok(AddrScope::Local(Rc::clone(local))))
             .unwrap_or_else(|| {
@@ -138,15 +178,25 @@ impl<'a, 'b> Builder<'a, 'b> {
                     .ok_or(DisassemblyError::MissingRef(src.clone()))?
                 {
                     //TODO make sure the pattern will produce this table
-                    Table(x) => Ok(AddrScope::Table(
-                        GlobalReference::from_element(x, src),
-                    )),
+                    Table(x) => {
+                        let table_ref = GlobalReference::from_element(x, src);
+                        //TODO error
+                        let block_num =
+                            self.pattern.is_table_produced(&table_ref).unwrap();
+                        self.block_counter.pos_disassembly_at(block_num);
+                        Ok(AddrScope::Table(table_ref))
+                    }
                     InstStart(x) => Ok(AddrScope::InstStart(
                         GlobalReference::from_element(x, src),
                     )),
-                    InstNext(x) => Ok(AddrScope::InstNext(
-                        GlobalReference::from_element(x, src),
-                    )),
+                    InstNext(x) => {
+                        //inst_next can only be known after the pattern is
+                        //completly match
+                        self.block_counter.post_match();
+                        Ok(AddrScope::InstNext(GlobalReference::from_element(
+                            x, src,
+                        )))
+                    }
                     //TokenField(x) => Ok(AddrScope::TokenField(
                     //    GlobalReference::from_element(x, src),
                     //)),
@@ -164,8 +214,8 @@ impl<'a, 'b> Builder<'a, 'b> {
     ) -> Result<WriteScope, DisassemblyError> {
         //if variable exists, return it
         let var = self
-            .output
-            .vars
+            .pattern
+            .disassembly_vars
             .get(name)
             .map(|var| WriteScope::Local(Rc::clone(var)))
             .or_else(|| {
@@ -182,8 +232,8 @@ impl<'a, 'b> Builder<'a, 'b> {
                 //otherwise create the variable
                 let src = self.sleigh.input_src(name);
                 let var = Variable::new(name, src);
-                self.output
-                    .vars
+                self.pattern
+                    .disassembly_vars
                     .insert(Rc::clone(var.name()), Rc::clone(&var));
                 WriteScope::Local(var)
             });
@@ -237,7 +287,7 @@ impl<'a, 'b> Builder<'a, 'b> {
     pub fn build(
         mut self,
         input: block::disassembly::Disassembly<'a>,
-    ) -> Result<Disassembly, DisassemblyError> {
+    ) -> Result<(), DisassemblyError> {
         input
             .assertations
             .into_iter()
@@ -246,7 +296,7 @@ impl<'a, 'b> Builder<'a, 'b> {
                     .map(|ass| self.insert_assertation(ass))
             })
             .collect::<Result<_, _>>()?;
-        Ok(self.output)
+        Ok(())
     }
 }
 
@@ -436,23 +486,10 @@ impl Assertation {
     }
 }
 
-pub type FinalDisassembly = semantic::disassembly::Disassembly;
 #[derive(Clone, Debug, Default)]
 pub struct Disassembly {
     pub vars: IndexMap<Rc<str>, Rc<Variable>>,
     pub assertations: Vec<Assertation>,
-}
-
-impl Disassembly {
-    pub fn variable(&self, name: &str) -> Option<&Rc<Variable>> {
-        self.vars.get(name)
-    }
-    pub fn convert(self) -> FinalDisassembly {
-        let vars = self.vars.values().map(|var| var.convert()).collect();
-        let assertations: Box<[_]> =
-            self.assertations.into_iter().map(|x| x.convert()).collect();
-        FinalDisassembly { vars, assertations }
-    }
 }
 
 pub trait WalkerDisassembly<Break = ()> {

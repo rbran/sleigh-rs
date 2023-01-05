@@ -1,5 +1,5 @@
-use std::cell::RefCell;
 use indexmap::IndexMap;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use thiserror::Error;

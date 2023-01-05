@@ -9,7 +9,7 @@ use crate::semantic::{self, GlobalElement, GlobalReference, TableError};
 use crate::syntax::block;
 use crate::{InputSource, PatternLen};
 
-use super::disassembly::{self, Disassembly};
+use super::disassembly;
 use super::display::Display;
 use super::execution::ExecutionExport;
 use super::execution::{Execution, ExecutionBuilder};
@@ -394,7 +394,6 @@ pub struct Constructor {
     //pub table: Weak<Table>,
     pub display: Display,
     pub pattern: Pattern,
-    pub disassembly: Disassembly,
     pub execution: Option<Execution>,
     src: InputSource,
 }
@@ -402,14 +401,12 @@ impl Constructor {
     pub fn new(
         display: Display,
         pattern: Pattern,
-        disassembly: Disassembly,
         execution: Option<Execution>,
         src: InputSource,
     ) -> Self {
         Self {
             display,
             pattern,
-            disassembly,
             execution,
             src,
         }
@@ -441,17 +438,15 @@ impl Constructor {
         }
         Ok(())
     }
-    pub fn convert(self) -> semantic::table::Constructor {
+    pub fn convert(self) -> FinalConstructor {
         let display = self.display.into();
-        let pattern = self.pattern.try_into().unwrap();
-        let disassembly = self.disassembly.convert();
+        let pattern = self.pattern.convert();
         let execution = self.execution.map(|x| x.convert());
         let src = self.src;
 
         semantic::table::Constructor {
             pattern,
             display,
-            disassembly,
             execution,
             src,
         }
@@ -460,18 +455,7 @@ impl Constructor {
 
 impl<'a> From<Constructor> for FinalConstructor {
     fn from(value: Constructor) -> Self {
-        let src = value.src;
-        let pattern = value.pattern.into();
-        let display = value.display.into();
-        let execution = value.execution.map(|x| x.convert());
-        let disassembly = value.disassembly.convert();
-        Self {
-            pattern,
-            display,
-            execution,
-            disassembly,
-            src,
-        }
+        value.convert()
     }
 }
 
@@ -494,8 +478,9 @@ impl<'a> Sleigh<'a> {
             .to_table(table_pos.clone())?;
         pattern.unresolved_token_fields().into_iter().try_for_each(
             |(_key, token_field)| {
-                if !pattern
-                    .add_implicit_token_field(&token_field)
+                if pattern
+                    .produce_token_field(&token_field)
+                    .map(|block_num| block_num.is_none())
                     .to_table(table_pos.clone())?
                 {
                     return Err(semantic::table::PatternError::MissingRef(
@@ -509,48 +494,31 @@ impl<'a> Sleigh<'a> {
 
         let disassembly_raw =
             with_block_current.disassembly(constructor.dissasembly);
-        let disassembly = disassembly_raw
-            .map(|disassembly_raw| {
-                disassembly::Builder::new(
-                    self,
-                    &mut pattern,
-                    Disassembly::default(),
-                )
+        if let Some(disassembly_raw) = disassembly_raw {
+            disassembly::Builder::new(self, &mut pattern)
                 .build(disassembly_raw)
-            })
-            .transpose()
-            .to_table(table_pos.clone())?
-            .unwrap_or_default();
+                .to_table(table_pos.clone())?
+        }
 
         let is_root = table.is_root();
-        let display = Display::new(
-            constructor.display,
-            self,
-            &mut pattern,
-            &disassembly,
-            is_root,
-        )
-        .to_table(table_pos.clone())?;
+        let display =
+            Display::new(constructor.display, self, &mut pattern, is_root)
+                .to_table(table_pos.clone())?;
 
         let src_table = self.input_src(constructor.src);
         let execution = constructor
             .execution
             .map(|x| -> Result<Execution, ExecutionError> {
                 let mut execution =
-                    execution::Builder::new(self, &disassembly, &src_table);
+                    execution::Builder::new(self, &mut pattern, &src_table);
                 execution.extend(x)?;
                 Ok(execution.into())
             })
             .transpose()
             .to_table(table_pos.clone())?;
 
-        let constructor = Constructor::new(
-            display,
-            pattern,
-            disassembly,
-            execution,
-            table_pos,
-        );
+        let constructor =
+            Constructor::new(display, pattern, execution, table_pos);
         table.add_constructor(constructor)?;
         Ok(())
     }

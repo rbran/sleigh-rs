@@ -276,9 +276,7 @@ pub trait ExecutionBuilder<'a> {
                                 &varnode.element().space,
                                 varnode.location().clone(),
                             ),
-                            FieldSize::new_bytes(
-                                varnode.element().len_bytes,
-                            ),
+                            FieldSize::new_bytes(varnode.element().len_bytes),
                             varnode.location().clone(),
                         ),
                     )),

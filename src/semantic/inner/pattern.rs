@@ -1,6 +1,7 @@
 use indexmap::IndexMap;
 use std::convert::TryFrom;
 use std::ops::ControlFlow;
+use std::rc::Rc;
 
 use crate::base::IntTypeU;
 use crate::semantic::inner::table::Table;
@@ -12,7 +13,7 @@ use crate::syntax::block;
 use crate::syntax::block::pattern::Op;
 use crate::{semantic, InputSource, PatternLen, Token};
 
-use super::disassembly::{Expr, ExprBuilder, ReadScope};
+use super::disassembly::{Assertation, Expr, ExprBuilder, ReadScope, Variable};
 use super::token::TokenField;
 use super::varnode::Context;
 use super::{Sleigh, SolverStatus};
@@ -313,6 +314,7 @@ impl From<ProducedTokenField> for FinalProducedTokenField {
     }
 }
 
+pub type FinalPattern = semantic::pattern::Pattern;
 #[derive(Clone, Debug)]
 pub struct Pattern {
     //NOTE point after the `is` in the constructor, pattern itself don't have a
@@ -323,7 +325,9 @@ pub struct Pattern {
     pub tokens: IndexMap<*const Token, (usize, GlobalAnonReference<Token>)>,
     pub token_fields: IndexMap<*const TokenField, ProducedTokenField>,
     //products: FieldProducts,
+    pub disassembly_vars: IndexMap<Rc<str>, Rc<Variable>>,
     pub blocks: Vec<Block>,
+    pub pos: Vec<Assertation>,
     ////token fields required by value checking, not produced locally, maybe
     //they could be produced in outer patterns (in case this is sub_pattern)
     //pub unresolved_token_fields: Vec<GlobalReference<TokenField>>,
@@ -397,6 +401,8 @@ impl Pattern {
             tokens,
             token_fields,
             tables,
+            disassembly_vars: IndexMap::new(),
+            pos: vec![],
         })
     }
     //token fields required by value comparisons that this pattern can't produce
@@ -417,25 +423,41 @@ impl Pattern {
         }
         all_unresolved
     }
-    pub fn add_implicit_token_field(
+    pub fn is_table_produced(
+        &self,
+        table: &GlobalReference<Table>,
+    ) -> Option<usize> {
+        self.blocks
+            .iter()
+            .enumerate()
+            .find(|(_, block)| block.is_table_produced(table))
+            .map(|(i, _)| i)
+    }
+    pub fn produce_token_field(
         &mut self,
         token_field: &GlobalReference<TokenField>,
-    ) -> Result<bool, PatternError> {
+    ) -> Result<Option<usize>, PatternError> {
         let ptr = token_field.element_ptr();
         //check if we already produces it, if so do nothing
         if self.token_fields.contains_key(&ptr) {
-            return Ok(true);
+            let block_num = self
+                .blocks
+                .iter()
+                .enumerate()
+                .find(|(_, block)| block.is_token_field_produced(token_field))
+                .map(|(i, _)| i);
+            return Ok(block_num);
         }
         //try all the blocks, find one that is able to produce it, but only one!
-        let mut found = false;
-        for block in self.blocks.iter_mut() {
-            match (found, block.add_implicit_token_field(token_field)) {
+        let mut found = None;
+        for (block_num, block) in self.blocks.iter_mut().enumerate() {
+            match (found, block.produce_token_field(token_field)) {
                 //this block can't add this token_field
                 (_, false) => (),
                 //found the first block that is able to add the token_field
-                (false, true) => found = true,
+                (None, true) => found = Some(block_num),
                 //found the second block that is able to add the token_field
-                (true, true) => {
+                (Some(_), true) => {
                     return Err(PatternError::AmbiguousProduction(
                         token_field.src.clone(),
                     ))
@@ -514,24 +536,30 @@ impl Pattern {
         self.constrain(&mut value);
         PatternConstraint(value)
     }
-}
-
-impl From<Pattern> for semantic::pattern::Pattern {
-    fn from(value: Pattern) -> Self {
+    pub fn convert(self) -> FinalPattern {
         let Pattern {
-            src: _,
             len,
             blocks,
+            disassembly_vars,
+            src: _,
             tokens: _,
             tables: _,
             token_fields: _,
-        } = value;
-        let blocks = blocks.into_iter().map(|block| block.into()).collect();
+            pos,
+        } = self;
         let len = len.unwrap().basic().unwrap();
-        Self::new(blocks, len)
+        let disassembly_vars = disassembly_vars
+            .into_iter()
+            .map(|(_, v)| v.convert())
+            .collect();
+        let blocks =
+            blocks.into_iter().map(|b| b.try_into().unwrap()).collect();
+        let pos = pos.into_iter().map(|b| b.convert()).collect();
+        FinalPattern::new(disassembly_vars, blocks, pos, len)
     }
 }
 
+pub type FinalBlock = crate::semantic::pattern::Block;
 #[derive(Clone, Debug)]
 pub struct Block {
     pub op: Op,
@@ -549,6 +577,8 @@ pub struct Block {
 
     //verification in the order they are defined
     pub verifications: Vec<Verification>,
+    pub pre: Vec<Assertation>,
+    pub pos: Vec<Assertation>,
 }
 
 impl Block {
@@ -861,6 +891,8 @@ impl Block {
             token_fields: token_fields.unwrap_or_default(),
             tables,
             verifications: branches,
+            pre: vec![],
+            pos: vec![],
         })
     }
     fn new_and<'a>(
@@ -1028,6 +1060,8 @@ impl Block {
             tokens,
             verifications,
             tables,
+            pre: vec![],
+            pos: vec![],
         })
     }
     fn new(
@@ -1101,7 +1135,13 @@ impl Block {
     ) -> bool {
         self.token_fields.get(&search_field.element_ptr()).is_some()
     }
-    pub fn add_implicit_token_field(
+    pub fn is_table_produced(
+        &self,
+        token_field: &GlobalReference<Table>,
+    ) -> bool {
+        self.tables.get(&token_field.element_ptr()).is_some()
+    }
+    pub fn produce_token_field(
         &mut self,
         token_field: &GlobalReference<TokenField>,
     ) -> bool {
@@ -1317,34 +1357,7 @@ impl Block {
         }
     }
 }
-#[derive(Default)]
-struct TokenFinder(Option<GlobalElement<Token>>);
-impl PatternWalker for TokenFinder {
-    fn token_field(
-        &mut self,
-        field: &GlobalReference<TokenField>,
-    ) -> ControlFlow<(), ()> {
-        let this_token = &field.element().token;
-        match &mut self.0 {
-            None => {
-                self.0 = Some(this_token.clone());
-                ControlFlow::Continue(())
-            }
-            Some(token)
-                if token.element_ptr() == this_token.element_ptr() =>
-            {
-                ControlFlow::Continue(())
-            }
-            Some(_token)
-                /*if Rc::as_ptr(&_token) != Rc::as_ptr(_this_token)*/ =>
-            {
-                ControlFlow::Break(())
-            }
-        }
-    }
-}
-
-impl From<Block> for semantic::pattern::Block {
+impl From<Block> for FinalBlock {
     fn from(value: Block) -> Self {
         let exported_token_fields =
             value.token_fields.values().map(|prod| &prod.field);
@@ -1375,22 +1388,57 @@ impl From<Block> for semantic::pattern::Block {
             .map(|k| k.try_into().unwrap())
             .collect();
         match value.op {
-            Op::And => Self::And {
+            Op::And => FinalBlock::And {
                 len: value.len.unwrap().basic().unwrap(),
                 token_len: token_len.unwrap_or(0),
                 token_fields,
                 tables,
                 verifications,
+                pre: value.pre.into_iter().map(|x| x.convert()).collect(),
+                pos: value.pos.into_iter().map(|x| x.convert()).collect(),
             },
-            Op::Or => Self::Or {
+            Op::Or => FinalBlock::Or {
                 len: value.len.unwrap().basic().unwrap(),
                 token_fields,
                 tables,
                 branches: verifications,
+                pos: value
+                    .pre
+                    .into_iter()
+                    .chain(value.pos.into_iter())
+                    .map(|x| x.convert())
+                    .collect(),
             },
         }
     }
 }
+#[derive(Default)]
+struct TokenFinder(Option<GlobalElement<Token>>);
+impl PatternWalker for TokenFinder {
+    fn token_field(
+        &mut self,
+        field: &GlobalReference<TokenField>,
+    ) -> ControlFlow<(), ()> {
+        let this_token = &field.element().token;
+        match &mut self.0 {
+            None => {
+                self.0 = Some(this_token.clone());
+                ControlFlow::Continue(())
+            }
+            Some(token)
+                if token.element_ptr() == this_token.element_ptr() =>
+            {
+                ControlFlow::Continue(())
+            }
+            Some(_token)
+                /*if Rc::as_ptr(&_token) != Rc::as_ptr(_this_token)*/ =>
+            {
+                ControlFlow::Break(())
+            }
+        }
+    }
+}
+
 pub type FinalVerification = semantic::pattern::Verification;
 #[derive(Clone, Debug)]
 pub enum Verification {
@@ -1663,7 +1711,7 @@ impl From<Verification> for FinalVerification {
             Verification::SubPattern { location, pattern } => {
                 Self::SubPattern {
                     location,
-                    pattern: pattern.into(),
+                    pattern: pattern.convert(),
                 }
             }
         }

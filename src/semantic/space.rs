@@ -65,8 +65,7 @@ impl SpaceType {
     pub fn can_write(&self) -> bool {
         match self {
             SpaceType::Rom => false,
-            SpaceType::Ram |
-            SpaceType::Register => true,
+            SpaceType::Ram | SpaceType::Register => true,
         }
     }
 }

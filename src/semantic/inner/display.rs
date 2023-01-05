@@ -8,7 +8,6 @@ use crate::semantic::varnode::Varnode;
 use crate::semantic::{GlobalReference, InstNext, InstStart};
 use crate::syntax::block;
 
-use super::disassembly::Disassembly;
 use super::varnode::Context;
 use super::{Pattern, Sleigh};
 
@@ -56,13 +55,13 @@ impl From<Display> for crate::semantic::display::Display {
 fn get_display_ref<'a>(
     sleigh: &Sleigh<'a>,
     pattern: &mut Pattern,
-    disassembly: &Disassembly,
     name: &'a str,
 ) -> Result<DisplayElement, DisplayError> {
     use crate::semantic::inner::GlobalScope::*;
     let src = sleigh.input_src(name);
-    disassembly
-        .variable(name)
+    pattern
+        .disassembly_vars
+        .get(name)
         .map(|var| Ok(DisplayElement::Dissasembly(Rc::clone(var))))
         .unwrap_or_else(|| {
             match sleigh
@@ -70,10 +69,13 @@ fn get_display_ref<'a>(
                 .ok_or(DisplayError::MissingRef(src.clone()))?
             {
                 TokenField(x) => {
-                    //TODO error here
                     let token_field = GlobalReference::from_element(x, src);
-                    if !pattern.add_implicit_token_field(&token_field).unwrap()
+                    if pattern
+                        .produce_token_field(&token_field)
+                        .map(|block_num| block_num.is_none())
+                        .unwrap()
                     {
+                        //TODO error here
                         todo!()
                     }
                     Ok(DisplayElement::TokenField(token_field))
@@ -97,7 +99,6 @@ impl Display {
         display: block::display::Display<'a>,
         sleigh: &Sleigh<'a>,
         pattern: &mut Pattern,
-        disassembly: &Disassembly,
         is_root: bool,
     ) -> Result<Self, DisplayError> {
         let mut out = vec![];
@@ -125,12 +126,9 @@ impl Display {
             match ele {
                 Concat => (),
                 Literal(x) => out.push(DisplayElement::Literal(x.into_owned())),
-                Ident(name) => out.push(get_display_ref(
-                    sleigh,
-                    pattern,
-                    disassembly,
-                    name,
-                )?),
+                Ident(name) => {
+                    out.push(get_display_ref(sleigh, pattern, name)?)
+                }
             }
         }
         Ok(Display(out))

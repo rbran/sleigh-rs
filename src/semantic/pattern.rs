@@ -1,11 +1,12 @@
 use std::ops::ControlFlow;
+use std::rc::Rc;
 
 use thiserror::Error;
 
 use crate::base::IntTypeU;
 use crate::{from_error, InputSource};
 
-use super::disassembly::{DisassemblyError, Expr};
+use super::disassembly::{Assertation, DisassemblyError, Expr, Variable};
 use super::table::Table;
 use super::token::TokenField;
 use super::varnode::Context;
@@ -156,24 +157,33 @@ impl ProducedTokenField {
 #[derive(Clone, Debug)]
 pub struct Pattern {
     len: PatternLen,
-    //products: FieldProducts,
+    disassembly_vars: Box<[Rc<Variable>]>,
     blocks: Box<[Block]>,
+    pos: Box<[Assertation]>,
 }
 
 impl Pattern {
     pub(crate) fn new(
+        disassembly_vars: Box<[Rc<Variable>]>,
         blocks: Box<[Block]>,
+        pos: Box<[Assertation]>,
         len: PatternLen,
-        //products: FieldProducts,
     ) -> Self {
         Self {
+            disassembly_vars,
             blocks,
             len,
-            //products,
+            pos,
         }
     }
     pub fn blocks(&self) -> &[Block] {
         &self.blocks
+    }
+    pub fn disassembly_vars(&self) -> &[Rc<Variable>] {
+        &self.disassembly_vars
+    }
+    pub fn disassembly_pos_match(&self) -> &[Assertation] {
+        &self.pos
     }
     pub fn tables(&self) -> impl Iterator<Item = &ProducedTable> {
         self.blocks().iter().map(Block::tables).flatten()
@@ -187,9 +197,6 @@ impl Pattern {
     pub fn len(&self) -> &PatternLen {
         &self.len
     }
-    //pub fn produced(&self) -> &FieldProducts {
-    //    &self.products
-    //}
 }
 
 #[derive(Clone, Debug)]
@@ -200,13 +207,16 @@ pub enum Block {
         token_fields: Box<[ProducedTokenField]>,
         tables: Box<[ProducedTable]>,
         verifications: Box<[Verification]>,
+        pre: Box<[Assertation]>,
+        pos: Box<[Assertation]>,
     },
-    //TODO or block can export token_fields?
+    //TODO `OR` block can produce token_fields?
     Or {
         len: PatternLen,
         token_fields: Box<[ProducedTokenField]>,
         tables: Box<[ProducedTable]>,
         branches: Box<[Verification]>,
+        pos: Box<[Assertation]>,
     },
 }
 impl Block {

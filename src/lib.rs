@@ -12,7 +12,6 @@ use preprocessor::preprocess;
 
 use syntax::parse_syntax;
 
-pub use semantic::disassembly::Disassembly;
 pub use semantic::meaning::Meaning;
 pub use semantic::pattern::{Block, Pattern, PatternLen};
 pub use semantic::pcode_macro::PcodeMacro;

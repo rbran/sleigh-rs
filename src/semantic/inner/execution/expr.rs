@@ -834,9 +834,7 @@ impl ExprValue {
             | Self::InstStart(size, _)
             | Self::InstNext(size, _)
             | Self::TokenField(size, _) => *size,
-            Self::Varnode(var) => {
-                FieldSize::new_bytes(var.element().len_bytes)
-            }
+            Self::Varnode(var) => FieldSize::new_bytes(var.element().len_bytes),
             Self::Table(value) => *value
                 .element()
                 .export()

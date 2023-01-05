@@ -1,10 +1,9 @@
 use std::rc::Rc;
 
-use crate::semantic::inner::disassembly::Disassembly;
 use crate::semantic::inner::execution::{
     Block, Execution, ExecutionBuilder, ExprValue, WriteValue,
 };
-use crate::semantic::inner::{FieldSize, Sleigh};
+use crate::semantic::inner::{FieldSize, Pattern, Sleigh};
 use crate::semantic::meaning::Meaning;
 use crate::semantic::table::ExecutionError;
 use crate::semantic::GlobalReference;
@@ -16,13 +15,13 @@ pub struct Builder<'a, 'b, 'c> {
     current_block: Rc<Block>,
 
     sleigh: &'b Sleigh<'a>,
-    disassembly: &'c Disassembly,
+    pattern: &'c Pattern,
 }
 
 impl<'a, 'b, 'c> Builder<'a, 'b, 'c> {
     pub fn new(
         sleigh: &'b Sleigh<'a>,
-        disassembly: &'c Disassembly,
+        pattern: &'c Pattern,
         src: &InputSource,
     ) -> Self {
         let execution = Execution::new_empty(src);
@@ -31,7 +30,7 @@ impl<'a, 'b, 'c> Builder<'a, 'b, 'c> {
             execution,
             current_block,
             sleigh,
-            disassembly,
+            pattern,
         }
     }
 }
@@ -61,7 +60,7 @@ impl<'a, 'b, 'c> ExecutionBuilder<'a> for Builder<'a, 'b, 'c> {
             .map(|var| ExprValue::ExeVar(src(), Rc::clone(var)))
             .or_else(|| {
                 //check the disassembly scope
-                self.disassembly.variable(name).map(|var| {
+                self.pattern.disassembly_vars.get(name).map(|var| {
                     let size = FieldSize::new_unsized();
                     size.set_min(1.try_into().unwrap());
                     ExprValue::DisVar(

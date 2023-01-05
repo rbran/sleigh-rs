@@ -226,8 +226,7 @@ impl FieldSize {
         }
     }
     pub fn intersection(self, other: Self) -> Option<Self> {
-        self
-            .set_min(self.min().max(other.min()))?
+        self.set_min(self.min().max(other.min()))?
             .set_max(self.max().min(other.max()))
     }
 }

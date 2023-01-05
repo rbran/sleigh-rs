@@ -177,17 +177,3 @@ pub enum Assertation {
     GlobalSet(GlobalSet),
     Assignment(Assignment),
 }
-
-#[derive(Clone, Debug, Default)]
-pub struct Disassembly {
-    //TODO disassembly need to be separated between before and after pattern
-    //match but for now it is just a flag that make everything before or
-    //after if there is an inst_next on the execution.
-    pub vars: Box<[Rc<Variable>]>,
-    pub assertations: Box<[Assertation]>,
-}
-impl Disassembly {
-    //pub fn variable(&self, name: &str) -> Option<Rc<Variable>> {
-    //    self.vars.get(name).map(|x| Rc::clone(x))
-    //}
-}
