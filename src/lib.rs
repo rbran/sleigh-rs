@@ -34,9 +34,6 @@ pub const IDENT_EPSILON: &str = "epsilon";
 pub const IDENT_CONST: &str = "const";
 pub const IDENT_UNIQUE: &str = "unique";
 
-//TODO delete this for the love of askdjfhaçsdjkfh
-pub static STATE: u32 = 0;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputSource {
     pub line: u32,
@@ -49,12 +46,6 @@ impl InputSource {
         let offset = offset.as_ptr() as usize - source.as_ptr() as usize;
         let (pre, _pos) = source.split_at(offset);
         let mut line: u32 = 0;
-        //let column = 1 + pre
-        //    .lines()
-        //    .inspect(|_| line += 1)
-        //    .last()
-        //    .map(|x| x.chars().count())
-        //    .unwrap_or(0);
         let column = pre
             .split('\n')
             .inspect(|_| line += 1)
