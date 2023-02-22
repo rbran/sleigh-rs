@@ -2,27 +2,27 @@ use crate::{syntax, IDENT_INSTRUCTION};
 
 //multiple with_blocks are combined into this one during the processing
 #[derive(Clone, Debug, Default)]
-pub(crate) struct WithBlockCurrent<'a>(
+pub(crate) struct WithBlockCurrent(
     Vec<(
-        &'a str,
-        syntax::block::pattern::Pattern<'a>,
-        Option<syntax::block::disassembly::Disassembly<'a>>,
+        String,
+        syntax::block::pattern::Pattern,
+        Option<syntax::block::disassembly::Disassembly>,
     )>,
 );
 
-impl<'a> WithBlockCurrent<'a> {
+impl WithBlockCurrent {
     pub fn push(
         &mut self,
-        with_block: syntax::block::with_block::WithBlock<'a>,
-    ) -> syntax::Syntax<'a> {
+        with_block: syntax::block::with_block::WithBlock,
+    ) -> syntax::Sleigh {
         //Inside a with block that has a table header, a nested with block may
         //specify the instruction table by name, as in
         //"with instruction : {...}". Inside such a block, the rule regarding
         //mnemonic literals is restored (see Section 7.3.1, “Mnemonic”).
         self.0.push((
-            with_block.table_name(),
+            with_block.table_name().to_owned(),
             with_block.pattern,
-            with_block.dissasembly,
+            with_block.disassembly,
         ));
         with_block.body
     }
@@ -30,7 +30,7 @@ impl<'a> WithBlockCurrent<'a> {
         self.0.pop();
     }
 
-    pub fn table_name(&self, current_table_name: &'a str) -> &'a str {
+    pub fn table_name<'a>(&'a self, current_table_name: &'a str) -> &'a str {
         //From ghidra docs:
         //Note that when a with block has a table header specifying a table
         //that does not yet exist, the table is created immediately. Inside a
@@ -45,7 +45,7 @@ impl<'a> WithBlockCurrent<'a> {
 
         //otherwise, if the table name is not specified, the table name will
         //depent on the block last table name, there are two possibilities:
-        let with_block_table_name = self.0.last().map(|x| x.0);
+        let with_block_table_name = self.0.last().map(|x| &x.0);
         match with_block_table_name {
             //there is a table name, so use it
             Some(name) => name,
@@ -56,7 +56,7 @@ impl<'a> WithBlockCurrent<'a> {
     }
     fn pattern_iter(
         &self,
-    ) -> impl Iterator<Item = &syntax::block::pattern::Pattern<'a>> + ExactSizeIterator
+    ) -> impl Iterator<Item = &syntax::block::pattern::Pattern> + ExactSizeIterator
     {
         self.0
             .iter()
@@ -67,17 +67,16 @@ impl<'a> WithBlockCurrent<'a> {
     //the second patter using the `And` operation.
     pub fn pattern(
         &self,
-        constructor_pattern: &syntax::block::pattern::Pattern<'a>,
-    ) -> syntax::block::pattern::Pattern<'a> {
+        constructor_pattern: &syntax::block::pattern::Pattern,
+    ) -> syntax::block::pattern::Pattern {
         use syntax::block::pattern::Op;
         let patterns = self.pattern_iter().chain([constructor_pattern]);
         let block_number =
             self.pattern_iter().map(|p| p.blocks.len()).sum::<usize>()
                 + constructor_pattern.blocks.len();
         let mut final_pattern = syntax::block::pattern::Pattern {
-            //the right most pattern (constructor) is the src that we want
-            src: constructor_pattern.src,
             blocks: Vec::with_capacity(block_number),
+            src: constructor_pattern.src.clone(),
         };
         for pattern in patterns {
             let mut blocks = pattern.blocks.iter();
@@ -113,8 +112,8 @@ impl<'a> WithBlockCurrent<'a> {
     }
     pub fn disassembly(
         &self,
-        current_pattern: Option<syntax::block::disassembly::Disassembly<'a>>,
-    ) -> Option<syntax::block::disassembly::Disassembly<'a>> {
+        current_pattern: Option<syntax::block::disassembly::Disassembly>,
+    ) -> Option<syntax::block::disassembly::Disassembly> {
         self.0
             .iter()
             .filter_map(|x| x.2.as_ref())

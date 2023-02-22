@@ -1,19 +1,20 @@
 use nom::branch::alt;
-use nom::bytes::complete::tag;
 use nom::combinator::{cut, map, value};
 use nom::multi::many0;
-use nom::sequence::{pair, preceded, tuple};
+use nom::sequence::{pair, preceded};
 use nom::IResult;
 
-use crate::base::{empty_space0, empty_space1, ident, number_unsig, IntTypeU};
+use crate::preprocessor::token::Token;
 use crate::semantic::space::SpaceType;
+use crate::syntax::parser::{ident, number, this_ident};
+use crate::{NumberUnsigned, SleighError, Span};
 
 impl SpaceType {
-    fn parse(input: &str) -> IResult<&str, SpaceType> {
+    fn parse(input: &[Token]) -> IResult<&[Token], SpaceType, SleighError> {
         alt((
-            value(SpaceType::Ram, tag("ram_space")),
-            value(SpaceType::Rom, tag("rom_space")),
-            value(SpaceType::Register, tag("register_space")),
+            value(SpaceType::Ram, this_ident("ram_space")),
+            value(SpaceType::Rom, this_ident("rom_space")),
+            value(SpaceType::Register, this_ident("register_space")),
         ))(input)
     }
 }
@@ -21,61 +22,49 @@ impl SpaceType {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Attribute {
     Type(SpaceType),
-    Size(IntTypeU),
-    WordSize(IntTypeU),
+    Size(NumberUnsigned),
+    WordSize(NumberUnsigned),
     Default,
 }
 impl Attribute {
-    fn parse(input: &str) -> IResult<&str, Attribute> {
+    fn parse(input: &[Token]) -> IResult<&[Token], Attribute, SleighError> {
         alt((
-            value(Attribute::Default, tag("default")),
+            value(Attribute::Default, this_ident("default")),
             map(
-                preceded(
-                    tuple((tag("type"), empty_space0, tag("="), empty_space0)),
-                    SpaceType::parse,
-                ),
+                preceded(pair(this_ident("type"), tag!("=")), SpaceType::parse),
                 Attribute::Type,
             ),
             map(
-                preceded(
-                    tuple((tag("size"), empty_space0, tag("="), empty_space0)),
-                    number_unsig,
-                ),
-                Attribute::Size,
+                preceded(pair(this_ident("size"), tag!("=")), number),
+                |(x, span)| Attribute::Size(x),
             ),
             map(
-                preceded(
-                    tuple((
-                        tag("wordsize"),
-                        empty_space0,
-                        tag("="),
-                        empty_space0,
-                    )),
-                    number_unsig,
-                ),
-                Attribute::WordSize,
+                preceded(pair(this_ident("wordsize"), tag!("=")), number),
+                |(x, span)| Attribute::WordSize(x),
             ),
         ))(input)
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct Space<'a> {
-    pub name: &'a str,
+pub struct Space {
+    pub name: String,
+    pub src: Span,
     pub attributes: Vec<Attribute>,
 }
 
-impl<'a> Space<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl Space {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
             preceded(
-                pair(tag("space"), empty_space1),
-                cut(pair(
-                    ident,
-                    many0(preceded(empty_space1, Attribute::parse)),
-                )),
+                this_ident("space"),
+                cut(pair(ident, many0(Attribute::parse))),
             ),
-            |(name, attributes)| Space { name, attributes },
+            |((name, name_span), attributes)| Space {
+                name,
+                src: name_span.clone(),
+                attributes,
+            },
         )(input)
     }
 }

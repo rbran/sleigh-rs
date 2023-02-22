@@ -1,59 +1,64 @@
 use nom::branch::alt;
-use nom::bytes::complete::tag;
 use nom::combinator::map;
 use nom::combinator::opt;
 use nom::sequence::delimited;
+use nom::sequence::pair;
 use nom::sequence::terminated;
 use nom::sequence::tuple;
-use nom::sequence::{pair, preceded};
 use nom::IResult;
 
-use crate::base::{empty_space0, empty_space1, ident};
+use crate::preprocessor::token::Token;
+use crate::syntax::parser::ident;
 use crate::syntax::BitRange;
+use crate::SleighError;
+use crate::Span;
 
 use super::op::ByteRangeLsb;
 use super::op::ByteRangeMsb;
 use super::{expr, op};
 
 #[derive(Clone, Debug)]
-pub struct Declare<'a> {
-    pub ident: &'a str,
-    pub size: Option<ByteRangeLsb<'a>>,
+pub struct Declare {
+    pub src: Span,
+    pub name: String,
+    pub size: Option<ByteRangeLsb>,
 }
-impl<'a> Declare<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl Declare {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
             delimited(
-                pair(tag("local"), empty_space0),
-                pair(ident, opt(preceded(empty_space0, ByteRangeLsb::parse))),
-                pair(empty_space0, tag(";")),
+                tag!("local"),
+                pair(ident, opt(ByteRangeLsb::parse)),
+                tag!(";"),
             ),
-            |(ident, op)| Self { ident, size: op },
+            |((name, name_src), op)| Self {
+                name,
+                src: name_src.clone(),
+                size: op,
+            },
         )(input)
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct MemWrite<'a> {
-    pub src: &'a str,
-    pub mem: op::AddrDereference<'a>,
-    pub addr: expr::Expr<'a>,
-    pub right: expr::Expr<'a>,
+pub struct MemWrite {
+    pub src: Span,
+    pub mem: op::AddrDereference,
+    pub addr: expr::Expr,
+    pub right: expr::Expr,
 }
-impl<'a> MemWrite<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl MemWrite {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
-            terminated(
-                tuple((
-                    terminated(op::AddrDereference::parse, empty_space0),
-                    expr::Expr::parse,
-                    delimited(empty_space0, tag("="), empty_space0),
-                    expr::Expr::parse,
-                )),
-                pair(empty_space0, tag(";")),
-            ),
-            |(mem, addr, src, right)| Self {
-                src,
+            tuple((
+                op::AddrDereference::parse,
+                expr::Expr::parse,
+                tag!("="),
+                expr::Expr::parse,
+                tag!(";"),
+            )),
+            |(mem, addr, src, right, _end)| Self {
+                src: src.clone(),
                 mem,
                 addr,
                 right,
@@ -63,30 +68,30 @@ impl<'a> MemWrite<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Assignment<'a> {
+pub struct Assignment {
     pub local: bool,
-    pub ident: &'a str,
-    pub src: &'a str,
-    pub op: Option<OpLeft<'a>>,
-    pub right: expr::Expr<'a>,
+    pub ident: String,
+    pub src: Span,
+    pub op: Option<OpLeft>,
+    pub right: expr::Expr,
 }
-impl<'a> Assignment<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl Assignment {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
             terminated(
                 tuple((
-                    map(opt(pair(tag("local"), empty_space1)), |x| x.is_some()),
+                    map(opt(tag!("local")), |x| x.is_some()),
                     ident,
-                    opt(preceded(empty_space0, OpLeft::parse)),
-                    delimited(empty_space0, tag("="), empty_space0),
+                    opt(OpLeft::parse),
+                    tag!("="),
                     expr::Expr::parse,
                 )),
-                pair(empty_space0, tag(";")),
+                tag!(";"),
             ),
-            |(local, ident, op, src, right)| Self {
+            |(local, (ident, _), op, src, right)| Self {
                 local,
                 ident,
-                src,
+                src: src.clone(),
                 op,
                 right,
             },
@@ -95,15 +100,15 @@ impl<'a> Assignment<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub enum OpLeft<'a> {
+pub enum OpLeft {
     //assign to variable
-    BitRange(BitRange<'a>),
-    ByteRangeMsb(ByteRangeMsb<'a>),
-    ByteRangeLsb(ByteRangeLsb<'a>),
+    BitRange(BitRange),
+    ByteRangeMsb(ByteRangeMsb),
+    ByteRangeLsb(ByteRangeLsb),
 }
 
-impl<'a> OpLeft<'a> {
-    fn parse(input: &'a str) -> IResult<&str, Self> {
+impl OpLeft {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         alt((
             map(BitRange::parse, Self::BitRange),
             map(ByteRangeMsb::parse, |_x| {

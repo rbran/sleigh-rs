@@ -1,18 +1,19 @@
-use crate::{InputSource, Meaning, NonZeroTypeU, RangeBits};
+use crate::{Endian, NumberNonZeroUnsigned, RangeBits, Span};
 
-use super::{Endian, GlobalElement};
+use super::meaning::Meaning;
+use super::GlobalElement;
 
 #[derive(Clone, Debug)]
 pub struct Token {
-    pub src: InputSource,
-    pub len_bytes: NonZeroTypeU,
+    pub src: Span,
+    pub len_bytes: NumberNonZeroUnsigned,
     pub endian: Endian,
 }
 
 impl Token {
     pub(crate) fn new(
-        src: InputSource,
-        len_bytes: NonZeroTypeU,
+        src: Span,
+        len_bytes: NumberNonZeroUnsigned,
         endian: Endian,
     ) -> Self {
         Self {
@@ -21,10 +22,10 @@ impl Token {
             endian,
         }
     }
-    pub fn location(&self) -> &InputSource {
+    pub fn location(&self) -> &Span {
         &self.src
     }
-    pub fn len_bytes(&self) -> NonZeroTypeU {
+    pub fn len_bytes(&self) -> NumberNonZeroUnsigned {
         self.len_bytes
     }
     pub fn endian(&self) -> Endian {
@@ -34,14 +35,14 @@ impl Token {
 
 #[derive(Clone, Debug)]
 pub struct TokenField {
-    pub location: InputSource,
+    pub location: Span,
     pub range: RangeBits,
     pub token: GlobalElement<Token>,
     pub meaning: Meaning,
 }
 impl TokenField {
     pub(crate) fn new(
-        src: InputSource,
+        src: Span,
         range: RangeBits,
         token: GlobalElement<Token>,
         meaning: Meaning,
@@ -53,7 +54,7 @@ impl TokenField {
             meaning,
         }
     }
-    pub fn location(&self) -> &InputSource {
+    pub fn location(&self) -> &Span {
         &self.location
     }
     pub fn range(&self) -> &RangeBits {

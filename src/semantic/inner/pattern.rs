@@ -3,21 +3,22 @@ use std::convert::TryFrom;
 use std::ops::ControlFlow;
 use std::rc::Rc;
 
-use crate::base::IntTypeU;
 use crate::semantic::inner::table::Table;
 use crate::semantic::inner::GlobalScope;
-use crate::semantic::pattern::PatternError;
+use crate::semantic::pattern::{CmpOp, Ellipsis};
+use crate::semantic::pattern::{PatternError, PatternLen};
 use crate::semantic::table::DisassemblyError;
+use crate::semantic::token::Token;
 use crate::semantic::{GlobalAnonReference, GlobalElement, GlobalReference};
-use crate::syntax::block;
 use crate::syntax::block::pattern::Op;
-use crate::{semantic, InputSource, PatternLen, Token};
+use crate::{NumberUnsigned, Span};
+
+use crate::syntax::block;
 
 use super::disassembly::{Assertation, Expr, ExprBuilder, ReadScope, Variable};
 use super::token::TokenField;
 use super::varnode::Context;
 use super::{Sleigh, SolverStatus};
-use semantic::pattern::{CmpOp, Ellipsis};
 
 use bitvec::prelude::*;
 
@@ -53,7 +54,7 @@ impl PatternConstraint {
     }
 }
 impl PatternLen {
-    pub fn new_range(min: IntTypeU, max: IntTypeU) -> Self {
+    pub fn new_range(min: NumberUnsigned, max: NumberUnsigned) -> Self {
         match min.cmp(&max) {
             std::cmp::Ordering::Greater => {
                 unreachable!("PatternLen min({}) > max({})", min, max)
@@ -62,7 +63,7 @@ impl PatternLen {
             std::cmp::Ordering::Less => Self::Range { min, max },
         }
     }
-    pub fn single_len(&self) -> Option<IntTypeU> {
+    pub fn single_len(&self) -> Option<NumberUnsigned> {
         match self {
             Self::Defined(value) => Some(*value),
             Self::Min(_) | Self::Range { .. } => None,
@@ -144,7 +145,7 @@ pub enum ConstructorPatternLen {
     Basic(PatternLen),
 }
 impl ConstructorPatternLen {
-    pub fn single_len(&self) -> Option<IntTypeU> {
+    pub fn single_len(&self) -> Option<NumberUnsigned> {
         match self {
             Self::Basic(basic) => basic.single_len(),
             Self::NonGrowingRecursive(_) | Self::GrowingRecursive { .. } => {
@@ -174,11 +175,11 @@ impl ConstructorPatternLen {
     }
     ///the min possible pattern len size, None means the min can't be calculated
     ///because this is a recursive and the len depends on the other constructors
-    pub fn min(&self) -> Option<IntTypeU> {
+    pub fn min(&self) -> Option<NumberUnsigned> {
         self.basic().map(|len| len.min())
     }
     ///the max possible pattern len size, None is infinite maximum possible len
-    pub fn max(&self) -> Option<IntTypeU> {
+    pub fn max(&self) -> Option<NumberUnsigned> {
         self.basic().map(|len| len.max()).flatten()
     }
     //TODO replace Option with Result?
@@ -260,8 +261,8 @@ impl PatternWalker for FindValues {
         ControlFlow::Continue(())
     }
     fn value(&mut self, value: &ConstraintValue) -> ControlFlow<(), ()> {
-        use semantic::inner::disassembly::ExprElement::*;
-        use semantic::inner::disassembly::ReadScope::*;
+        use crate::semantic::inner::disassembly::ExprElement::*;
+        use crate::semantic::inner::disassembly::ReadScope::*;
         for expr_ele in value.expr.rpn.iter() {
             match expr_ele {
                 Value(TokenField(ass)) => {
@@ -279,7 +280,7 @@ impl PatternWalker for FindValues {
     }
 }
 
-pub type FinalProducedTable = semantic::pattern::ProducedTable;
+pub type FinalProducedTable = crate::semantic::pattern::ProducedTable;
 #[derive(Clone, Debug)]
 pub struct ProducedTable {
     pub table: GlobalReference<Table>,
@@ -298,7 +299,7 @@ impl From<ProducedTable> for FinalProducedTable {
     }
 }
 
-pub type FinalProducedTokenField = semantic::pattern::ProducedTokenField;
+pub type FinalProducedTokenField = crate::semantic::pattern::ProducedTokenField;
 #[derive(Clone, Debug)]
 pub struct ProducedTokenField {
     //if this field is produced explicitly (on pattern) or implicitly deduced
@@ -314,12 +315,12 @@ impl From<ProducedTokenField> for FinalProducedTokenField {
     }
 }
 
-pub type FinalPattern = semantic::pattern::Pattern;
+pub type FinalPattern = crate::semantic::pattern::Pattern;
 #[derive(Clone, Debug)]
 pub struct Pattern {
     //NOTE point after the `is` in the constructor, pattern itself don't have a
     //start, thats because it could be mixed with the `with_block` pattern
-    pub src: InputSource,
+    pub src: Span,
     pub len: Option<ConstructorPatternLen>,
     pub tables: IndexMap<*const Table, ProducedTable>,
     pub tokens: IndexMap<*const Token, (usize, GlobalAnonReference<Token>)>,
@@ -339,7 +340,6 @@ impl Pattern {
         input: block::pattern::Pattern,
         this_table: *const Table,
     ) -> Result<Self, PatternError> {
-        let src = sleigh.input_src(&input.src);
         let blocks = input
             .blocks
             .into_iter()
@@ -394,7 +394,6 @@ impl Pattern {
         }
         //let products = FieldProducts::combine_blocks(blocks.iter())?;
         Ok(Self {
-            src,
             blocks,
             //products,
             len,
@@ -403,6 +402,7 @@ impl Pattern {
             tables,
             disassembly_vars: IndexMap::new(),
             pos: vec![],
+            src: input.src,
         })
     }
     //token fields required by value comparisons that this pattern can't produce
@@ -509,7 +509,7 @@ impl Pattern {
         }
         Ok(())
     }
-    pub fn src(&self) -> &InputSource {
+    pub fn src(&self) -> &Span {
         &self.src
     }
     pub fn root_len(&self) -> usize {
@@ -541,11 +541,11 @@ impl Pattern {
             len,
             blocks,
             disassembly_vars,
-            src: _,
             tokens: _,
             tables: _,
             token_fields: _,
             pos,
+            src: _,
         } = self;
         let len = len.unwrap().basic().unwrap();
         let disassembly_vars = disassembly_vars
@@ -563,7 +563,7 @@ pub type FinalBlock = crate::semantic::pattern::Block;
 #[derive(Clone, Debug)]
 pub struct Block {
     pub op: Op,
-    pub location: InputSource,
+    pub location: Span,
     pub len: Option<ConstructorPatternLen>,
     //root_len: usize,
 
@@ -584,8 +584,8 @@ pub struct Block {
 impl Block {
     fn new_or<'a>(
         sleigh: &Sleigh,
-        location: InputSource,
-        elements: impl Iterator<Item = block::pattern::Element<'a>>,
+        location: Span,
+        elements: impl Iterator<Item = block::pattern::Element>,
         this_table: *const Table,
     ) -> Result<Self, PatternError> {
         //convert the verifications and generate the tokens/token_fields that
@@ -603,11 +603,11 @@ impl Block {
                 match field {
                     block::pattern::Field::Field {
                         field,
+                        src,
                         constraint: None,
                     } => {
-                        let src = sleigh.input_src(field);
                         let field = sleigh
-                            .get_global(field)
+                            .get_global(&field)
                             .ok_or(PatternError::MissingRef(src.clone()))?;
                         match field {
                             GlobalScope::Table(table) => {
@@ -632,10 +632,11 @@ impl Block {
                     }
                     block::pattern::Field::Field {
                         field,
+                        src,
                         constraint: Some(constraint),
                     } => {
                         let verification = Verification::from_constraint(
-                            sleigh, field, constraint, this_table,
+                            sleigh, &field, &src, constraint, this_table,
                         )?;
                         match &verification {
                             Verification::ContextCheck { .. }
@@ -686,7 +687,6 @@ impl Block {
                         Ok(verification)
                     }
                     block::pattern::Field::SubPattern(sub) => {
-                        let location = sleigh.input_src(&sub.src);
                         let pattern = Pattern::new(sleigh, sub, this_table)?;
                         //remote all the tokens that this sub_pattern don't
                         //produces or produces more then once
@@ -721,7 +721,7 @@ impl Block {
                                 )
                             }
                         }
-                        Ok(Verification::SubPattern { location, pattern })
+                        Ok(Verification::SubPattern { location: location.clone(), pattern })
                     }
                 }
             })
@@ -897,8 +897,8 @@ impl Block {
     }
     fn new_and<'a>(
         sleigh: &Sleigh,
-        location: InputSource,
-        elements: impl Iterator<Item = block::pattern::Element<'a>>,
+        location: Span,
+        elements: impl Iterator<Item = block::pattern::Element>,
         this_table: *const Table,
     ) -> Result<Self, PatternError> {
         //convert into Verifications, also capturing the explicit fields
@@ -931,13 +931,13 @@ impl Block {
                 block::pattern::Field::Field {
                     field,
                     constraint: Some(constraint),
+                    src,
                 } => {
-                    let src = sleigh.input_src(field);
                     let block::pattern::Constraint { op: cmp_op, value } =
                         constraint;
                     let value = ConstraintValue::new(sleigh, value)?;
                     let field = sleigh
-                        .get_global(field)
+                        .get_global(&field)
                         .ok_or(PatternError::MissingRef(src.clone()))?;
                     match field {
                         GlobalScope::TokenField(x) => {
@@ -964,10 +964,10 @@ impl Block {
                 block::pattern::Field::Field {
                     field,
                     constraint: None,
+                    src,
                 } => {
-                    let src = sleigh.input_src(field);
                     let field = sleigh
-                        .get_global(field)
+                        .get_global(&field)
                         .ok_or(PatternError::MissingRef(src.clone()))?;
                     match field {
                         //could be explicitly defined, usually for display,
@@ -994,8 +994,7 @@ impl Block {
                 }
 
                 block::pattern::Field::SubPattern(sub) => {
-                    let location = sleigh.input_src(&sub.src);
-                    let pattern = Pattern::new(sleigh, sub, this_table)?;
+                    let pattern = Pattern::new(sleigh, sub.clone(), this_table)?;
                     //add/verify all token fields
                     pattern
                         .token_fields
@@ -1006,8 +1005,11 @@ impl Block {
                             prod
                         })
                         .try_for_each(&mut add_explicit_token_field)?;
-                    verifications
-                        .push(Verification::SubPattern { location, pattern })
+                    verifications.push(Verification::SubPattern {
+                        //TODO improve this src
+                        location: sub.src.clone(),
+                        pattern,
+                    })
                 }
             }
         }
@@ -1074,7 +1076,6 @@ impl Block {
             first,
             elements,
         } = input;
-        let src = sleigh.input_src(src);
 
         //NOTE I'll not allow to mix `&` and `|` in the same level
         let op = match &elements[..] {
@@ -1428,7 +1429,7 @@ impl PatternWalker for TokenFinder {
     }
 }
 
-pub type FinalVerification = semantic::pattern::Verification;
+pub type FinalVerification = crate::semantic::pattern::Verification;
 #[derive(Clone, Debug)]
 pub enum Verification {
     ContextCheck {
@@ -1446,39 +1447,39 @@ pub enum Verification {
         value: ConstraintValue,
     },
     SubPattern {
-        location: InputSource,
+        location: Span,
         pattern: Pattern,
     },
 }
 impl Verification {
-    pub fn from_constraint<'a>(
+    pub fn from_constraint(
         sleigh: &Sleigh,
-        field: &'a str,
+        field: &str,
+        src: &Span,
         constraint: block::pattern::Constraint,
         this_table: *const Table,
     ) -> Result<Self, PatternError> {
         let block::pattern::Constraint { op: cmp_op, value } = constraint;
         let value = ConstraintValue::new(sleigh, value)?;
-        let src = sleigh.input_src(field);
         let field = sleigh
             .get_global(field)
             .ok_or(PatternError::MissingRef(src.clone()))?;
         match field {
             GlobalScope::TokenField(x) => Ok(Self::TokenFieldCheck {
-                field: x.reference_from(src),
+                field: x.reference_from(src.clone()),
                 op: cmp_op,
                 value,
             }),
             //TODO create InstStart? Does start_start exists?
             GlobalScope::Context(x) => Ok(Self::ContextCheck {
-                context: x.reference_from(src),
+                context: x.reference_from(src.clone()),
                 op: cmp_op,
                 value,
             }),
             GlobalScope::Table(x) => Ok({
                 let verification = Some((cmp_op, value));
                 let recursive = x.element_ptr() == this_table;
-                let table = x.reference_from(src);
+                let table = x.reference_from(src.clone());
                 Self::TableBuild {
                     produced_table: ProducedTable {
                         table,
@@ -1488,12 +1489,12 @@ impl Verification {
                     verification,
                 }
             }),
-            _ => return Err(PatternError::InvalidRef(src)),
+            _ => return Err(PatternError::InvalidRef(src.clone())),
         }
     }
     pub fn new_context(
         context: &GlobalElement<Context>,
-        src: InputSource,
+        src: Span,
         op: CmpOp,
         value: ConstraintValue,
     ) -> Self {
@@ -1506,7 +1507,7 @@ impl Verification {
     pub fn new_table(
         this_table: *const Table,
         table: &GlobalElement<Table>,
-        src: InputSource,
+        src: Span,
         verification: Option<(CmpOp, ConstraintValue)>,
     ) -> Self {
         let recursive = table.element_ptr() == this_table;
@@ -1522,7 +1523,7 @@ impl Verification {
     }
     pub fn new_token_field(
         field: &GlobalElement<TokenField>,
-        src: InputSource,
+        src: Span,
         op: CmpOp,
         value: ConstraintValue,
     ) -> Self {
@@ -1707,7 +1708,7 @@ impl From<Verification> for FinalVerification {
     }
 }
 
-pub type FinalConstraintValue = semantic::pattern::ConstraintValue;
+pub type FinalConstraintValue = crate::semantic::pattern::ConstraintValue;
 #[derive(Clone, Debug)]
 pub struct ConstraintValue {
     pub expr: Expr,
@@ -1715,8 +1716,8 @@ pub struct ConstraintValue {
 
 impl ConstraintValue {
     fn new<'a>(
-        sleigh: &Sleigh<'a>,
-        input: block::pattern::ConstraintValue<'a>,
+        sleigh: &Sleigh,
+        input: block::pattern::ConstraintValue,
     ) -> Result<Self, PatternError> {
         let block::pattern::ConstraintValue { expr } = input;
         let mut builder = DisassemblyBuilder { sleigh };
@@ -1732,28 +1733,28 @@ impl From<ConstraintValue> for FinalConstraintValue {
 }
 
 #[derive(Clone, Debug)]
-pub struct DisassemblyBuilder<'a, 'b> {
-    sleigh: &'b Sleigh<'a>,
+pub struct DisassemblyBuilder<'a> {
+    sleigh: &'a Sleigh,
 }
 
-impl<'a, 'b> ExprBuilder<'a> for DisassemblyBuilder<'a, 'b> {
+impl<'a> ExprBuilder for DisassemblyBuilder<'a> {
     fn read_scope(
         &mut self,
-        name: &'a str,
+        name: &str,
+        src: &Span,
     ) -> Result<ReadScope, DisassemblyError> {
         use super::GlobalScope::*;
-        let src = self.sleigh.input_src(name);
         match self
             .sleigh
             .get_global(name)
             .ok_or(DisassemblyError::MissingRef(src.clone()))?
         {
-            TokenField(x) => {
-                Ok(ReadScope::TokenField(GlobalReference::from_element(x, src)))
-            }
-            Context(x) => {
-                Ok(ReadScope::Context(GlobalReference::from_element(x, src)))
-            }
+            TokenField(x) => Ok(ReadScope::TokenField(
+                GlobalReference::from_element(x, src.clone()),
+            )),
+            Context(x) => Ok(ReadScope::Context(
+                GlobalReference::from_element(x, src.clone()),
+            )),
             _ => Err(DisassemblyError::InvalidRef(src.clone())),
         }
     }

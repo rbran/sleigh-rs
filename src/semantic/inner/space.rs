@@ -9,12 +9,12 @@ use crate::syntax::define;
 use super::FieldSize;
 use super::Sleigh;
 
-impl<'a> Sleigh<'a> {
+impl Sleigh {
     pub fn create_space(
         &mut self,
-        space: define::Space<'a>,
+        space: define::Space,
     ) -> Result<(), SemanticError> {
-        let src = self.input_src(space.name);
+        let src = space.src;
         let (mut default, mut addr_size, mut wordsize, mut space_type) =
             (false, None, None, None);
         for att in space.attributes.into_iter() {
@@ -39,7 +39,7 @@ impl<'a> Sleigh<'a> {
         };
         let space_type = space_type.unwrap_or(SpaceType::Register);
         let space = GlobalElement::new_space(
-            space.name, src, space_type, word_size, addr_size,
+            &space.name, src, space_type, word_size, addr_size,
         );
         if default {
             self.default_space

@@ -7,6 +7,7 @@ use crate::semantic::inner::token::TokenField;
 use crate::semantic::varnode::Varnode;
 use crate::semantic::{GlobalReference, InstNext, InstStart};
 use crate::syntax::block;
+use crate::Span;
 
 use super::varnode::Context;
 use super::{Pattern, Sleigh};
@@ -52,13 +53,13 @@ impl From<Display> for crate::semantic::display::Display {
     }
 }
 
-fn get_display_ref<'a>(
-    sleigh: &Sleigh<'a>,
+fn get_display_ref(
+    sleigh: &Sleigh,
     pattern: &mut Pattern,
-    name: &'a str,
+    name: &str,
+    src: &Span,
 ) -> Result<DisplayElement, DisplayError> {
     use crate::semantic::inner::GlobalScope::*;
-    let src = sleigh.input_src(name);
     pattern
         .disassembly_vars
         .get(name)
@@ -69,7 +70,8 @@ fn get_display_ref<'a>(
                 .ok_or(DisplayError::MissingRef(src.clone()))?
             {
                 TokenField(x) => {
-                    let token_field = GlobalReference::from_element(x, src);
+                    let token_field =
+                        GlobalReference::from_element(x, src.clone());
                     if pattern
                         .produce_token_field(&token_field)
                         .map(|block_num| block_num.is_none())
@@ -81,23 +83,23 @@ fn get_display_ref<'a>(
                     Ok(DisplayElement::TokenField(token_field))
                 }
                 Varnode(x) => Ok(DisplayElement::Varnode(
-                    GlobalReference::from_element(x, src),
+                    GlobalReference::from_element(x, src.clone()),
                 )),
                 Table(x) => Ok(DisplayElement::Table(
-                    GlobalReference::from_element(x, src),
+                    GlobalReference::from_element(x, src.clone()),
                 )),
                 Context(x) => Ok(DisplayElement::Context(
-                    GlobalReference::from_element(x, src),
+                    GlobalReference::from_element(x, src.clone()),
                 )),
-                _ => Err(DisplayError::InvalidRef(src)),
+                _ => Err(DisplayError::InvalidRef(src.clone())),
             }
         })
 }
 
 impl Display {
     pub fn new<'a>(
-        display: block::display::Display<'a>,
-        sleigh: &Sleigh<'a>,
+        display: block::display::Display,
+        sleigh: &Sleigh,
         pattern: &mut Pattern,
         is_root: bool,
     ) -> Result<Self, DisplayError> {
@@ -111,8 +113,10 @@ impl Display {
                 match ele {
                     //no empty mneumonic
                     Concat => (),
-                    Ident(x) => out.push(DisplayElement::Literal(x.to_owned())),
-                    Literal(x) => {
+                    Ident(_src, x) => {
+                        out.push(DisplayElement::Literal(x.to_owned()))
+                    }
+                    Literal(_src, x) => {
                         out.push(DisplayElement::Literal(x.to_string()))
                     }
                 }
@@ -125,9 +129,9 @@ impl Display {
             use block::display::DisplayElement::*;
             match ele {
                 Concat => (),
-                Literal(x) => out.push(DisplayElement::Literal(x.into_owned())),
-                Ident(name) => {
-                    out.push(get_display_ref(sleigh, pattern, name)?)
+                Literal(_src, x) => out.push(DisplayElement::Literal(x)),
+                Ident(src, name) => {
+                    out.push(get_display_ref(sleigh, pattern, &name, &src)?)
                 }
             }
         }

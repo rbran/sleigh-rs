@@ -3,12 +3,11 @@ use core::cell::Cell;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use crate::base::NonZeroTypeU;
 use crate::semantic::pcode_macro::{PcodeMacroError, ToPcodeMacroError};
 use crate::semantic::table::ExecutionError;
 use crate::syntax::block;
-use crate::InputSource;
 use crate::{semantic, ParamNumber};
+use crate::{NumberNonZeroUnsigned, Span};
 
 use super::execution::{
     Block, Build, Execution, ExecutionBuilder, Expr, ExprElement, ExprValue,
@@ -19,7 +18,7 @@ use super::{FieldSize, GlobalConvert, GlobalScope, Sleigh, SolverStatus};
 pub type FinalPcodeMacroInstance = semantic::pcode_macro::PcodeMacroInstance;
 #[derive(Debug, Clone)]
 pub struct PcodeMacroInstance {
-    signature: Vec<NonZeroTypeU>,
+    signature: Vec<NumberNonZeroUnsigned>,
     pub params: Vec<Rc<Parameter>>,
     pub execution: RefCell<Execution>,
     me: Weak<Self>,
@@ -72,7 +71,7 @@ impl PcodeMacroInstance {
     {
         self.execution.borrow_mut().solve(solved)
     }
-    pub fn specialize_me(&self, params: &[NonZeroTypeU]) -> Rc<Self> {
+    pub fn specialize_me(&self, params: &[NumberNonZeroUnsigned]) -> Rc<Self> {
         let params: Vec<Rc<Parameter>> = self
             .params
             .iter()
@@ -91,7 +90,7 @@ impl PcodeMacroInstance {
     pub fn params(&self) -> &[Rc<Parameter>] {
         &self.params
     }
-    pub fn signature(&self) -> &[NonZeroTypeU] {
+    pub fn signature(&self) -> &[NumberNonZeroUnsigned] {
         &self.signature
     }
     fn convert_from_parent(
@@ -121,7 +120,7 @@ pub type FinalPcodeMacro = semantic::pcode_macro::PcodeMacro;
 pub struct PcodeMacro {
     og_instance: Rc<PcodeMacroInstance>,
     instances: RefCell<Vec<Rc<PcodeMacroInstance>>>,
-    pub src: InputSource,
+    pub src: Span,
     solved: RefCell<bool>,
     _me: Weak<Self>,
 
@@ -131,7 +130,7 @@ pub struct PcodeMacro {
 
 impl PcodeMacro {
     pub fn new(
-        src: InputSource,
+        src: Span,
         params: Vec<Rc<Parameter>>,
         execution: RefCell<Execution>,
     ) -> Rc<Self> {
@@ -169,7 +168,7 @@ impl PcodeMacro {
     }
     pub fn specialize(
         &self,
-        params: &[NonZeroTypeU],
+        params: &[NumberNonZeroUnsigned],
     ) -> Rc<PcodeMacroInstance> {
         if params.len() != self.og_instance.params().len() {
             panic!("invalid number of param")
@@ -256,14 +255,14 @@ pub type FinalParameter = semantic::execution::Variable;
 #[derive(Debug)]
 pub struct Parameter {
     pub name: Rc<str>,
-    src: InputSource,
+    src: Span,
     me: Weak<Self>,
 
     size: Cell<FieldSize>,
     result: RefCell<Option<Rc<FinalParameter>>>,
 }
 impl Parameter {
-    pub fn new(name: &str, src: InputSource) -> Rc<Self> {
+    pub fn new(name: &str, src: Span) -> Rc<Self> {
         Rc::new_cyclic(|me| Self {
             name: Rc::from(name),
             src,
@@ -300,19 +299,19 @@ impl Parameter {
 }
 
 #[derive(Clone, Debug)]
-pub struct Builder<'a, 'b, 'c> {
+pub struct Builder<'a, 'b> {
     execution: Execution,
     current_block: Rc<Block>,
 
-    sleigh: &'b Sleigh<'a>,
-    params: &'c Vec<Rc<Parameter>>,
+    sleigh: &'a Sleigh,
+    params: &'b Vec<Rc<Parameter>>,
 }
 
-impl<'a, 'b, 'c> Builder<'a, 'b, 'c> {
+impl<'a, 'b> Builder<'a, 'b> {
     fn new(
-        sleigh: &'b Sleigh<'a>,
-        params: &'c Vec<Rc<Parameter>>,
-        src: &InputSource,
+        sleigh: &'a Sleigh,
+        params: &'b Vec<Rc<Parameter>>,
+        src: &Span,
     ) -> Self {
         let execution = Execution::new_empty(src);
         let current_block = Rc::clone(&execution.entry_block);
@@ -325,14 +324,14 @@ impl<'a, 'b, 'c> Builder<'a, 'b, 'c> {
     }
 }
 
-impl<'a, 'b, 'c> From<Builder<'a, 'b, 'c>> for Execution {
-    fn from(input: Builder<'a, 'b, 'c>) -> Self {
+impl<'a, 'b> From<Builder<'a, 'b>> for Execution {
+    fn from(input: Builder<'a, 'b>) -> Self {
         input.execution
     }
 }
 
-impl<'a, 'b, 'c> ExecutionBuilder<'a> for Builder<'a, 'b, 'c> {
-    fn sleigh(&self) -> &Sleigh<'a> {
+impl<'a, 'b> ExecutionBuilder for Builder<'a, 'b> {
+    fn sleigh(&self) -> &Sleigh {
         self.sleigh
     }
     fn execution(&self) -> &Execution {
@@ -343,17 +342,17 @@ impl<'a, 'b, 'c> ExecutionBuilder<'a> for Builder<'a, 'b, 'c> {
     }
     fn read_scope(
         &mut self,
-        name: &'a str,
+        name: &str,
+        src: &Span,
     ) -> Result<ExprValue, ExecutionError> {
         //check local variable
-        let src = || self.sleigh.input_src(name);
         self.variable(name)
-            .map(|var| ExprValue::ExeVar(src(), Rc::clone(var)))
+            .map(|var| ExprValue::ExeVar(src.clone(), Rc::clone(var)))
             .or_else(|| {
                 self.params
                     .iter()
                     .find(|param| param.name.as_ref() == name)
-                    .map(|x| ExprValue::Param(src(), Rc::clone(x)))
+                    .map(|x| ExprValue::Param(src.clone(), Rc::clone(x)))
             })
             .map(Result::Ok)
             .unwrap_or_else(|| {
@@ -362,40 +361,42 @@ impl<'a, 'b, 'c> ExecutionBuilder<'a> for Builder<'a, 'b, 'c> {
                 match self
                     .sleigh
                     .get_global(name)
-                    .ok_or(ExecutionError::MissingRef(src()))?
+                    .ok_or(ExecutionError::MissingRef(src.clone()))?
                 {
                     InstStart(x) => {
                         //TODO error
                         let len = self.sleigh().exec_addr_size().unwrap();
-                        Ok(ExprValue::new_inst_start(src(), *len, x))
+                        Ok(ExprValue::new_inst_start(src.clone(), *len, x))
                     }
                     InstNext(x) => {
                         //TODO error
                         let len = self.sleigh().exec_addr_size().unwrap();
-                        Ok(ExprValue::new_inst_next(src(), *len, x))
+                        Ok(ExprValue::new_inst_next(src.clone(), *len, x))
                     }
                     //TODO is this even legal? How the token_field is accesed?
-                    TokenField(x) => Ok(ExprValue::new_token_field(src(), x)),
-                    Varnode(x) => Ok(ExprValue::new_varnode(src(), x)),
-                    Context(x) => Ok(ExprValue::new_context(src(), x)),
-                    Bitrange(x) => Ok(ExprValue::new_bitrange(src(), x)),
-                    _ => Err(ExecutionError::InvalidRef(src())),
+                    TokenField(x) => {
+                        Ok(ExprValue::new_token_field(src.clone(), x))
+                    }
+                    Varnode(x) => Ok(ExprValue::new_varnode(src.clone(), x)),
+                    Context(x) => Ok(ExprValue::new_context(src.clone(), x)),
+                    Bitrange(x) => Ok(ExprValue::new_bitrange(src.clone(), x)),
+                    _ => Err(ExecutionError::InvalidRef(src.clone())),
                 }
             })
     }
 
     fn write_scope(
         &mut self,
-        name: &'a str,
+        name: &str,
+        src: &Span,
     ) -> Result<WriteValue, ExecutionError> {
-        let src = || self.sleigh.input_src(name);
         self.variable(name)
-            .map(|var| WriteValue::ExeVar(src(), Rc::clone(var)))
+            .map(|var| WriteValue::ExeVar(src.clone(), Rc::clone(var)))
             .or_else(|| {
                 self.params
                     .iter()
                     .find(|param| param.name.as_ref() == name)
-                    .map(|x| WriteValue::Param(src(), Rc::clone(x)))
+                    .map(|x| WriteValue::Param(src.clone(), Rc::clone(x)))
             })
             .map(Result::Ok)
             .unwrap_or_else(|| {
@@ -404,18 +405,18 @@ impl<'a, 'b, 'c> ExecutionBuilder<'a> for Builder<'a, 'b, 'c> {
                 match self
                     .sleigh
                     .get_global(name)
-                    .ok_or(ExecutionError::MissingRef(src()))?
+                    .ok_or(ExecutionError::MissingRef(src.clone()))?
                 {
                     Varnode(x) => Ok(WriteValue::Varnode(
-                        GlobalReference::from_element(x, src()),
+                        GlobalReference::from_element(x, src.clone()),
                     )),
                     //Context(x) => Ok(WriteValue::Context(
-                    //    GlobalReference::from_element(x, src()),
+                    //    GlobalReference::from_element(x, src.clone()),
                     //)),
                     Bitrange(x) => Ok(WriteValue::Bitrange(
-                        GlobalReference::from_element(x, src()),
+                        GlobalReference::from_element(x, src.clone()),
                     )),
-                    _ => Err(ExecutionError::InvalidRef(src())),
+                    _ => Err(ExecutionError::InvalidRef(src.clone())),
                 }
             })
     }
@@ -435,7 +436,7 @@ impl<'a, 'b, 'c> ExecutionBuilder<'a> for Builder<'a, 'b, 'c> {
     //macro have no build statement, so if try to parse it, is always error
     fn new_build(
         &mut self,
-        _input: block::execution::Build<'a>,
+        _input: block::execution::Build,
     ) -> Result<Build, ExecutionError> {
         Err(ExecutionError::MacroBuildInvalid)
     }
@@ -445,24 +446,27 @@ impl<'a, 'b, 'c> ExecutionBuilder<'a> for Builder<'a, 'b, 'c> {
     }
 }
 
-impl<'a> Sleigh<'a> {
+impl Sleigh {
     pub fn create_pcode_macro(
         &mut self,
-        pcode: block::pcode_macro::PcodeMacro<'a>,
+        pcode: block::pcode_macro::PcodeMacro,
     ) -> Result<(), PcodeMacroError> {
-        let src = self.input_src(pcode.src);
         let params = pcode
             .params
             .iter()
-            .map(|name| Parameter::new(name, self.input_src(name)))
+            .map(|(name, src)| Parameter::new(&name, src.clone()))
             .collect();
-        let mut execution = Builder::new(self, &params, &src);
-        execution.extend(pcode.body).to_pcode_macro(src.clone())?;
+        let mut execution = Builder::new(self, &params, &pcode.src);
+        execution
+            .extend(pcode.body)
+            .to_pcode_macro(pcode.src.clone())?;
         let execution = RefCell::new(execution.into());
 
         let name = Rc::from(pcode.name);
-        let pcode_macro =
-            GlobalElement::new(name, PcodeMacro::new(src, params, execution));
+        let pcode_macro = GlobalElement::new(
+            name,
+            PcodeMacro::new(pcode.src, params, execution),
+        );
         //TODO: Error here
         self.insert_global(GlobalScope::PcodeMacro(pcode_macro))
             .unwrap();

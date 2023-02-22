@@ -1,24 +1,29 @@
 use std::cell::Cell;
 use std::ops::{Bound, RangeBounds};
 
-use crate::{IntTypeU, NonZeroTypeU};
+use crate::{NumberNonZeroUnsigned, NumberUnsigned};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FieldRange {
-    min: NonZeroTypeU,
-    max: NonZeroTypeU,
+    min: NumberNonZeroUnsigned,
+    max: NumberNonZeroUnsigned,
 }
 impl FieldRange {
-    fn new(min: NonZeroTypeU, max: Option<NonZeroTypeU>) -> Self {
+    fn new(
+        min: NumberNonZeroUnsigned,
+        max: Option<NumberNonZeroUnsigned>,
+    ) -> Self {
         Self {
             min,
-            max: max.unwrap_or(NonZeroTypeU::new(IntTypeU::MAX).unwrap()),
+            max: max.unwrap_or(
+                NumberNonZeroUnsigned::new(NumberUnsigned::MAX).unwrap(),
+            ),
         }
     }
     fn new_unsize() -> Self {
         Self::new(1.try_into().unwrap(), None)
     }
-    fn set_min(self, new_min: NonZeroTypeU) -> Option<Self> {
+    fn set_min(self, new_min: NumberNonZeroUnsigned) -> Option<Self> {
         if self.max < new_min {
             //max is less then the new_min, unable to set this value
             return None;
@@ -26,7 +31,7 @@ impl FieldRange {
         let min = self.min.max(new_min);
         Some(Self { min, max: self.max })
     }
-    fn set_max(self, new_max: NonZeroTypeU) -> Option<Self> {
+    fn set_max(self, new_max: NumberNonZeroUnsigned) -> Option<Self> {
         if self.min > new_max {
             //unable to set this max value
             return None;
@@ -34,16 +39,16 @@ impl FieldRange {
         let max = self.max.min(new_max);
         Some(Self { min: self.min, max })
     }
-    fn single_value(&self) -> Option<NonZeroTypeU> {
+    fn single_value(&self) -> Option<NumberNonZeroUnsigned> {
         (self.min == self.max).then_some(self.min)
     }
 }
-impl RangeBounds<NonZeroTypeU> for FieldRange {
-    fn start_bound(&self) -> Bound<&NonZeroTypeU> {
+impl RangeBounds<NumberNonZeroUnsigned> for FieldRange {
+    fn start_bound(&self) -> Bound<&NumberNonZeroUnsigned> {
         Bound::Included(&self.min)
     }
 
-    fn end_bound(&self) -> Bound<&NonZeroTypeU> {
+    fn end_bound(&self) -> Bound<&NumberNonZeroUnsigned> {
         Bound::Included(&self.max)
     }
 }
@@ -52,7 +57,7 @@ impl RangeBounds<NonZeroTypeU> for FieldRange {
 pub enum FieldAuto {
     None,
     Min,
-    Value(NonZeroTypeU),
+    Value(NumberNonZeroUnsigned),
 }
 impl FieldAuto {
     fn in_range(self, range: &FieldRange) -> Self {
@@ -66,8 +71,10 @@ impl FieldAuto {
 
 pub const FIELD_SIZE_BOOL: FieldSize = FieldSize::Unsized {
     range: FieldRange {
-        min: unsafe { NonZeroTypeU::new_unchecked(1) },
-        max: unsafe { NonZeroTypeU::new_unchecked(IntTypeU::MAX) },
+        min: unsafe { NumberNonZeroUnsigned::new_unchecked(1) },
+        max: unsafe {
+            NumberNonZeroUnsigned::new_unchecked(NumberUnsigned::MAX)
+        },
     },
     possible: FieldAuto::Min,
 };
@@ -77,15 +84,16 @@ pub enum FieldSize {
         range: FieldRange,
         possible: FieldAuto,
     },
-    Value(NonZeroTypeU),
+    Value(NumberNonZeroUnsigned),
 }
 impl FieldSize {
-    pub fn new_bits(bits: NonZeroTypeU) -> Self {
+    pub fn new_bits(bits: NumberNonZeroUnsigned) -> Self {
         Self::Value(bits)
     }
-    pub fn new_bytes(bytes: NonZeroTypeU) -> Self {
+    pub fn new_bytes(bytes: NumberNonZeroUnsigned) -> Self {
         Self::Value(
-            NonZeroTypeU::new(bytes.get().checked_mul(8).unwrap()).unwrap(),
+            NumberNonZeroUnsigned::new(bytes.get().checked_mul(8).unwrap())
+                .unwrap(),
         )
     }
     pub fn new_unsized() -> Self {
@@ -103,7 +111,7 @@ impl FieldSize {
             }
         )
     }
-    pub fn final_value(&self) -> Option<NonZeroTypeU> {
+    pub fn final_value(&self) -> Option<NumberNonZeroUnsigned> {
         match self {
             Self::Value(value) => Some(*value),
             Self::Unsized { .. } => None,
@@ -121,7 +129,10 @@ impl FieldSize {
         *self = new_size;
         Some(changed)
     }
-    pub fn set_final_value(self, final_value: NonZeroTypeU) -> Option<Self> {
+    pub fn set_final_value(
+        self,
+        final_value: NumberNonZeroUnsigned,
+    ) -> Option<Self> {
         match self {
             //if already value, check if value is eq
             Self::Value(value) => (value == final_value).then_some(self),
@@ -131,13 +142,13 @@ impl FieldSize {
                 .then_some(Self::Value(final_value)),
         }
     }
-    pub fn min(&self) -> NonZeroTypeU {
+    pub fn min(&self) -> NumberNonZeroUnsigned {
         match self {
             Self::Value(value) => *value,
             Self::Unsized { range, .. } => range.min,
         }
     }
-    pub fn set_min(self, min: NonZeroTypeU) -> Option<Self> {
+    pub fn set_min(self, min: NumberNonZeroUnsigned) -> Option<Self> {
         match self {
             Self::Value(value) => (min <= value).then_some(self),
             Self::Unsized { range, possible } => {
@@ -150,13 +161,13 @@ impl FieldSize {
             }
         }
     }
-    pub fn max(&self) -> NonZeroTypeU {
+    pub fn max(&self) -> NumberNonZeroUnsigned {
         match self {
             Self::Value(value) => *value,
             Self::Unsized { range, .. } => range.max,
         }
     }
-    pub fn set_max(self, max: NonZeroTypeU) -> Option<Self> {
+    pub fn set_max(self, max: NumberNonZeroUnsigned) -> Option<Self> {
         match self {
             Self::Value(value) => (max >= value).then_some(self),
             Self::Unsized { range, possible } => {
@@ -169,7 +180,7 @@ impl FieldSize {
             }
         }
     }
-    pub fn possible_value(&self) -> Option<NonZeroTypeU> {
+    pub fn possible_value(&self) -> Option<NumberNonZeroUnsigned> {
         match self {
             Self::Value(value) => Some(*value),
             Self::Unsized {
@@ -212,7 +223,7 @@ impl FieldSize {
     }
     pub fn set_possible_value(
         mut self,
-        pos_value: NonZeroTypeU,
+        pos_value: NumberNonZeroUnsigned,
     ) -> Option<Self> {
         match self {
             Self::Unsized { range, .. } if !range.contains(&pos_value) => None,

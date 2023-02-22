@@ -1,18 +1,25 @@
-use nom::bytes::complete::tag;
 use nom::combinator::{cut, map};
-use nom::sequence::{pair, preceded};
+use nom::sequence::preceded;
 use nom::IResult;
 
-use crate::base::{empty_space1, ident};
+use crate::preprocessor::token::Token;
+use crate::syntax::parser::{ident, this_ident};
+use crate::{SleighError, Span};
 
 #[derive(Clone, Debug)]
-pub struct UserFunction<'a>(pub &'a str);
+pub struct UserFunction {
+    pub src: Span,
+    pub name: String,
+}
 
-impl<'a> UserFunction<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl UserFunction {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
-            preceded(pair(tag("pcodeop"), empty_space1), cut(ident)),
-            Self,
+            preceded(this_ident("pcodeop"), cut(ident)),
+            |(name, name_src)| Self {
+                name,
+                src: name_src.clone(),
+            },
         )(input)
     }
 }

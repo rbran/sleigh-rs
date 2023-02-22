@@ -1,294 +1,691 @@
 pub mod ifs;
 pub mod macros;
+pub mod parser;
+pub mod token;
 
+use nom::branch::alt;
+use nom::bytes::complete::tag;
+use nom::character::complete::{line_ending, space0};
+use nom::combinator::{consumed, eof, map, value};
+use nom::sequence::pair;
+use nom::IResult;
 use thiserror::Error;
 
 use indexmap::IndexMap;
-use std::cmp::Ordering;
-use std::fs::File;
-use std::io::Read;
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use crate::InputSource;
+use parser::empty_space0;
 
-use self::ifs::IfCheck;
-use self::macros::Block;
+use crate::preprocessor::macros::MacroLine;
+use crate::{FileLocation, FileSpan, Location, MacroLocation, Span};
+
+use self::ifs::IfCheckOwned;
+use self::macros::{expansion, DefineDataOwned};
+use self::parser::display_token;
+use self::token::{Token, TokenType};
+
+const MACRO_IF: &str = "@if";
+const MACRO_IFDEF: &str = "@ifdef";
+const MACRO_IFNDEF: &str = "@ifndef";
+const MACRO_ELIF: &str = "@elif";
+const MACRO_ELSE: &str = "@else";
+const MACRO_ENDIF: &str = "@endif";
+
+const MACRO_DEFINE: &str = "@define";
+const MACRO_UNDEFINE: &str = "@undef";
+const MACRO_INCLUDE: &str = "@include";
 
 #[derive(Error, Debug)]
-pub enum ParseError {
+pub enum PreprocessorError {
     #[error("IO Error {0}")]
     File(#[from] std::io::Error),
     #[error("Preprocessor Parsing error at\n{0}\n")]
-    Parse(#[from] nom::Err<nom::error::Error<InputSource>>),
+    Parse(#[from] nom::Err<nom::error::Error<Span>>),
     #[error("Preprocessor Execute at {message} {src}")]
-    Execute {
-        message: &'static str,
-        src: InputSource,
-    },
+    Execute { message: &'static str, src: Span },
+    #[error("Comparing undefined Value {0}\n")]
+    ComparingUndefined(FileSpan),
+    #[error("Comparing Empty Value {0}\n")]
+    ComparingEmpty(FileSpan),
+    #[error("Expanding Undefined Value {0}\n")]
+    ExpandingUndefined(FileSpan),
+    #[error("Expanding Empty Value {0}\n")]
+    ExpandingEmpty(FileSpan),
+    #[error("Alias undefined Value {0}\n")]
+    AliasUndefined(FileSpan),
+    #[error("Alias with empty Value {0}\n")]
+    AliasEmpty(FileSpan),
+    #[error("Deleting undefined Value {0}\n")]
+    DeleteUndefined(FileSpan),
+    //NOTE this is allowed, just overwride the value
+    //#[error("Defined value already exists {0}\n")]
+    //DuplicatedDefine(FileSpan),
+    #[error("Unable to parse Token at {0}\n")]
+    PreprocessorToken(Location),
+    #[error("Block was never opened {0}\n")]
+    InvalidEndIf(FileSpan),
+    #[error("Display was not closed correctly\n")]
+    UnclosedDisplay,
+    #[error("Unable to find If-Block closing {0}\n")]
+    NotFoundEndIf(FileSpan),
 }
 
 #[derive(Debug)]
-struct ExecuteError<'a> {
-    message: &'static str,
-    src: &'a str,
+pub struct Define {
+    pub name: Rc<str>,
+    pub value: Option<String>,
+    pub macro_location: FileSpan,
+    pub value_location: FileSpan,
 }
 
-struct ParsedFile {
-    filename: Rc<Path>,
+#[derive(Debug, Copy, Clone)]
+enum IfStatus {
+    If,
+    IfElse,
+    Else,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IfBorders {
+    If,
+    IfDef,
+    IfNDef,
+    IfElse,
+    Else,
+    EndIf,
+}
+
+#[derive(Debug)]
+enum DrainingSource {
+    File(DrainingFile),
+    Macro(DrainingMacro),
+}
+#[derive(Debug)]
+pub(crate) struct DrainingMacro {
+    location: MacroLocation,
     data: String,
-    //NOTE: 'static is just for the LoLs: it points to &self.data
-    //NOTE blocks will point to data, so be carefull to only drop data if blocks
-    //are also dropped
-    blocks: Vec<Block<'static>>,
+    position: usize,
 }
-
-pub struct Parser {
-    files: IndexMap<Rc<Path>, Rc<ParsedFile>>,
-    root_path: PathBuf,
-    //TODO use Rc<str> here and in Block to avoid duplication?
-    defines: IndexMap<String, String>,
-}
-
-impl Parser {
-    pub fn new(root_path: PathBuf) -> Self {
-        Self {
-            files: IndexMap::default(),
-            root_path,
-            defines: IndexMap::default(),
-        }
+impl DrainingMacro {
+    fn new(
+        defined: &Define,
+        location: FileSpan,
+    ) -> Result<Self, PreprocessorError> {
+        let Some(defined_value) = &defined.value else {
+            return Err(PreprocessorError::ExpandingEmpty(location));
+        };
+        Ok(Self {
+            location: MacroLocation {
+                value: defined.value_location.clone(),
+                expansion: location,
+                line: 0,
+                column: 0,
+            },
+            data: defined_value.clone(),
+            position: 0,
+        })
     }
-    pub fn preprocess(
-        root_path: PathBuf,
-        filename: &Path,
-    ) -> Result<PreProcOutput, ParseError> {
-        let mut parse = Self::new(root_path);
-        //parse the main file
-        let file = parse.parse(filename)?;
-
-        //execute this root block, and put the output on this stack
-        let mut stack = PreProcOutput::default();
-        parse.exec(&file.data, &file.filename, &file.blocks, &mut stack)?;
-        Ok(stack)
+    fn data(&self) -> &str {
+        &self.data[self.position..]
     }
-    fn parse(&mut self, filename: &Path) -> Result<Rc<ParsedFile>, ParseError> {
-        if let Some(blocks) = self.files.get(filename) {
-            return Ok(Rc::clone(blocks));
-        }
-        let filename = self.root_path.join(filename);
-        let mut file = File::open(&filename).unwrap();
-        let mut data = String::new();
-        file.read_to_string(&mut data)?;
-        //NOTE to avoid some parse problems, all files must end with \n
-        //match data.bytes().last() {
-        //    Some(b'\n') | Some(b'\r') => (),
-        //    None => (),
-        //    Some(_) => data.push('\n'),
-        //}
-        let filename = Rc::from(filename);
-        let blocks = macros::parse_blocks(&data)
-            //convert to nom::Err<nom::error::Error<InputSource>>
-            .map_err(|nom_err| {
-                nom_err.map_input(|input| {
-                    InputSource::new_from_offset(
-                        &data,
-                        input,
-                        Rc::clone(&filename),
-                    )
-                })
-            })?
-            .1;
-        //NOTE: As long this goes into ParsedFile and not modified, the 'static
-        //will be safe
-        let blocks = unsafe { std::mem::transmute(blocks) };
-        let file = Rc::new(ParsedFile {
-            filename: Rc::clone(&filename),
-            data,
-            blocks,
-        });
-        self.files.insert(filename, Rc::clone(&file));
-        Ok(file)
+    fn location(&self) -> &MacroLocation {
+        &self.location
     }
-    fn get_value<'a>(&'a self, ident: &str) -> Option<&'a str> {
-        self.defines.get(ident).map(|x| x.as_str())
+    fn nom_it<'a, O, F, E>(
+        &'a mut self,
+        nom: F,
+    ) -> Result<(O, Span), PreprocessorError>
+    where
+        O: 'a,
+        F: FnMut(&'a str) -> IResult<&'a str, O, E>,
+        E: nom::error::ParseError<&'a str>,
+    {
+        //extract the value
+        let (_, (skip, value)) = consumed(nom)(&self.data[self.position..])
+            .map_err(|_| {
+                PreprocessorError::PreprocessorToken(Location::Macro(
+                    self.location().clone(),
+                ))
+            })?;
+        //calculate the currect line/column after consumption
+        let end_line = self.location.line + skip.split('\n').count() as u64;
+        let end_column = skip
+            .rsplit_once(&['\n', '\r'])
+            .map(|x| x.1.chars().count() as u64)
+            .unwrap_or(self.location.column + skip.chars().count() as u64);
+        // return this token location
+        let location = self.location().into_span(end_line, end_column);
+        //update the currect drain location
+        self.location.line = end_line;
+        self.location.column = end_column;
+        self.position += skip.len();
+        //return values
+        Ok((value, Span::Macro(location)))
     }
-    fn set_value(&mut self, ident: String, value: String) {
-        self.defines.insert(ident, value);
-    }
-    fn del_value(&mut self, ident: &str) {
-        self.defines.remove(ident);
-    }
-    fn exec(
+    fn parse_display(
         &mut self,
-        data: &str,
-        filename: &Rc<Path>,
-        blocks: &[Block],
-        stack: &mut PreProcOutput,
-    ) -> Result<(), ParseError> {
-        use Block::*;
-        let get_src =
-            |x| InputSource::new_from_offset(data, x, Rc::clone(filename));
-        for block in blocks.iter() {
-            match block {
-                Data(data) => {
-                    stack.add(data, get_src(data));
+    ) -> Result<Option<DisplayToken>, PreprocessorError> {
+        self.nom_it(display_token)
+            .map(|(token, span)| match token? {
+                parser::Display::End => Some(DisplayToken::End),
+                parser::Display::Concat => Some(DisplayToken::Concat),
+                parser::Display::Ident(ident) => {
+                    Some(DisplayToken::Ident(span, ident))
                 }
-                Expand(name) => {
-                    //TODO: what if define is alias? Get the original value?
-                    let value =
-                        self.get_value(name).ok_or(ParseError::Execute {
-                            message: "Expansion not found",
-                            src: get_src(name),
-                        })?;
-                    //TODO remove this hack
-                    let value = format!(" {} ", value);
-                    stack.add(&value, get_src(name));
+                parser::Display::Literal(lit) => {
+                    Some(DisplayToken::Literal(span, lit))
                 }
-                Define { name, value, src } => {
-                    use macros::DefineData::*;
-                    let (name, value): (&str, &str) = match value {
-                        None => (name, ""),
-                        Some(Value(value)) => (name, value),
-                        Some(Alias(value_name)) => {
-                            let value = self.get_value(value_name).ok_or(
-                                ParseError::Execute {
-                                    message: "Defined Value not found",
-                                    src: get_src(src),
-                                },
-                            )?;
-                            (name, &value)
-                        }
-                    };
-                    let name = name.to_owned();
-                    let value = value.to_owned();
-                    self.set_value(name, value);
+            })
+    }
+    fn parse(&mut self) -> Result<Option<Token>, PreprocessorError> {
+        //eat all the empty spaces
+        let _ = self.nom_it::<_, _, ()>(space0).unwrap();
+        //parse a token or None if eof
+        self.nom_it(alt((
+            value(None, eof),
+            map(TokenType::parse, Option::Some),
+        )))
+        .map(|(token_type, location)| Some(Token::new(location, token_type?)))
+    }
+}
+
+#[derive(Clone, Debug)]
+enum DrainingFileProduct {
+    Token(Token),
+    File(String, FileSpan),
+    Expand(String, FileSpan),
+    End,
+}
+
+#[derive(Clone, Debug)]
+enum DrainingFileBody {
+    Macro(MacroLine, FileSpan),
+    Expansion(String, FileSpan),
+    Token(Token),
+    End,
+}
+#[derive(Debug)]
+pub(crate) struct DrainingFile {
+    location: FileLocation,
+    if_stack: Vec<IfStatus>,
+    data: String,
+    position: usize,
+}
+impl DrainingFile {
+    fn new(file: &Path) -> Result<Self, PreprocessorError> {
+        let data = std::fs::read_to_string(file)?;
+        Ok(Self {
+            data,
+            position: 0,
+            location: FileLocation {
+                file: Rc::from(file),
+                line: 0,
+                column: 0,
+            },
+            if_stack: vec![],
+        })
+    }
+    fn location(&self) -> &FileLocation {
+        &self.location
+    }
+    fn data(&self) -> &str {
+        &self.data[self.position..]
+    }
+    fn nom_it<'a, O, F, E>(
+        &'a mut self,
+        nom: F,
+    ) -> Result<(O, FileSpan), PreprocessorError>
+    where
+        O: 'a,
+        F: FnMut(&'a str) -> IResult<&'a str, O, E>,
+        E: nom::error::ParseError<&'a str>,
+    {
+        //extract the value
+        let (_, (skip, value)) = consumed(nom)(&self.data[self.position..])
+            .map_err(|_| {
+                PreprocessorError::PreprocessorToken(Location::File(
+                    self.location().clone(),
+                ))
+            })?;
+        //calculate the currect line/column after consumption
+        let end_line = self.location.line + skip.split('\n').count() as u64 - 1;
+        let end_column = skip
+            .rsplit_once(&['\n', '\r'])
+            .map(|x| x.1.chars().count() as u64)
+            .unwrap_or(self.location.column + skip.chars().count() as u64);
+        // return this token location
+        let location = self.location().into_span(end_line, end_column);
+        //update the currect drain location
+        self.location.line = end_line;
+        self.location.column = end_column;
+        self.position += skip.len();
+        //return values
+        Ok((value, location))
+    }
+    fn next_if_block<F>(
+        &mut self,
+        src: &FileSpan,
+        mut f: F,
+    ) -> Result<IfBorders, PreprocessorError>
+    where
+        F: FnMut(IfBorders) -> bool,
+    {
+        use IfBorders::*;
+        let mut counter = 0u32;
+        let data = &self.data[self.position..];
+        let found = data
+            .lines()
+            .enumerate()
+            .filter_map(|(line_num, line)| {
+                //check this line is a macro
+                let (_rest, found_macro) = alt::<_, _, (), _>((
+                    value(If, pair(space0, tag(MACRO_IF))),
+                    value(IfDef, pair(space0, tag(MACRO_IFDEF))),
+                    value(IfNDef, pair(space0, tag(MACRO_IFNDEF))),
+                    value(IfElse, pair(space0, tag(MACRO_ELIF))),
+                    value(Else, pair(space0, tag(MACRO_ELSE))),
+                    value(EndIf, pair(space0, tag(MACRO_ENDIF))),
+                ))(line)
+                .ok()?;
+                Some((line_num, line, found_macro))
+            })
+            .find_map(|(line_num, line, found)| {
+                match (counter, found) {
+                    //ignore the sub if
+                    (_, If | IfDef | IfNDef) => counter += 1,
+                    //if in a sub if, just close it
+                    (1.., EndIf) => counter -= 1,
+                    //if sub-if-block ifElse or Else, just ignore it
+                    (1.., IfElse | Else) => (),
+                    //found the end of the block, don't consume macro, just exit
+                    (0, block) if f(block) => {
+                        return Some((line_num, line, block))
+                    }
+                    //found a block that we don't care about
+                    (0, _block) => (),
                 }
-                Undefine(name) => {
-                    //TODO what to do if value don't exists? Just ignore it?
-                    self.del_value(name);
-                }
-                Include(file) => {
-                    let mut filename = self.root_path.to_path_buf();
-                    filename.push(file);
-                    //parse this file, and exec it before continue
-                    let file = self.parse(&filename)?;
-                    self.exec(&file.data, &file.filename, &file.blocks, stack)?;
-                }
-                Cond(cond) => {
-                    let block = cond.blocks.iter().find_map(
-                        |(cond, blocks)| match self.check_cond(&cond) {
-                            Err(e) => Some(Err(e)),
-                            Ok(true) => Some(Ok(blocks)),
-                            Ok(false) => None,
-                        },
-                    );
-                    match block {
-                        None => {
-                            self.exec(data, filename, &cond.else_block, stack)?
-                        }
-                        Some(block) => {
-                            let block =
-                                block.map_err(|e| ParseError::Execute {
-                                    message: e.message,
-                                    src: get_src(e.src),
-                                })?;
-                            self.exec(data, filename, &block, stack)?
-                        }
+                None
+            });
+        let Some((line_num, line, block)) = found else {
+            return Err(PreprocessorError::NotFoundEndIf(src.clone()))
+        };
+
+        let skip = line.as_ptr() as usize - data.as_ptr() as usize;
+        self.position += skip;
+        self.location.line += line_num as u64;
+        self.location.column = 0;
+        Ok(block)
+    }
+
+    fn enter_if_block(
+        &mut self,
+        cond: bool,
+        state: &PreProcessorState,
+        src: &FileSpan,
+    ) -> Result<(), PreprocessorError> {
+        //if this if is true, just to inside it
+        if cond {
+            self.if_stack.push(IfStatus::If);
+            return Ok(());
+        }
+        //othewise find the next block and check if we will enter it
+        loop {
+            let _next_block = self.next_if_block(src, |_| true)?;
+            match self.nom_it(MacroLine::parse)? {
+                (MacroLine::ElIf(cond), src) => {
+                    if self.check_cond(state, cond, &src)? {
+                        self.if_stack.push(IfStatus::IfElse);
+                        break;
+                    } else {
+                        //not the block that we can enter, search the next
+                        continue;
                     }
                 }
+                (MacroLine::Else, _) => {
+                    self.if_stack.push(IfStatus::Else);
+                    break;
+                }
+                (MacroLine::EndIf, _) => {
+                    //we never entered any if-block
+                    break;
+                }
+                (_, _) => unreachable!(),
             }
         }
         Ok(())
     }
-
-    fn check_cond<'a>(
+    fn check_cond(
         &self,
-        cond: &IfCheck<'a>,
-    ) -> Result<bool, ExecuteError<'a>> {
-        use IfCheck::*;
-        let value = match cond {
-            Defined(name) => self.get_value(name).is_some(),
-            NotDefined(name) => self.get_value(name).is_none(),
-            Cmp {
-                name,
-                op,
-                value,
-                src,
-            } => match self.get_value(name) {
-                None => {
-                    return Err(ExecuteError {
-                        message: "Value not found",
-                        src,
-                    })
-                }
-                Some(value1) => op.cmp(value1, value),
-            },
-            Op { left, op, right } => {
-                op.check(self.check_cond(left)?, self.check_cond(right)?)
+        state: &PreProcessorState,
+        cond: IfCheckOwned,
+        src: &FileSpan,
+    ) -> Result<bool, PreprocessorError> {
+        match cond {
+            IfCheckOwned::Defined(def) => Ok(state.exists(def.as_str())),
+            IfCheckOwned::NotDefined(ndef) => Ok(!state.exists(ndef.as_str())),
+            IfCheckOwned::Cmp { name, op, value } => {
+                //TODO what if comparing a value that don't exists?
+                let Some(defined) = state.get_value(name.as_str()) else {
+                    return Err(PreprocessorError::ComparingUndefined(src.clone()));
+                };
+                //TODO what if compring a define that have no value?
+                let Some(defined_value) = &defined.value else {
+                    return Err(PreprocessorError::ComparingEmpty(src.clone()));
+                };
+                Ok(op.cmp(&value, defined_value))
             }
+            IfCheckOwned::Op { left, op, right } => {
+                let left = self.check_cond(state, *left, src)?;
+                let right = self.check_cond(state, *right, src)?;
+                Ok(op.check(left, right))
+            }
+        }
+    }
+    fn parse_macro_line(&mut self) -> Option<DrainingFileBody> {
+        let (macro_line, location) = self.nom_it(MacroLine::parse).ok()?;
+        Some(DrainingFileBody::Macro(macro_line, location))
+    }
+    fn parse_display(
+        &mut self,
+    ) -> Result<Option<DisplayToken>, PreprocessorError> {
+        self.nom_it(display_token)
+            .map(|(token, span)| match token? {
+                parser::Display::End => Some(DisplayToken::End),
+                parser::Display::Concat => Some(DisplayToken::Concat),
+                parser::Display::Ident(ident) => {
+                    Some(DisplayToken::Ident(Span::File(span), ident))
+                }
+                parser::Display::Literal(lit) => {
+                    Some(DisplayToken::Literal(Span::File(span), lit))
+                }
+            })
+    }
+    fn parse_body(&mut self) -> Result<DrainingFileBody, PreprocessorError> {
+        //a macro need to be after a new line or the first thing in the file
+        if self.position == 0 {
+            if let Some(x) = self.parse_macro_line() {
+                return Ok(x);
+            }
+        }
+        loop {
+            //first consume the empty space, but not the new line
+            //never fails
+            let _ = self.nom_it(empty_space0).unwrap();
+
+            //then check if is a newline, if so, check if there is a macro after
+            if self.nom_it::<_, _, ()>(line_ending).is_ok() {
+                match self.parse_macro_line() {
+                    Some(x) => return Ok(x),
+                    None => {
+                        //if there was a new line, but not macro, go back and clean
+                        //the empty space on the start of the line and check again
+                        continue;
+                    }
+                }
+            } else {
+                //not newline, it need to have a valid token, expansion or eof
+                if self.data().is_empty() {
+                    return Ok(DrainingFileBody::End);
+                } else if let Ok((expansion, location)) = self.nom_it(expansion)
+                {
+                    return Ok(DrainingFileBody::Expansion(
+                        expansion.to_owned(),
+                        location,
+                    ));
+                } else {
+                    return self
+                        .nom_it(TokenType::parse)
+                        .map(|(location, token_type)| {
+                            Token::new(Span::File(token_type), location)
+                        })
+                        .map(DrainingFileBody::Token);
+                }
+            }
+        }
+    }
+    fn parse(
+        &mut self,
+        state: &mut PreProcessorState,
+    ) -> Result<DrainingFileProduct, PreprocessorError> {
+        use DrainingFileBody::*;
+        use MacroLine::*;
+        loop {
+            let status = self.if_stack.last().cloned();
+            let next_block = self.parse_body()?;
+            match (status, next_block) {
+                (None, End) => return Ok(DrainingFileProduct::End),
+
+                (Some(_), End) => {
+                    return Err(PreprocessorError::NotFoundEndIf(todo!()))
+                }
+
+                //found a token, just return it
+                (_, Token(token)) => {
+                    return Ok(DrainingFileProduct::Token(token))
+                }
+
+                // expand dong
+                (_, Expansion(exp, src)) => {
+                    return Ok(DrainingFileProduct::Expand(exp, src))
+                }
+
+                //include this sub-file
+                (_, Macro(Include(file), src)) => {
+                    return Ok(DrainingFileProduct::File(file, src))
+                }
+
+                (_, Macro(Define { name, value }, src)) => {
+                    state.set_define(&name, value, src)?
+                }
+                (_, Macro(Undefine(name), src)) => {
+                    //TODO ignore if try to delete non existing value?
+                    if !state.del_value(&name) {
+                        return Err(PreprocessorError::DeleteUndefined(src));
+                    }
+                }
+
+                //invalid block, such closing a block that was not open
+                (None, Macro(ElIf(_), location))
+                | (None, Macro(Else, location))
+                | (None, Macro(EndIf, location))
+                | (Some(IfStatus::Else), Macro(ElIf(_) | Else, location)) => {
+                    return Err(PreprocessorError::InvalidEndIf(location))
+                }
+
+                //end of the current block, remove the status and continue parsing
+                (Some(_), Macro(EndIf, _)) => {
+                    self.if_stack.pop();
+                }
+
+                //found a inner if, just push the block or skip it
+                (_, Macro(If(cond), src)) => {
+                    let cond = self.check_cond(state, cond, &src)?;
+                    self.enter_if_block(cond, state, &src)?
+                }
+                (_, Macro(IfDef(value), src)) => {
+                    let cond = state.exists(&value);
+                    self.enter_if_block(cond, state, &src)?
+                }
+                (_, Macro(IfNDef(value), src)) => {
+                    let cond = !state.exists(&value);
+                    self.enter_if_block(cond, state, &src)?
+                }
+
+                //found the end of the currently executing if-block
+                (
+                    Some(IfStatus::If | IfStatus::IfElse),
+                    Macro(ElIf(_) | Else, src),
+                ) => {
+                    let _next_block = self.next_if_block(&src, |x| {
+                        matches!(x, IfBorders::EndIf)
+                    })?;
+                    match self.nom_it(MacroLine::parse)? {
+                        (MacroLine::EndIf, _) => (),
+                        (_, _) => unreachable!(),
+                    }
+                    self.if_stack.pop();
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct PreProcessorState(IndexMap<Rc<str>, Define>);
+impl PreProcessorState {
+    fn exists(&self, ident: &str) -> bool {
+        self.0.contains_key(ident)
+    }
+    fn get_value<'a>(&'a self, ident: &str) -> Option<&Define> {
+        self.0.get(ident)
+    }
+    fn set_define(
+        &mut self,
+        name: &str,
+        value: Option<DefineDataOwned>,
+        src: FileSpan,
+    ) -> Result<(), PreprocessorError> {
+        use macros::DefineDataOwned::*;
+        let (value, value_location) = match value {
+            None => (None, src.clone()),
+            Some(Alias(alias)) => {
+                let (value, location) = self
+                    .get_value(&alias)
+                    .ok_or_else(|| {
+                        PreprocessorError::AliasUndefined(src.clone())
+                    })
+                    .and_then(|define| {
+                        let value = define.value.clone().ok_or_else(|| {
+                            PreprocessorError::AliasEmpty(src.clone())
+                        })?;
+                        Ok((value, define.value_location.clone()))
+                    })?;
+                (Some(value), location)
+            }
+            Some(Value(value)) => (Some(value), src.clone()),
         };
-        Ok(value)
+        let define = Define {
+            name: Rc::from(name),
+            value,
+            macro_location: src.clone(),
+            value_location,
+        };
+        self.set_value(define);
+        Ok(())
+    }
+    fn set_value(&mut self, define: Define) {
+        let name = Rc::clone(&define.name);
+        self.0.insert(name, define);
+    }
+    fn del_value(&mut self, ident: &str) -> bool {
+        self.0.remove(ident).is_some()
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct PreProcOutput {
-    src: Vec<(Range<usize>, InputSource)>,
-    output: String,
+#[derive(Clone, Debug)]
+pub enum DisplayToken {
+    End,
+    Concat,
+    Ident(Span, String),
+    Literal(Span, String),
 }
 
-impl PreProcOutput {
-    pub fn as_str(&self) -> &str {
-        &self.output
+#[derive(Debug)]
+pub struct FilePreProcessor {
+    pub root_path: Option<PathBuf>,
+    file_stack: Vec<DrainingSource>,
+    defines: PreProcessorState,
+}
+impl FilePreProcessor {
+    pub fn new(file: &Path) -> Result<Self, PreprocessorError> {
+        let root_path = file.parent().map(Path::to_path_buf);
+        let file = DrainingFile::new(file)?;
+        Ok(Self {
+            root_path,
+            defines: PreProcessorState::default(),
+            file_stack: vec![DrainingSource::File(file)],
+        })
     }
-    pub fn add(&mut self, data: &str, src: InputSource) {
-        let start = self.output.len();
-        self.output.push_str(data);
-        let end = self.output.len();
-        let range = start..end;
-        self.src.push((range, src));
+    pub fn is_finished(&self) -> bool {
+        self.file_stack.is_empty()
     }
-    pub fn source_data_start<'a>(
-        &'a self,
-        find: &'a str,
-    ) -> Option<InputSource> {
-        let output_offset = self.output.as_ptr() as usize;
-        let find_offset = find.as_ptr() as usize;
-        assert!(find_offset >= output_offset);
-        let output_position = find_offset - output_offset;
-        self.src
-            .binary_search_by(|(range, _)| match (range.start, range.end) {
-                (start, _) if output_position < start => Ordering::Greater,
-                (_, end) if output_position >= end => Ordering::Less,
-                (_, _) => Ordering::Equal,
-            })
-            .ok()
-            .map(|pos| &self.src[pos])
-            .map(|(range, InputSource { line, column, file })| {
-                //TODO crimes against humanity here
-                let current_chunk = &self.output[range.start..output_position];
-                let file = Rc::clone(file);
-                let mut line = *line;
-                let column = current_chunk
-                    .split('\n')
-                    .inspect(|_| line += 1)
-                    .last()
-                    .map(|x| 1 + x.chars().count())
-                    .unwrap_or(*column);
-                InputSource { line, column, file }
-            })
+    /// process a display token
+    pub fn parse_display(&mut self) -> Result<DisplayToken, PreprocessorError> {
+        //TODO does the display should expand macros?
+        //TODO does display can exist in between files? is this loop required?
+        loop {
+            let Some(file) = self.file_stack.last_mut() else {
+                return Err(PreprocessorError::UnclosedDisplay);
+            };
+            //try to parse a token from this source
+            let token = match file {
+                DrainingSource::File(file) => file.parse_display()?,
+                DrainingSource::Macro(source) => source.parse_display()?,
+            };
+            if let Some(token) = token {
+                return Ok(token);
+            } else {
+                //end of this file
+                self.file_stack.pop();
+            }
+        }
+    }
+    /// process the accumulated buffer
+    pub fn parse(&mut self) -> Result<Option<Token>, PreprocessorError> {
+        // read files untill is able to process a token
+        loop {
+            let Some(file) = self.file_stack.last_mut() else {
+                return Ok(None)
+            };
+            //try to parse a token from this source
+            let token = match file {
+                DrainingSource::File(file) => {
+                    match file.parse(&mut self.defines)? {
+                        DrainingFileProduct::End => None,
+                        DrainingFileProduct::Token(token) => Some(token),
+                        DrainingFileProduct::File(file, _src) => {
+                            let fullpath = self
+                                .root_path
+                                .clone()
+                                .unwrap_or_default()
+                                .join(file);
+                            self.file_stack.push(DrainingSource::File(
+                                DrainingFile::new(&fullpath)?,
+                            ));
+                            continue;
+                        }
+                        DrainingFileProduct::Expand(exp, src) => {
+                            let define = self
+                                .defines
+                                .get_value(&exp)
+                                .ok_or_else(|| {
+                                    PreprocessorError::ExpandingUndefined(
+                                        src.clone(),
+                                    )
+                                })?;
+                            self.file_stack.push(DrainingSource::Macro(
+                                DrainingMacro::new(define, src)?,
+                            ));
+                            continue;
+                        }
+                    }
+                }
+                DrainingSource::Macro(source) => source.parse()?,
+            };
+            //return this token, if unable, just pop it and goes to the next one
+            match token {
+                Some(token) => return Ok(Some(token)),
+                None => {
+                    self.file_stack.pop();
+                }
+            }
+        }
     }
 }
+impl Iterator for FilePreProcessor {
+    type Item = Result<Token, PreprocessorError>;
 
-pub fn preprocess(file: &Path) -> Result<PreProcOutput, ParseError> {
-    let error = |x| std::io::Error::new(std::io::ErrorKind::InvalidData, x);
-    let parent = file
-        .parent()
-        .ok_or_else(|| error("Unable to solve file path"))?;
-    let filename = file
-        .file_name()
-        .ok_or_else(|| error("Unable to solve file name"))?;
-
-    Parser::preprocess(parent.to_path_buf(), Path::new(filename))
+    fn next(&mut self) -> Option<Self::Item> {
+        self.parse().transpose()
+    }
 }

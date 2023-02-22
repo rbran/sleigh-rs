@@ -1,86 +1,69 @@
-use crate::base::empty_space1;
-use crate::syntax::block::execution::ident;
-use crate::syntax::separated_pair;
+use crate::preprocessor::token::Token;
+use crate::syntax::parser::{ident, this_ident};
+use crate::{SleighError, Span};
 use nom::branch::alt;
-use nom::bytes::complete::tag;
 use nom::combinator::map;
 use nom::sequence::{delimited, pair, preceded, tuple};
 use nom::IResult;
 
 use super::op::ByteRangeLsb;
 use super::{expr, op};
-use crate::base::empty_space0;
 
 #[derive(Clone, Debug)]
-pub enum Export<'a> {
-    Value(expr::Expr<'a>),
+pub enum Export {
+    Value(expr::Expr),
     Reference {
-        space: op::AddrDereference<'a>,
-        addr: expr::Expr<'a>,
+        space: op::AddrDereference,
+        addr: expr::Expr,
     },
     Const {
-        size: ByteRangeLsb<'a>,
-        value: &'a str,
+        size: ByteRangeLsb,
+        src: Span,
+        value: String,
     },
     //TODO Unique
     //Unique{
-    //  value: &'a str,
+    //  value: &[Token],
     //}
 }
 
-impl<'a> Export<'a> {
-    fn parse_value(input: &'a str) -> IResult<&'a str, Self> {
+impl Export {
+    fn parse_value(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(expr::Expr::parse, |value| Self::Value(value))(input)
     }
-    fn parse_reference(input: &'a str) -> IResult<&'a str, Self> {
+    fn parse_reference(
+        input: &[Token],
+    ) -> IResult<&[Token], Self, SleighError> {
         map(
-            separated_pair(
-                op::AddrDereference::parse,
-                empty_space1,
-                expr::Expr::parse,
-            ),
+            pair(op::AddrDereference::parse, expr::Expr::parse),
             |(space, addr)| Self::Reference { space, addr },
         )(input)
     }
-    fn parse_const(input: &'a str) -> IResult<&'a str, Self> {
+    fn parse_const(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
             preceded(
-                tuple((
-                    tag("*"),
-                    empty_space0,
-                    tag("["),
-                    empty_space0,
-                    tag("const"),
-                    empty_space0,
-                    tag("]"),
-                    empty_space0,
-                )),
-                separated_pair(ByteRangeLsb::parse, empty_space1, ident),
+                tuple((tag!("*"), tag!("["), tag!("const"), tag!("]"))),
+                pair(ByteRangeLsb::parse, ident),
             ),
-            |(size, value)| Self::Const { size, value },
+            |(size, (value, value_src))| Self::Const {
+                size,
+                value,
+                src: value_src.clone(),
+            },
         )(input)
     }
-    fn parse_unique(input: &'a str) -> IResult<&'a str, Self> {
+    fn parse_unique(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
             preceded(
-                tuple((
-                    tag("*"),
-                    empty_space0,
-                    tag("["),
-                    empty_space0,
-                    tag("unique"),
-                    empty_space0,
-                    tag("]"),
-                    empty_space0,
-                )),
-                separated_pair(ByteRangeLsb::parse, empty_space1, ident),
+                tuple((tag!("*"), tag!("["), tag!("unique"), tag!("]"))),
+                pair(ByteRangeLsb::parse, ident),
             ),
             |_| todo!(),
         )(input)
     }
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         delimited(
-            pair(tag("export"), empty_space0),
+            this_ident("export"),
             //NOTE order is important
             alt((
                 Self::parse_unique,
@@ -88,7 +71,7 @@ impl<'a> Export<'a> {
                 Self::parse_reference,
                 Self::parse_value,
             )),
-            pair(empty_space0, tag(";")),
+            tag!(";"),
         )(input)
     }
 }

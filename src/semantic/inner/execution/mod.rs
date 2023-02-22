@@ -1,14 +1,13 @@
-use crate::semantic::varnode::Bitrange;
+use crate::semantic::varnode::{Bitrange, Varnode};
 use crate::semantic::GlobalReference;
 use core::cell::Cell;
 use indexmap::IndexMap;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use crate::base::IntTypeU;
-use crate::semantic;
+use crate::{semantic, Number};
 use crate::semantic::execution::{self, BranchCall, ExecutionError};
-use crate::{InputSource, Varnode};
+use crate::{NumberUnsigned, Span};
 
 use super::pcode_macro::{Parameter, PcodeMacroInstance};
 use super::table::Table;
@@ -34,13 +33,13 @@ pub type FinalExportConst = semantic::execution::ExportConst;
 #[derive(Clone, Debug)]
 pub enum ExportConst {
     //Int(IntTypeU),
-    DisVar(InputSource, Rc<disassembly::Variable>),
+    DisVar(Span, Rc<disassembly::Variable>),
     TokenField(GlobalReference<TokenField>),
     Context(GlobalReference<Context>),
     Table(GlobalReference<Table>),
 }
 impl ExportConst {
-    pub fn src(&self) -> &InputSource {
+    pub fn src(&self) -> &Span {
         match self {
             Self::DisVar(src, _) => src,
             Self::TokenField(x) => x.location(),
@@ -102,7 +101,7 @@ impl Export {
             Export::Const(size, _) => ExecutionExport::Const(*size),
         }
     }
-    pub fn src(&self) -> &InputSource {
+    pub fn src(&self) -> &Span {
         match self {
             Self::Value(expr) | Export::Reference(expr, _) => expr.src(),
             Self::Const(_, con) => con.src(),
@@ -166,14 +165,14 @@ pub type FinalMemWrite = semantic::execution::MemWrite;
 pub struct MemWrite {
     pub addr: Expr,
     mem: AddrDereference,
-    src: InputSource,
+    src: Span,
     pub right: Expr,
 }
 impl MemWrite {
     pub fn new(
         mut addr: Expr,
         mem: AddrDereference,
-        src: InputSource,
+        src: Span,
         mut right: Expr,
     ) -> Self {
         //HACK: unexplained exeptions:
@@ -228,7 +227,7 @@ impl MemWrite {
             let mut taken = Expr::Value(ExprElement::Value(ExprValue::Int(
                 self.src.clone(),
                 FieldSize::new_unsized(),
-                0.try_into().unwrap(),
+                Number::Positive(0),
             )));
             std::mem::swap(&mut self.right, &mut taken);
             self.right = Expr::Value(ExprElement::Truncate(
@@ -285,7 +284,7 @@ pub type FinalAssignment = semantic::execution::Assignment;
 pub struct Assignment {
     pub var: WriteValue,
     op: Option<Truncate>,
-    src: InputSource,
+    src: Span,
     pub right: Expr,
 }
 
@@ -293,7 +292,7 @@ impl Assignment {
     pub fn new(
         var: WriteValue,
         op: Option<Truncate>,
-        src: InputSource,
+        src: Span,
         right: Expr,
     ) -> Self {
         Self {
@@ -329,7 +328,7 @@ impl Assignment {
             let mut taken = Expr::Value(ExprElement::Value(ExprValue::Int(
                 self.src.clone(),
                 FieldSize::new_unsized(),
-                0.try_into().unwrap(),
+                Number::Positive(0),
             )));
             std::mem::swap(&mut self.right, &mut taken);
             self.right = Expr::Value(ExprElement::Op(
@@ -399,8 +398,8 @@ pub enum WriteValue {
     Bitrange(GlobalReference<Bitrange>),
     Table(GlobalReference<Table>),
     TokenField(GlobalReference<TokenField>),
-    ExeVar(InputSource, Rc<Variable>),
-    Param(InputSource, Rc<Parameter>),
+    ExeVar(Span, Rc<Variable>),
+    Param(Span, Rc<Parameter>),
 }
 
 impl WriteValue {
@@ -596,7 +595,7 @@ impl UserCall {
         });
         Self { params, function }
     }
-    pub fn src(&self) -> &InputSource {
+    pub fn src(&self) -> &Span {
         self.function.location()
     }
     pub fn solve(
@@ -724,7 +723,7 @@ impl CpuBranch {
 
 #[derive(Clone, Debug)]
 pub enum Statement {
-    Delayslot(IntTypeU),
+    Delayslot(NumberUnsigned),
     Export(Export),
     CpuBranch(CpuBranch),
     LocalGoto(LocalGoto),
@@ -829,14 +828,14 @@ pub struct Variable {
     //pub scope: RefCell<VariableScope>,
     pub size: Cell<FieldSize>,
     //location of the variable declaration
-    pub src: InputSource,
+    pub src: Span,
     me: Weak<Self>,
 
     pub result: RefCell<Option<Rc<semantic::execution::Variable>>>,
 }
 
 impl Variable {
-    pub fn new(name: Rc<str>, src: InputSource) -> Rc<Self> {
+    pub fn new(name: Rc<str>, src: Span) -> Rc<Self> {
         Rc::new_cyclic(|me| Self {
             name,
             //scope,
@@ -977,7 +976,7 @@ impl ExecutionExport {
 
 #[derive(Clone, Debug)]
 pub struct Execution {
-    src: InputSource,
+    src: Span,
     pub blocks: IndexMap<Rc<str>, Rc<Block>>,
     pub vars: IndexMap<Rc<str>, Rc<Variable>>,
 
@@ -1002,10 +1001,10 @@ impl Drop for Execution {
 }
 
 impl Execution {
-    pub fn src(&self) -> &InputSource {
+    pub fn src(&self) -> &Span{
         &self.src
     }
-    pub fn new_empty(src: &InputSource) -> Self {
+    pub fn new_empty(src: &Span) -> Self {
         let entry_block = Rc::new(Block::new_empty(None));
         Execution {
             src: src.clone(),
@@ -1128,7 +1127,7 @@ impl Execution {
     pub fn create_variable(
         &mut self,
         name_ori: &str,
-        src: InputSource,
+        src: Span,
         //scope: VariableScope,
     ) -> Result<Rc<Variable>, ExecutionError> {
         let name = Rc::from(name_ori);

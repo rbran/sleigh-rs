@@ -6,8 +6,12 @@ use nom::multi::many0;
 use nom::sequence::{delimited, pair, preceded, terminated, tuple};
 use nom::IResult;
 
-use super::ifs::{if_cond, IfCheck};
-use crate::base::{empty_line, end_of_line, ident, number_sig, string};
+use super::ifs::{if_cond, if_cond_owned, IfCheck, IfCheckOwned};
+use super::{
+    MACRO_DEFINE, MACRO_ELIF, MACRO_ELSE, MACRO_ENDIF, MACRO_IF, MACRO_IFDEF,
+    MACRO_IFNDEF, MACRO_INCLUDE, MACRO_UNDEFINE,
+};
+use super::parser::{empty_line, end_of_line, ident, number, string};
 
 fn macro_include(input: &str) -> IResult<&str, String> {
     delimited(
@@ -31,7 +35,7 @@ fn macro_define(input: &str) -> IResult<&str, Block> {
                         map(
                             alt((
                                 string,
-                                map(recognize(number_sig), str::to_string),
+                                map(recognize(number), str::to_string),
                             )),
                             DefineData::Value,
                         ),
@@ -71,7 +75,7 @@ fn macro_endif(input: &str) -> IResult<&str, ()> {
 fn macro_else(input: &str) -> IResult<&str, ()> {
     value((), tuple((space0, tag("@else"), end_of_line)))(input)
 }
-fn expansion(input: &str) -> IResult<&str, &str> {
+pub(crate) fn expansion(input: &str) -> IResult<&str, &str> {
     delimited(pair(tag("$("), space0), ident, pair(space0, tag(")")))(input)
 }
 fn empty_lines(input: &str) -> IResult<&str, ()> {
@@ -127,9 +131,38 @@ fn data(input: &str) -> IResult<&str, &str> {
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
+pub enum DefineDataOwned {
+    Alias(String),
+    Value(String),
+}
+impl DefineDataOwned {
+    fn parse(input: &str) -> IResult<&str, Self> {
+        alt((
+            map(ident, |ident| Self::Alias(ident.to_owned())),
+            //TODO number to string? What about a Number type???
+            map(
+                alt((string, map(recognize(number), str::to_string))),
+                Self::Value,
+            ),
+        ))(input)
+    }
+}
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub enum DefineData<'a> {
     Alias(&'a str),
     Value(String),
+}
+impl<'a> DefineData<'a> {
+    fn parse(input: &'a str) -> IResult<&'a str, Self> {
+        alt((
+            map(ident, Self::Alias),
+            //TODO number to string? What about a Number type???
+            map(
+                alt((string, map(recognize(number), str::to_string))),
+                Self::Value,
+            ),
+        ))(input)
+    }
 }
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum Block<'a> {
@@ -143,6 +176,95 @@ pub enum Block<'a> {
     Expand(&'a str),
     Include(String),
     Cond(CondBlock<'a>),
+}
+
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub enum MacroLine {
+    Define {
+        name: String,
+        value: Option<DefineDataOwned>,
+    },
+    Undefine(String),
+    Include(String),
+    IfDef(String),
+    IfNDef(String),
+    If(IfCheckOwned),
+    ElIf(IfCheckOwned),
+    Else,
+    EndIf,
+}
+impl MacroLine {
+    pub fn parse_define(input: &str) -> IResult<&str, Self> {
+        map(
+            delimited(
+                pair(tag(MACRO_DEFINE), space1),
+                pair(ident, opt(preceded(space1, DefineDataOwned::parse))),
+                end_of_line,
+            ),
+            |(name, value)| Self::Define {
+                name: name.to_owned(),
+                value,
+            },
+        )(input)
+    }
+    fn parse_undefine(input: &str) -> IResult<&str, Self> {
+        map(
+            delimited(pair(tag(MACRO_UNDEFINE), space1), ident, end_of_line),
+            |x| Self::Undefine(x.to_owned()),
+        )(input)
+    }
+    fn parse_include(input: &str) -> IResult<&str, Self> {
+        map(
+            delimited(pair(tag(MACRO_INCLUDE), space0), string, end_of_line),
+            |x| Self::Include(x.to_owned()),
+        )(input)
+    }
+    fn parse_if(input: &str) -> IResult<&str, Self> {
+        map(
+            preceded(pair(tag(MACRO_IF), space1), if_cond_owned),
+            Self::If,
+        )(input)
+    }
+    fn parse_ifdef(input: &str) -> IResult<&str, Self> {
+        map(
+            delimited(pair(tag(MACRO_IFDEF), space1), ident, end_of_line),
+            |x| Self::IfDef(x.to_owned()),
+        )(input)
+    }
+    fn parse_ifndef(input: &str) -> IResult<&str, Self> {
+        map(
+            delimited(pair(tag(MACRO_IFNDEF), space1), ident, end_of_line),
+            |x| Self::IfNDef(x.to_owned()),
+        )(input)
+    }
+    fn parse_elif(input: &str) -> IResult<&str, Self> {
+        map(
+            preceded(pair(tag(MACRO_ELIF), space1), if_cond_owned),
+            Self::ElIf,
+        )(input)
+    }
+    fn parse_else(input: &str) -> IResult<&str, Self> {
+        value(Self::Else, pair(tag(MACRO_ELSE), end_of_line))(input)
+    }
+    fn parse_endif(input: &str) -> IResult<&str, Self> {
+        value(Self::EndIf, pair(tag(MACRO_ENDIF), end_of_line))(input)
+    }
+    pub fn parse(input: &str) -> IResult<&str, Self> {
+        preceded(
+            space0,
+            alt((
+                Self::parse_define,
+                Self::parse_undefine,
+                Self::parse_include,
+                Self::parse_if,
+                Self::parse_ifdef,
+                Self::parse_ifndef,
+                Self::parse_elif,
+                Self::parse_else,
+                Self::parse_endif,
+            )),
+        )(input)
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]

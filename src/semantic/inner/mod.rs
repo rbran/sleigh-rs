@@ -13,14 +13,12 @@ pub mod with_block;
 use indexmap::IndexMap;
 use std::rc::Rc;
 
-use crate::base::IntTypeU;
-use crate::preprocessor::PreProcOutput;
 use crate::syntax::define::TokenFieldAttribute;
+use crate::Span;
 use crate::{
-    syntax, Space, Token, Varnode, IDENT_EPSILON, IDENT_INSTRUCTION,
-    IDENT_INST_NEXT, IDENT_INST_START,
+    syntax, IDENT_EPSILON, IDENT_INSTRUCTION, IDENT_INST_NEXT, IDENT_INST_START,
 };
-use crate::{InputSource, UserFunction};
+use crate::{Endian, NumberUnsigned};
 
 pub use self::execution::{FieldAuto, FieldRange, FieldSize, FieldSizeMut};
 pub use self::pattern::{Block, Pattern};
@@ -30,8 +28,11 @@ use self::token::TokenField;
 use self::varnode::Context;
 use self::with_block::WithBlockCurrent;
 
-use super::varnode::Bitrange;
-pub use super::{Endian, SemanticError};
+use super::space::Space;
+use super::token::Token;
+use super::user_function::UserFunction;
+use super::varnode::{Bitrange, Varnode};
+pub use super::SemanticError;
 use super::{
     Epsilon, GlobalAnonReference, GlobalElement, GlobalReference, InstNext,
     InstStart, PrintBase, PrintFmt,
@@ -47,7 +48,7 @@ pub struct PrintFlags {
 
 impl PrintFlags {
     pub fn from_token_att<'a>(
-        src: &InputSource,
+        src: &Span,
         att: impl Iterator<Item = &'a TokenFieldAttribute>,
     ) -> Result<Self, SemanticError> {
         let (mut signed_set, mut base) = (false, None);
@@ -85,14 +86,14 @@ impl From<PrintFlags> for PrintFmt {
 pub trait SolverStatus<T: SolverStatus = Self> {
     fn iam_not_finished_location(
         &mut self,
-        location: &InputSource,
+        location: &Span,
         file: &'static str,
         line: u32,
     );
     fn i_did_a_thing(&mut self);
     fn we_finished(&self) -> bool;
     fn we_did_a_thing(&self) -> bool;
-    fn unfinished_locations(&self) -> &[(InputSource, &'static str, u32)];
+    fn unfinished_locations(&self) -> &[(Span, &'static str, u32)];
     fn combine(&mut self, other: &Self);
 }
 
@@ -105,7 +106,7 @@ pub struct Solved {
 impl SolverStatus for Solved {
     fn iam_not_finished_location(
         &mut self,
-        _location: &InputSource,
+        _location: &Span,
         _file: &'static str,
         _line: u32,
     ) {
@@ -120,7 +121,7 @@ impl SolverStatus for Solved {
     fn we_did_a_thing(&self) -> bool {
         self.did_a_thing
     }
-    fn unfinished_locations(&self) -> &[(InputSource, &'static str, u32)] {
+    fn unfinished_locations(&self) -> &[(Span, &'static str, u32)] {
         &[]
     }
     fn combine(&mut self, other: &Self) {
@@ -141,13 +142,13 @@ impl Default for Solved {
 #[derive(Clone, Debug, Default)]
 pub struct SolvedLocation {
     solved: Solved,
-    locations: Vec<(InputSource, &'static str, u32)>,
+    locations: Vec<(Span, &'static str, u32)>,
 }
 
 impl SolverStatus for SolvedLocation {
     fn iam_not_finished_location(
         &mut self,
-        location: &InputSource,
+        location: &Span,
         file: &'static str,
         line: u32,
     ) {
@@ -163,7 +164,7 @@ impl SolverStatus for SolvedLocation {
     fn we_did_a_thing(&self) -> bool {
         self.solved.we_did_a_thing()
     }
-    fn unfinished_locations(&self) -> &[(InputSource, &'static str, u32)] {
+    fn unfinished_locations(&self) -> &[(Span, &'static str, u32)] {
         &self.locations
     }
     fn combine(&mut self, other: &Self) {
@@ -282,8 +283,7 @@ impl GlobalScope {
 }
 
 #[derive(Clone, Debug)]
-pub struct Sleigh<'a> {
-    root: &'a PreProcOutput,
+pub struct Sleigh {
     /// the default address space
     pub(crate) default_space: Option<GlobalElement<Space>>,
 
@@ -291,7 +291,7 @@ pub struct Sleigh<'a> {
     /// processor endian
     pub(crate) endian: Option<Endian>,
     /// memory access alignemnt
-    pub(crate) alignment: Option<IntTypeU>,
+    pub(crate) alignment: Option<NumberUnsigned>,
     /// all the unique ident types, such Tables, Macros, Varnodes, etc.
     pub(crate) idents: IndexMap<Rc<str>, GlobalScope>,
 
@@ -300,7 +300,7 @@ pub struct Sleigh<'a> {
     pub exec_addr_size: Option<FieldSize>,
 }
 
-impl<'a> Sleigh<'a> {
+impl Sleigh {
     pub fn insert_global(
         &mut self,
         item: GlobalScope,
@@ -329,19 +329,13 @@ impl<'a> Sleigh<'a> {
     //        Some(false)
     //    }
     //}
-    pub fn input_src(&self, src: &'a str) -> InputSource {
-        self.root.source_data_start(src).unwrap().clone()
-    }
     pub fn default_space(&self) -> Option<&GlobalElement<Space>> {
         self.default_space.as_ref()
     }
-    pub fn get_global<'b>(&'b self, name: &'a str) -> Option<&'b GlobalScope> {
+    pub fn get_global<'b>(&'b self, name: &str) -> Option<&'b GlobalScope> {
         self.idents.get(name)
     }
-    pub fn set_endian(
-        &mut self,
-        endian: syntax::define::Endian,
-    ) -> Result<(), SemanticError> {
+    pub fn set_endian(&mut self, endian: Endian) -> Result<(), SemanticError> {
         self.endian
             .replace(endian)
             .map(|_| Err(SemanticError::EndianMult))
@@ -358,10 +352,10 @@ impl<'a> Sleigh<'a> {
     }
     fn process(
         &mut self,
-        with_block_current: &mut WithBlockCurrent<'a>,
-        syntax: syntax::Syntax<'a>,
+        with_block_current: &mut WithBlockCurrent,
+        syntax: syntax::Sleigh,
     ) -> Result<(), SemanticError> {
-        for assertation in syntax {
+        for assertation in syntax.assertations.into_iter() {
             use syntax::define::Define::*;
             use syntax::Assertation::*;
             match assertation {
@@ -388,13 +382,9 @@ impl<'a> Sleigh<'a> {
         }
         Ok(())
     }
-    pub fn new(
-        syntax: syntax::Syntax<'a>,
-        root: &'a PreProcOutput,
-    ) -> Result<Self, SemanticError> {
+    pub fn new(syntax: syntax::Sleigh) -> Result<Self, SemanticError> {
         //TODO insert default global vars: such as `instruction`, `unique`, etc
         let mut sleigh = Sleigh {
-            root,
             default_space: None,
             endian: None,
             alignment: None,

@@ -1,4 +1,3 @@
-use nom::bytes::complete::tag;
 use nom::combinator::{cut, map};
 use nom::multi::many0;
 use nom::sequence::{
@@ -6,28 +5,29 @@ use nom::sequence::{
 };
 use nom::IResult;
 
-use crate::base::{empty_space0, empty_space1, ident, number_unsig, IntTypeU};
+use crate::preprocessor::token::Token;
+use crate::syntax::parser::{ident, number, this_ident};
+use crate::{NumberUnsigned, SleighError, Span};
 
 use super::TokenFieldAttribute;
 
 #[derive(Clone, Debug)]
-pub struct Context<'a> {
-    pub varnode_name: &'a str,
-    pub fields: Vec<ContextField<'a>>,
+pub struct Context {
+    pub varnode_name: String,
+    pub varnode_span: Span,
+    pub fields: Vec<ContextField>,
 }
 
-impl<'a> Context<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl Context {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
             preceded(
-                pair(tag("context"), empty_space1),
-                cut(pair(
-                    ident,
-                    many0(preceded(empty_space1, ContextField::parse)),
-                )),
+                this_ident("context"),
+                cut(pair(ident, many0(ContextField::parse))),
             ),
-            |(varnode_name, fields)| Context {
+            |((varnode_name, varnode_span), fields)| Context {
                 varnode_name,
+                varnode_span: varnode_span.clone(),
                 fields,
             },
         )(input)
@@ -35,33 +35,28 @@ impl<'a> Context<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ContextField<'a> {
-    pub name: &'a str,
-    pub start: IntTypeU,
-    pub end: IntTypeU,
+pub struct ContextField {
+    pub src: Span,
+    pub name: String,
+    pub start: NumberUnsigned,
+    pub end: NumberUnsigned,
     pub attributes: Vec<ContextFieldAttribute>,
 }
 
-impl<'a> ContextField<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl ContextField {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
             tuple((
-                terminated(
-                    ident,
-                    tuple((empty_space0, tag("="), empty_space0)),
-                ),
+                terminated(ident, tag!("=")),
                 delimited(
-                    pair(tag("("), empty_space0),
-                    separated_pair(
-                        number_unsig,
-                        tuple((empty_space0, tag(","), empty_space0)),
-                        number_unsig,
-                    ),
-                    pair(empty_space0, tag(")")),
+                    tag!("("),
+                    separated_pair(number, tag!(","), number),
+                    tag!(")"),
                 ),
-                many0(preceded(empty_space1, ContextFieldAttribute::parse)),
+                many0(ContextFieldAttribute::parse),
             )),
-            |(name, (start, end), attributes)| Self {
+            |((name, name_src), ((start, _), (end, _)), attributes)| Self {
+                src: name_src.clone(),
                 name,
                 start,
                 end,
@@ -86,13 +81,12 @@ impl ContextFieldAttribute {
                 _ => None,
             })
     }
-    fn parse(input_ori: &str) -> IResult<&str, Self> {
-        let (input, att) = ident(input_ori)?;
-        Self::from_str(att)
+    fn parse(input_ori: &[Token]) -> IResult<&[Token], Self, SleighError> {
+        let (input, (att, location)) = ident(input_ori)?;
+        Self::from_str(&att)
             .map(|att| (input, att))
-            .ok_or(nom::Err::Error(nom::error::Error {
-                input,
-                code: nom::error::ErrorKind::MapOpt,
-            }))
+            .ok_or(nom::Err::Error(SleighError::StatementInvalid(
+                location.clone(),
+            )))
     }
 }

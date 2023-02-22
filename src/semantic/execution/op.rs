@@ -1,8 +1,8 @@
-use crate::base::{IntTypeU, NonZeroTypeU};
 use crate::semantic::pcode_macro::PcodeMacro;
 use crate::semantic::space::Space;
+use crate::semantic::user_function::UserFunction;
 use crate::semantic::{GlobalElement, GlobalReference};
-use crate::UserFunction;
+use crate::{NumberNonZeroUnsigned, NumberUnsigned};
 
 // function call with variable number on params
 #[derive(Copy, Clone, Debug)]
@@ -26,10 +26,10 @@ pub enum Function {
 #[derive(Clone, Debug)]
 pub struct AddrDereference {
     pub space: GlobalReference<Space>,
-    pub size: NonZeroTypeU,
+    pub size: NumberNonZeroUnsigned,
 }
 impl AddrDereference {
-    pub fn output_size(&self) -> NonZeroTypeU {
+    pub fn output_size(&self) -> NumberNonZeroUnsigned {
         self.size
     }
 }
@@ -40,12 +40,12 @@ impl AddrDereference {
 //}
 #[derive(Clone, Copy, Debug)]
 pub struct Truncate {
-    pub lsb: IntTypeU,
-    pub size: NonZeroTypeU,
+    pub lsb: NumberUnsigned,
+    pub size: NumberNonZeroUnsigned,
 }
 
 impl Truncate {
-    pub fn new(lsb: IntTypeU, size: NonZeroTypeU) -> Self {
+    pub fn new(lsb: NumberUnsigned, size: NumberNonZeroUnsigned) -> Self {
         Self { lsb, size }
     }
 }

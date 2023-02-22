@@ -1,17 +1,14 @@
 use nom::branch::alt;
-use nom::bytes::complete::tag;
-use nom::combinator::{consumed, map, map_res, opt, value};
+use nom::combinator::{map, map_res, opt, value};
 use nom::multi::{many0, separated_list0};
-use nom::sequence::{
-    delimited, pair, preceded, separated_pair, terminated, tuple,
-};
+use nom::sequence::{delimited, pair, tuple};
 use nom::IResult;
 
 use super::disassembly;
-use crate::base::{empty_space0, ident};
-
-pub use crate::semantic::pattern::CmpOp;
-pub use crate::semantic::pattern::Ellipsis;
+use crate::preprocessor::token::Token;
+use crate::semantic::pattern::{CmpOp, Ellipsis};
+use crate::syntax::parser::ident;
+use crate::{SleighError, Span};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Op {
@@ -19,38 +16,38 @@ pub enum Op {
     Or,
 }
 impl Op {
-    pub fn parse(input: &str) -> IResult<&str, Op> {
-        alt((value(Op::Or, tag("|")), value(Op::And, tag("&"))))(input)
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Op, SleighError> {
+        alt((value(Op::Or, tag!("|")), value(Op::And, tag!("&"))))(input)
     }
 }
 
 impl CmpOp {
-    pub fn parse(input: &str) -> IResult<&str, CmpOp> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], CmpOp, SleighError> {
         alt((
-            value(CmpOp::Le, tag("<=")),
-            value(CmpOp::Ge, tag(">=")),
-            value(CmpOp::Ne, tag("!=")),
+            value(CmpOp::Le, tag!("<=")),
+            value(CmpOp::Ge, tag!(">=")),
+            value(CmpOp::Ne, tag!("!=")),
             //TODO order is important, so ">=" is not consumed as ">"
-            value(CmpOp::Eq, tag("=")),
-            value(CmpOp::Lt, tag("<")),
-            value(CmpOp::Gt, tag(">")),
+            value(CmpOp::Eq, tag!("=")),
+            value(CmpOp::Lt, tag!("<")),
+            value(CmpOp::Gt, tag!(">")),
         ))(input)
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct ConstraintValue<'a> {
-    pub expr: disassembly::Expr<'a>,
+pub struct ConstraintValue {
+    pub expr: disassembly::Expr,
 }
 
-impl<'a> ConstraintValue<'a> {
-    fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl ConstraintValue {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
             alt((
                 delimited(
-                    pair(tag("("), empty_space0),
+                    tag!("("),
                     |x| disassembly::Expr::parse(x, true),
-                    pair(empty_space0, tag(")")),
+                    tag!(")"),
                 ),
                 |x| disassembly::Expr::parse(x, false),
             )),
@@ -60,68 +57,70 @@ impl<'a> ConstraintValue<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Constraint<'a> {
+pub struct Constraint {
     pub op: CmpOp,
-    pub value: ConstraintValue<'a>,
+    pub value: ConstraintValue,
 }
 
-impl<'a> Constraint<'a> {
-    fn parse(input: &'a str) -> IResult<&'a str, Self> {
-        map(
-            separated_pair(CmpOp::parse, empty_space0, ConstraintValue::parse),
-            |(op, value)| Self { op, value },
-        )(input)
+impl Constraint {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+        map(pair(CmpOp::parse, ConstraintValue::parse), |(op, value)| {
+            Self { op, value }
+        })(input)
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum Field<'a> {
+pub enum Field {
     Field {
-        field: &'a str,
-        constraint: Option<Constraint<'a>>,
+        field: String,
+        src: Span,
+        constraint: Option<Constraint>,
     },
-    SubPattern(Pattern<'a>),
+    SubPattern(Pattern),
 }
-impl<'a> Field<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl Field {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         alt((
+            map(delimited(tag!("("), Pattern::parse, tag!(")")), |sub| {
+                Field::SubPattern(sub)
+            }),
             map(
-                delimited(
-                    pair(tag("("), empty_space0),
-                    Pattern::parse,
-                    pair(empty_space0, tag(")")),
-                ),
-                |sub| Field::SubPattern(sub),
-            ),
-            map(
-                pair(ident, opt(preceded(empty_space0, Constraint::parse))),
-                |(field, constraint)| Field::Field { field, constraint },
+                pair(ident, opt(Constraint::parse)),
+                |((field, field_src), constraint)| Field::Field {
+                    field,
+                    src: field_src.clone(),
+                    constraint,
+                },
             ),
         ))(input)
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct Element<'a> {
-    pub field: Field<'a>,
+pub struct Element {
+    pub field: Field,
     pub ellipsis: Option<Ellipsis>,
 }
 
-impl<'a> Element<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl Element {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map_res(
             tuple((
-                opt(terminated(
-                    value(Ellipsis::Left, tag("...")),
-                    empty_space0,
-                )),
+                opt(map(tag!("..."), |span| (Ellipsis::Left, span))),
                 Field::parse,
-                opt(preceded(empty_space0, value(Ellipsis::Right, tag("...")))),
+                opt(map(tag!("..."), |span| (Ellipsis::Right, span))),
             )),
             |(left, field, right)| {
                 let ellipsis = match (left, right) {
-                    (Some(_), Some(_)) => return Err(""),
-                    (left, right) => left.or(right),
+                    (Some((_, left)), Some((_, right))) => {
+                        let location = Span::combine(
+                            left.clone().start(),
+                            right.clone().end(),
+                        );
+                        return Err(SleighError::DualEllipsis(location));
+                    }
+                    (left, right) => left.or(right).map(|(e, _)| e),
                 };
                 Ok(Element { field, ellipsis })
             },
@@ -130,54 +129,52 @@ impl<'a> Element<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Block<'a> {
-    pub src: &'a str,
-    pub first: Element<'a>,
-    pub elements: Vec<(Op, Element<'a>)>,
+pub struct Block {
+    pub src: Span,
+    pub first: Element,
+    pub elements: Vec<(Op, Element)>,
 }
 
-impl<'a> Block<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl Block {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
-            consumed(tuple((
-                preceded(empty_space0, Element::parse),
-                many0(pair(
-                    preceded(empty_space0, Op::parse),
-                    preceded(empty_space0, Element::parse),
-                )),
-            ))),
-            |(src, (first, elements))| Self {
-                src,
-                first,
-                elements,
-            },
+            tuple((Element::parse, many0(pair(Op::parse, Element::parse)))),
+            |(first, elements)| {
+                //TODO improve this src
+                let src = match &first.field {
+                    Field::SubPattern(pat) => pat.src.clone(),
+                    Field::Field { src, .. } => src.clone(),
+                };
+                Self { first, elements, src }
+            }
         )(input)
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct Pattern<'a> {
+pub struct Pattern {
+    //NOTE point after the `is` in the constructor, pattern itself don't have a
+    //start, thats because it could be mixed with the `with_block` pattern
+    pub src: Span,
     //NOTE: point after the `is`
-    pub src: &'a str,
-    pub blocks: Vec<Block<'a>>,
+    pub blocks: Vec<Block>,
 }
-impl<'a> IntoIterator for Pattern<'a> {
-    type Item = Block<'a>;
-    type IntoIter = std::vec::IntoIter<Block<'a>>;
+impl IntoIterator for Pattern {
+    type Item = Block;
+    type IntoIter = std::vec::IntoIter<Block>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.blocks.into_iter()
     }
 }
 
-impl<'a> Pattern<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
-        map(
-            consumed(separated_list0(
-                tuple((empty_space0, tag(";"), empty_space0)),
-                Block::parse,
-            )),
-            |(src, blocks)| Pattern { src, blocks },
-        )(input)
+impl Pattern {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+        let (rest, pattern) = map(separated_list0(tag!(";"), Block::parse), |blocks| Pattern {
+            //TODO improve the src here
+            src: input.get(0).unwrap().location.clone(),
+            blocks,
+        })(input)?;
+        Ok((rest, pattern))
     }
 }

@@ -1,59 +1,54 @@
-use nom::bytes::complete::tag;
-use nom::combinator::{map, opt};
-use nom::sequence::{delimited, pair, preceded, tuple};
-use nom::IResult;
+use nom::combinator::{eof, opt};
+use nom::sequence::{delimited, pair, terminated, tuple};
 
-use crate::base::{empty_space0, empty_space1, ident};
-use crate::syntax::Syntax;
-use crate::IDENT_INSTRUCTION;
+use crate::preprocessor::token::Token;
+use crate::preprocessor::FilePreProcessor;
+use crate::syntax::parser::{ident, this_ident, Parser};
+use crate::syntax::Sleigh;
+use crate::{SleighError, IDENT_INSTRUCTION};
 
 use super::disassembly::Disassembly;
 use super::pattern::Pattern;
 
 #[derive(Clone, Debug)]
-pub struct WithBlock<'a> {
-    table_name: Option<&'a str>,
-    pub pattern: Pattern<'a>,
-    pub dissasembly: Option<Disassembly<'a>>,
-    pub body: Syntax<'a>,
+pub struct WithBlock {
+    table_name: Option<String>,
+    pub pattern: Pattern,
+    pub disassembly: Option<Disassembly>,
+    pub body: Sleigh,
 }
 
-impl<'a> WithBlock<'a> {
-    pub fn table_name(&self) -> &'a str {
-        self.table_name.unwrap_or(IDENT_INSTRUCTION)
+impl WithBlock {
+    pub fn table_name(&self) -> &str {
+        self.table_name
+            .as_ref()
+            .map(String::as_str)
+            .unwrap_or(IDENT_INSTRUCTION)
     }
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
-        map(
+    pub fn parse(
+        input: &mut FilePreProcessor,
+        buf: &mut Vec<Token>,
+    ) -> Result<Self, SleighError> {
+        input.parse_until(buf, |x| &x.token_type == &token_type!("{"))?;
+        let (_eof, (table, pattern, disassembly)) = terminated(
             tuple((
-                delimited(
-                    pair(tag("with"), empty_space1),
-                    opt(ident),
-                    pair(empty_space0, tag(":")),
-                ),
-                preceded(empty_space0, Pattern::parse),
-                opt(preceded(
-                    empty_space0,
-                    delimited(
-                        pair(tag("["), empty_space0),
-                        Disassembly::parse,
-                        pair(empty_space0, tag("]")),
-                    ),
-                )),
-                preceded(
-                    empty_space0,
-                    delimited(
-                        pair(tag("{"), empty_space0),
-                        Syntax::parse,
-                        pair(empty_space0, tag("}")),
-                    ),
-                ),
+                delimited(this_ident("with"), opt(ident), tag!(":")),
+                Pattern::parse,
+                opt(delimited(tag!("["), Disassembly::parse, tag!("]"))),
             )),
-            |(table_name, pattern, dissasembly, body)| Self {
-                table_name,
-                pattern,
-                dissasembly,
-                body,
-            },
-        )(input)
+            pair(tag!("{"), eof),
+        )(buf)?;
+        let table_name = table.map(|(name, _span)| name);
+
+        //parse assertations until find a lonely }
+        buf.clear();
+        let body = Sleigh::parse(input, buf, true)?;
+
+        Ok(Self {
+            table_name,
+            pattern,
+            disassembly,
+            body,
+        })
     }
 }

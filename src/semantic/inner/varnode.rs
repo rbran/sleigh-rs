@@ -1,17 +1,17 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::base::NonZeroTypeU;
 use crate::semantic::meaning::Meaning;
+use crate::semantic::varnode::Varnode;
 use crate::semantic::{GlobalConvert, GlobalElement, SemanticError};
-use crate::syntax::define;
-use crate::{InputSource, IntTypeU, RangeBits, Varnode};
+use crate::{syntax, NumberNonZeroUnsigned, NumberUnsigned};
+use crate::{RangeBits, Span};
 
 use super::{FieldSize, GlobalScope, PrintFlags, Sleigh};
 
 #[derive(Debug)]
 pub struct Context {
-    pub src: InputSource,
+    pub src: Span,
     pub range: RangeBits,
     pub varnode: GlobalElement<Varnode>,
     pub noflow_set: bool,
@@ -24,7 +24,7 @@ pub struct Context {
 impl GlobalElement<Context> {
     pub(crate) fn new_context(
         name: &str,
-        src: InputSource,
+        src: Span,
         range: RangeBits,
         varnode: GlobalElement<Varnode>,
         noflow: bool,
@@ -98,18 +98,18 @@ impl GlobalConvert for Context {
     }
 }
 
-impl<'a> Sleigh<'a> {
+impl<'a> Sleigh {
     pub fn create_memory(
         &mut self,
-        varnode: define::Varnode<'a>,
+        varnode: syntax::define::Varnode,
     ) -> Result<(), SemanticError> {
         let space_ele = self
-            .get_global(varnode.space_name)
+            .get_global(&varnode.space_name)
             .ok_or(SemanticError::SpaceMissing)?
             .space_or(SemanticError::SpaceInvalid)?
             .clone();
         //let offset_start = varnode.offset;
-        let varnode_size = NonZeroTypeU::new(varnode.value_bytes)
+        let varnode_size = NumberNonZeroUnsigned::new(varnode.value_bytes)
             .ok_or(SemanticError::VarnodeInvalidVarnodeSize)?;
 
         if varnode.names.is_empty() {
@@ -120,12 +120,12 @@ impl<'a> Sleigh<'a> {
             .names
             .into_iter()
             .enumerate()
-            .filter_map(|(i, v)| Some((i, v?)))
-            .try_for_each(|(index, name)| {
+            .filter_map(|(i, (v, s))| Some((i, v?, s)))
+            .try_for_each(|(index, name, src)| {
                 let varnode = GlobalElement::new_varnode(
-                    name,
-                    self.input_src(name),
-                    index as IntTypeU * varnode_size.get(),
+                    &name,
+                    src,
+                    index as NumberUnsigned * varnode_size.get(),
                     varnode_size,
                     space_ele.clone(),
                 );
@@ -134,10 +134,9 @@ impl<'a> Sleigh<'a> {
     }
     pub fn create_bitrange(
         &mut self,
-        bitrange: define::BitRangeDef<'a>,
+        bitrange: syntax::define::BitRangeDef,
     ) -> Result<(), SemanticError> {
         bitrange.into_iter().try_for_each(|field| {
-            let src = self.input_src(field.name);
             let varnode = self
                 .get_global(&field.varnode_name)
                 .ok_or(SemanticError::VarnodeMissing)?
@@ -160,7 +159,7 @@ impl<'a> Sleigh<'a> {
 
             let bitrange = GlobalElement::new_bitrange(
                 &field.name,
-                src,
+                field.src,
                 range,
                 varnode.clone(),
             );
@@ -170,32 +169,32 @@ impl<'a> Sleigh<'a> {
     }
     pub fn create_user_function(
         &mut self,
-        input: define::UserFunction<'a>,
+        input: syntax::define::UserFunction,
     ) -> Result<(), SemanticError> {
-        let src = self.input_src(input.0);
         self.insert_global(GlobalScope::UserFunction(
-            GlobalElement::new_user_function(input.0, src),
+            GlobalElement::new_user_function(&input.name, input.src),
         ))
     }
     pub fn create_context(
         &mut self,
-        input: define::Context<'a>,
+        input: syntax::define::Context,
     ) -> Result<(), SemanticError> {
         let varnode = self
-            .get_global(input.varnode_name)
+            .get_global(&input.varnode_name)
             .ok_or(SemanticError::VarnodeMissing)?
             .varnode_or(SemanticError::VarnodeInvalid)?
             .clone();
         input.fields.into_iter().try_for_each(|field| {
-            let src = self.input_src(&field.name);
+            let src = field.src;
             //check for valid range
             if field.start > field.end {
                 return Err(SemanticError::ContextInvalidSize);
             }
             let lsb_bit = field.start;
             //don't need make checked add/sub, don't question it
-            let n_bits = NonZeroTypeU::new((field.end - field.start) + 1)
-                .ok_or(SemanticError::ContextInvalidSize)?;
+            let n_bits =
+                NumberNonZeroUnsigned::new((field.end - field.start) + 1)
+                    .ok_or(SemanticError::ContextInvalidSize)?;
             //range can't be bigger than the varnode
             let varnode_size = varnode.len_bytes.get() * 8;
             if field.end > varnode_size {
@@ -204,8 +203,10 @@ impl<'a> Sleigh<'a> {
             let print_flags = PrintFlags::from_token_att(
                 &src,
                 field.attributes.iter().filter_map(|att| match att {
-                    define::ContextFieldAttribute::Token(att) => Some(att),
-                    define::ContextFieldAttribute::Noflow => None,
+                    syntax::define::ContextFieldAttribute::Token(att) => {
+                        Some(att)
+                    }
+                    syntax::define::ContextFieldAttribute::Noflow => None,
                 }),
             )?;
             //make sure that multiple noflow declaration is detected
@@ -213,7 +214,7 @@ impl<'a> Sleigh<'a> {
                 .attributes
                 .iter()
                 .filter(|att| {
-                    matches!(att, define::ContextFieldAttribute::Noflow)
+                    matches!(att, syntax::define::ContextFieldAttribute::Noflow)
                 })
                 .count();
             let noflow_set = match noflow {

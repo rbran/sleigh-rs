@@ -4,10 +4,11 @@ use std::cell::{Cell, RefCell};
 use std::ops::ControlFlow;
 use std::rc::{Rc, Weak};
 
+use crate::semantic::pattern::PatternLen;
 use crate::semantic::table::{ExecutionError, TableErrorSub, ToTableError};
 use crate::semantic::{self, GlobalElement, GlobalReference, TableError};
 use crate::syntax::block;
-use crate::{InputSource, PatternLen};
+use crate::Span;
 
 use super::disassembly;
 use super::display::Display;
@@ -169,7 +170,7 @@ impl Table {
         //TODO improve this to not require collect
         //all the lens from constructors
         let constructors = self.constructors.borrow();
-        let lens: Result<Vec<_>, &InputSource> = constructors
+        let lens: Result<Vec<_>, &Span> = constructors
             .iter()
             //get all the lens, returning none if is undefined len,
             //in this case abort the whole len calculation
@@ -395,14 +396,14 @@ pub struct Constructor {
     pub display: Display,
     pub pattern: Pattern,
     pub execution: Option<Execution>,
-    src: InputSource,
+    src: Span,
 }
 impl Constructor {
     pub fn new(
         display: Display,
         pattern: Pattern,
         execution: Option<Execution>,
-        src: InputSource,
+        src: Span,
     ) -> Self {
         Self {
             display,
@@ -417,7 +418,7 @@ impl Constructor {
     pub fn execution_mut(&mut self) -> Option<&mut Execution> {
         self.execution.as_mut()
     }
-    pub fn src(&self) -> &InputSource {
+    pub fn src(&self) -> &Span {
         &self.src
     }
     pub fn solve_pattern<T>(&mut self, solved: &mut T) -> Result<(), TableError>
@@ -459,66 +460,71 @@ impl<'a> From<Constructor> for FinalConstructor {
     }
 }
 
-impl<'a> Sleigh<'a> {
+
+impl Sleigh {
     pub(crate) fn insert_table_constructor(
         &mut self,
-        with_block_current: &mut WithBlockCurrent<'a>,
-        constructor: block::table::Constructor<'a>,
+        with_block_current: &mut WithBlockCurrent,
+        constructor: block::table::Constructor,
     ) -> Result<(), TableError> {
-        let table_pos = self.input_src(constructor.src);
         let table_name =
             with_block_current.table_name(constructor.table_name());
         let table = self
             .get_table_or_create_empty(table_name)
-            .ok_or(TableErrorSub::TableNameInvalid.to_table(table_pos.clone()))?
+            .ok_or(
+                TableErrorSub::TableNameInvalid
+                    .to_table(constructor.src.clone()),
+            )?
             .clone();
 
         let pattern = with_block_current.pattern(&constructor.pattern);
         let mut pattern = Pattern::new(self, pattern, table.element_ptr())
-            .to_table(table_pos.clone())?;
+            .to_table(constructor.src.clone())?;
         pattern.unresolved_token_fields().into_iter().try_for_each(
             |(_key, token_field)| {
                 if pattern
                     .produce_token_field(&token_field)
                     .map(|block_num| block_num.is_none())
-                    .to_table(table_pos.clone())?
+                    .to_table(constructor.src.clone())?
                 {
                     return Err(semantic::table::PatternError::MissingRef(
                         token_field.src.clone(),
                     ))
-                    .to_table(table_pos.clone());
+                    .to_table(constructor.src.clone());
                 }
                 Ok(())
             },
         )?;
 
         let disassembly_raw =
-            with_block_current.disassembly(constructor.dissasembly);
+            with_block_current.disassembly(constructor.disassembly);
         if let Some(disassembly_raw) = disassembly_raw {
             disassembly::Builder::new(self, &mut pattern)
                 .build(disassembly_raw)
-                .to_table(table_pos.clone())?
+                .to_table(constructor.src.clone())?
         }
 
         let is_root = table.is_root();
         let display =
             Display::new(constructor.display, self, &mut pattern, is_root)
-                .to_table(table_pos.clone())?;
+                .to_table(constructor.src.clone())?;
 
-        let src_table = self.input_src(constructor.src);
         let execution = constructor
             .execution
             .map(|x| -> Result<Execution, ExecutionError> {
-                let mut execution =
-                    execution::Builder::new(self, &mut pattern, &src_table);
+                let mut execution = execution::Builder::new(
+                    self,
+                    &mut pattern,
+                    &constructor.src,
+                );
                 execution.extend(x)?;
                 Ok(execution.into())
             })
             .transpose()
-            .to_table(table_pos.clone())?;
+            .to_table(constructor.src.clone())?;
 
         let constructor =
-            Constructor::new(display, pattern, execution, table_pos);
+            Constructor::new(display, pattern, execution, constructor.src);
         table.add_constructor(constructor)?;
         Ok(())
     }

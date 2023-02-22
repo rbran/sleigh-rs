@@ -1,46 +1,39 @@
-use nom::bytes::complete::tag;
 use nom::combinator::map;
-use nom::sequence::{delimited, terminated, tuple};
+use nom::sequence::{pair, preceded, tuple};
 use nom::IResult;
 
-use crate::base::{
-    empty_space0, empty_space1, ident, number_unsig, registerlist, IntTypeU,
-};
+use crate::preprocessor::token::Token;
+use crate::syntax::parser::{ident, number, registerlist, this_ident};
+use crate::{NumberUnsigned, SleighError, Span};
 
 #[derive(Clone, Debug)]
-pub struct Varnode<'a> {
-    pub space_name: &'a str,
-    pub offset: IntTypeU,
-    pub value_bytes: IntTypeU,
-    pub names: Vec<Option<&'a str>>,
+pub struct Varnode {
+    pub space_name: String,
+    pub space_span: Span,
+    pub offset: NumberUnsigned,
+    pub value_bytes: NumberUnsigned,
+    pub names: Vec<(Option<String>, Span)>,
 }
 
-impl<'a> Varnode<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl Varnode {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
             tuple((
-                terminated(ident, empty_space1),
-                delimited(
-                    tuple((
-                        tag("offset"),
-                        empty_space0,
-                        tag("="),
-                        empty_space0,
-                    )),
-                    number_unsig,
-                    empty_space1,
-                ),
-                delimited(
-                    tuple((tag("size"), empty_space0, tag("="), empty_space0)),
-                    number_unsig,
-                    empty_space0,
-                ),
+                ident,
+                preceded(pair(this_ident("offset"), tag!("=")), number),
+                preceded(pair(this_ident("size"), tag!("=")), number),
                 registerlist,
             )),
-            |(space_name, offset, size, names)| Varnode {
+            |(
+                (space_name, space_span),
+                (offset, _),
+                (value_bytes, _),
+                names,
+            )| Varnode {
                 space_name,
+                space_span: space_span.clone(),
                 offset,
-                value_bytes: size,
+                value_bytes,
                 names,
             },
         )(input)

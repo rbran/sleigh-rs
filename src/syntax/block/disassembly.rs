@@ -1,84 +1,91 @@
 use nom::branch::alt;
-use nom::bytes::complete::tag;
 use nom::combinator::{map, opt, value};
 use nom::multi::many0;
-use nom::sequence::{
-    delimited, pair, preceded, separated_pair, terminated, tuple,
-};
+use nom::sequence::{separated_pair, terminated, tuple};
 use nom::IResult;
 
-use crate::base::{empty_space0, ident, Value};
-pub use crate::semantic::disassembly::{Op, OpUnary};
+use crate::preprocessor::token::Token;
+use crate::semantic::disassembly::{Op, OpUnary};
+use crate::syntax::parser::{ident, this_ident};
+use crate::syntax::Value;
+use crate::{SleighError, Span};
 
 impl OpUnary {
-    fn parse(input: &str) -> IResult<&str, Self> {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         use OpUnary::*;
-        alt((value(Negation, tag("~")), value(Negative, tag("-"))))(input)
+        alt((value(Negation, tag!("~")), value(Negative, tag!("-"))))(input)
     }
 }
 impl Op {
-    fn parse(input: &str, safe: bool) -> IResult<&str, Self> {
+    fn parse(
+        input: &[Token],
+        safe: bool,
+    ) -> IResult<&[Token], Self, SleighError> {
         if safe {
             Self::parse_safe(input)
         } else {
             Self::parse_unsafe(input)
         }
     }
-    fn parse_unsafe(input: &str) -> IResult<&str, Self> {
+    fn parse_unsafe(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         alt((
-            value(Self::Add, tag("+")),
-            value(Self::Sub, tag("-")),
-            value(Self::Mul, tag("*")),
-            value(Self::Div, tag("/")),
-            value(Self::Asr, tag(">>")),
-            value(Self::Lsl, tag("<<")),
-            value(Self::And, tag("$and")),
-            value(Self::Or, tag("$or")),
-            value(Self::Xor, tag("$xor")),
+            value(Self::Add, tag!("+")),
+            value(Self::Sub, tag!("-")),
+            value(Self::Mul, tag!("*")),
+            value(Self::Div, tag!("/")),
+            value(Self::Asr, tag!(">>")),
+            value(Self::Lsl, tag!("<<")),
+            value(Self::And, tag!("$and")),
+            value(Self::Or, tag!("$or")),
+            value(Self::Xor, tag!("$xor")),
         ))(input)
     }
-    fn parse_safe(input: &str) -> IResult<&str, Self> {
+    fn parse_safe(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         alt((
             Self::parse_unsafe,
-            value(Self::And, tag("&")),
-            value(Self::Or, tag("|")),
-            value(Self::Xor, tag("^")),
+            value(Self::And, tag!("&")),
+            value(Self::Or, tag!("|")),
+            value(Self::Xor, tag!("^")),
         ))(input)
     }
 }
 
 #[derive(Debug)]
-enum InnerExprOperators {
+enum InnerExprOperators<'a> {
     Op(Op),
     OpUnary(OpUnary),
-    OpenParenthesis,
+    OpenParenthesis(&'a Span),
 }
 
 #[derive(Default, Debug)]
 struct InnerExpr<'a> {
-    output: Vec<ExprElement<'a>>,
-    operators: Vec<InnerExprOperators>,
+    output: Vec<ExprElement>,
+    operators: Vec<InnerExprOperators<'a>>,
 }
 
 impl<'a> InnerExpr<'a> {
-    fn open_parenthesis(&mut self, input: &'a str) -> IResult<&'a str, ()> {
-        let (input, _) = pair(tag("("), empty_space0)(input)?;
+    fn open_parenthesis(
+        &mut self,
+        input: &'a [Token],
+    ) -> IResult<&'a [Token], (), SleighError> {
+        let (input, span) = tag!("(")(input)?;
         //open parentessis goes on top of all ops
-        self.operators.push(InnerExprOperators::OpenParenthesis);
+        self.operators
+            .push(InnerExprOperators::OpenParenthesis(span));
         Ok((input, ()))
     }
-    fn close_parenthesis(&mut self, input: &'a str) -> IResult<&'a str, ()> {
-        let (input, _) = pair(empty_space0, tag(")"))(input)?;
+    fn close_parenthesis(
+        &mut self,
+        input: &'a [Token],
+    ) -> IResult<&'a [Token], (), SleighError> {
+        let (input, location) = tag!(")")(input)?;
         //pop until we find the open parenthesis
         loop {
             let op = self.operators.pop().ok_or_else(|| {
-                nom::Err::Error(nom::error::Error::new(
-                    input,
-                    nom::error::ErrorKind::Fix,
-                ))
+                SleighError::StatementInvalid(location.clone())
             })?;
             match op {
-                InnerExprOperators::OpenParenthesis => break,
+                InnerExprOperators::OpenParenthesis(_span) => break,
                 InnerExprOperators::Op(op) => {
                     self.output.push(ExprElement::Op(op))
                 }
@@ -89,15 +96,22 @@ impl<'a> InnerExpr<'a> {
         }
         Ok((input, ()))
     }
-    fn parse_op_unary(&mut self, input: &'a str) -> IResult<&'a str, ()> {
-        map(opt(terminated(OpUnary::parse, empty_space0)), |op| {
+    fn parse_op_unary(
+        &mut self,
+        input: &'a [Token],
+    ) -> IResult<&'a [Token], (), SleighError> {
+        map(opt(OpUnary::parse), |op| {
             if let Some(op) = op {
                 self.operators.push(InnerExprOperators::OpUnary(op));
             }
             ()
         })(input)
     }
-    fn parse_op(&mut self, input: &'a str, safe: bool) -> IResult<&'a str, ()> {
+    fn parse_op(
+        &mut self,
+        input: &'a [Token],
+        safe: bool,
+    ) -> IResult<&'a [Token], (), SleighError> {
         let (input, op) = Op::parse(input, safe)?;
         //unstack the operation until it is able to put this op to the stack
         loop {
@@ -121,24 +135,30 @@ impl<'a> InnerExpr<'a> {
                     self.output.push(ExprElement::OpUnary(op));
                 }
                 //we can always stack on top of parenthesis
-                InnerExprOperators::OpenParenthesis => {
-                    self.operators.push(InnerExprOperators::OpenParenthesis);
+                open @ InnerExprOperators::OpenParenthesis(_) => {
+                    self.operators.push(open);
                     break;
                 }
             }
         }
         self.operators.push(InnerExprOperators::Op(op));
 
-        let (input, _) = pair(empty_space0, |x| self.expr_rec(x))(input)?;
+        let (input, _) = self.expr_rec(input)?;
         Ok((input, ()))
     }
-    fn value(&mut self, input: &'a str) -> IResult<&'a str, ()> {
-        map(Value::parse, |x| self.output.push(ExprElement::Value(x)))(input)
+    fn value(
+        &mut self,
+        input: &'a [Token],
+    ) -> IResult<&'a [Token], (), SleighError> {
+        map(Value::parse_signed, |x| self.output.push(ExprElement::Value(x)))(input)
     }
-    fn expr_rec(&mut self, input: &'a str) -> IResult<&'a str, ()> {
+    fn expr_rec(
+        &mut self,
+        input: &'a [Token],
+    ) -> IResult<&'a [Token], (), SleighError> {
         let (input, ()) = self.parse_op_unary(input).unwrap();
 
-        let input = if let Ok((input, _)) = self.value(input) {
+        let input = if let Ok((input, _span)) = self.value(input) {
             input
         } else {
             let (input, ()) = self.open_parenthesis(input)?;
@@ -148,19 +168,20 @@ impl<'a> InnerExpr<'a> {
         };
         Ok((input, ()))
     }
-    fn expr(&mut self, input: &'a str, safe: bool) -> IResult<&'a str, ()> {
+    fn expr(
+        &mut self,
+        input: &'a [Token],
+        safe: bool,
+    ) -> IResult<&'a [Token], (), SleighError> {
         //first element is required
         let (input, _) = self.expr_rec(input)?;
         //then we get 0 or more Op Field after that.
-        value(
-            (),
-            many0(preceded(empty_space0, |input| self.parse_op(input, safe))),
-        )(input)
+        value((), many0(|input| self.parse_op(input, safe)))(input)
     }
     fn parse(
-        input: &'a str,
+        input: &'a [Token],
         safe: bool,
-    ) -> IResult<&'a str, Vec<ExprElement<'a>>> {
+    ) -> IResult<&'a [Token], Vec<ExprElement>, SleighError> {
         let mut rpn = Self::default();
         let (input, _) = rpn.expr(input, safe)?;
         //pop all operators into the output
@@ -168,10 +189,9 @@ impl<'a> InnerExpr<'a> {
             let ele = match ele {
                 InnerExprOperators::Op(op) => ExprElement::Op(op),
                 InnerExprOperators::OpUnary(op) => ExprElement::OpUnary(op),
-                InnerExprOperators::OpenParenthesis => {
-                    return Err(nom::Err::Error(nom::error::Error::new(
-                        input,
-                        nom::error::ErrorKind::Fix,
+                InnerExprOperators::OpenParenthesis(span) => {
+                    return Err(nom::Err::Error(SleighError::StatementInvalid(
+                        span.clone(),
                     )))
                 }
             };
@@ -182,82 +202,88 @@ impl<'a> InnerExpr<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Expr<'a> {
-    pub rpn: Vec<ExprElement<'a>>,
+pub struct Expr {
+    pub rpn: Vec<ExprElement>,
 }
 #[derive(Clone, Debug)]
-pub enum ExprElement<'a> {
-    Value(Value<'a>),
+pub enum ExprElement {
+    Value(Value),
     Op(Op),
     OpUnary(OpUnary),
 }
-impl<'a> IntoIterator for Expr<'a> {
-    type Item = ExprElement<'a>;
+impl IntoIterator for Expr {
+    type Item = ExprElement;
     type IntoIter = std::vec::IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.rpn.into_iter()
     }
 }
-impl<'a> Expr<'a> {
-    pub fn parse(input: &'a str, safe: bool) -> IResult<&'a str, Self> {
+impl Expr {
+    pub fn parse(
+        input: &[Token],
+        safe: bool,
+    ) -> IResult<&[Token], Self, SleighError> {
         let (input, inner_expr) = InnerExpr::parse(input, safe)?;
         Ok((input, Self { rpn: inner_expr }))
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct GlobalSet<'a> {
-    pub address: Value<'a>,
-    pub context: &'a str,
+pub struct GlobalSet {
+    pub src: Span,
+    pub address: Value,
+    pub context: String,
 }
-impl<'a> GlobalSet<'a> {
-    fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl GlobalSet {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
-            delimited(
-                pair(tag("globalset("), empty_space0),
-                separated_pair(
-                    Value::parse,
-                    tuple((empty_space0, tag(","), empty_space0)),
-                    ident,
-                ),
-                tuple((empty_space0, tag(")"), empty_space0, tag(";"))),
-            ),
-            |(address, context)| Self { address, context },
+            tuple((
+                terminated(this_ident("globalset"), tag!("(")),
+                terminated(Value::parse_unsigned, tag!(",")),
+                terminated(ident, tag!(")")),
+                tag!(";"),
+            )),
+            |(start, address, (context, _), end)| Self {
+                src: Span::combine(start.clone().start(), end.clone().end()),
+                address,
+                context,
+            },
         )(input)
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct Assignment<'a> {
-    pub left: &'a str,
-    pub right: Expr<'a>,
+pub struct Assignment {
+    pub left_span: Span,
+    pub left: String,
+    pub right: Expr,
 }
 
-impl<'a> Assignment<'a> {
-    fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl Assignment {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
             terminated(
-                separated_pair(
-                    ident,
-                    tuple((empty_space0, tag("="), empty_space0)),
-                    |x| Expr::parse(x, true),
-                ),
-                pair(empty_space0, tag(";")),
+                separated_pair(ident, tag!("="), |x| Expr::parse(x, true)),
+                tag!(";"),
             ),
-            |(left, right)| Self { left, right },
+            |((left, left_span), right)| Self {
+                left_span: left_span.clone(),
+                left,
+                right,
+            },
         )(input)
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum Assertation<'a> {
-    GlobalSet(GlobalSet<'a>),
-    Assignment(Assignment<'a>),
+pub enum Assertation {
+    GlobalSet(GlobalSet),
+    Assignment(Assignment),
 }
 
-impl<'a> Assertation<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl Assertation {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         alt((
             map(GlobalSet::parse, Self::GlobalSet),
             map(Assignment::parse, Self::Assignment),
@@ -266,95 +292,23 @@ impl<'a> Assertation<'a> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Disassembly<'a> {
-    pub assertations: Vec<Assertation<'a>>,
+pub struct Disassembly {
+    pub assertations: Vec<Assertation>,
 }
 
-impl<'a> IntoIterator for Disassembly<'a> {
-    type Item = Assertation<'a>;
-    type IntoIter = std::vec::IntoIter<Assertation<'a>>;
+impl IntoIterator for Disassembly {
+    type Item = Assertation;
+    type IntoIter = std::vec::IntoIter<Assertation>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.assertations.into_iter()
     }
 }
 
-impl<'a> Disassembly<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
-        map(
-            many0(preceded(empty_space0, Assertation::parse)),
-            |assertations| Self { assertations },
-        )(input)
+impl Disassembly {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+        map(many0(Assertation::parse), |assertations| Self {
+            assertations,
+        })(input)
     }
-}
-
-#[cfg(test)]
-mod test {
-    //    use nom::{combinator::eof, sequence::terminated};
-    //
-    //    use crate::processor::table::semantic::Value;
-    //
-    //    use crate::processor::table::dissasembly::{
-    //        dissasembly_action, Assignment, DissasemblyParser, ExprElement, Op,
-    //        OpUnary,
-    //    };
-    //
-    //    #[test]
-    //    fn test_dissassembly_action1() {
-    //        use Assignment::*;
-    //        use ExprElement as Expr;
-    //        use Op::*;
-    //        use OpUnary::*;
-    //        use Value::*;
-    //        let test =
-    //            "A=B<< 1; c=(d);  e=(1+2); X=-y; W=~(1+(A>>2)); globalset(X,Y);globalset(A,B);";
-    //        let (_, action) = terminated(dissasembly_action, eof)(test).unwrap();
-    //        assert_eq!(
-    //            DissasemblyParser {
-    //                assignments: vec![
-    //                    Local {
-    //                        left: "A".into(),
-    //                        right: vec![
-    //                            Expr::Value(Var("B".into())),
-    //                            Expr::Value(Int(1)),
-    //                            Expr::Op(Lsl)
-    //                        ],
-    //                    },
-    //                    Local {
-    //                        left: "c".into(),
-    //                        right: vec![Expr::Value(Var("d".into())),],
-    //                    },
-    //                    Local {
-    //                        left: "e".into(),
-    //                        right: vec![
-    //                            Expr::Value(Int(1)),
-    //                            Expr::Value(Int(2)),
-    //                            Expr::Op(Add),
-    //                        ],
-    //                    },
-    //                    Local {
-    //                        left: "X".into(),
-    //                        right: vec![
-    //                            Expr::Value(Var("y".into())),
-    //                            Expr::OpUnary(Negative),
-    //                        ],
-    //                    },
-    //                    Local {
-    //                        left: "W".into(),
-    //                        right: vec![
-    //                            Expr::Value(Int(1)),
-    //                            Expr::Value(Value::Var("A".into())),
-    //                            Expr::Value(Int(2)),
-    //                            Expr::Op(Asr),
-    //                            Expr::Op(Add),
-    //                            Expr::OpUnary(Negation),
-    //                        ],
-    //                    },
-    //                    Global("X".into(), "Y".into()),
-    //                    Global("A".into(), "B".into()),
-    //                ]
-    //            },
-    //            action,
-    //        );
-    //    }
 }

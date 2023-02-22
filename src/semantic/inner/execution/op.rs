@@ -1,7 +1,6 @@
-use crate::base::{FloatType, IntTypeS, IntTypeU, NonZeroTypeU};
 use crate::semantic::inner::{FieldSize, SolverStatus};
 use crate::semantic::space::Space;
-use crate::InputSource;
+use crate::{Span, NumberUnsigned, NumberNonZeroUnsigned, NumberSigned, FloatType};
 
 use crate::semantic::{execution, GlobalReference};
 
@@ -10,13 +9,13 @@ pub type FinalAddrDereference = execution::AddrDereference;
 pub struct AddrDereference {
     pub space: GlobalReference<Space>,
     pub size: FieldSize,
-    pub src: InputSource,
+    pub src: Span,
 }
 impl AddrDereference {
     pub fn new(
         space: GlobalReference<Space>,
         size: FieldSize,
-        src: InputSource,
+        src: Span,
     ) -> Self {
         Self { space, size, src }
     }
@@ -42,27 +41,27 @@ impl AddrDereference {
 pub type FinalTruncate = execution::Truncate;
 #[derive(Clone, Debug)]
 pub struct Truncate {
-    pub lsb: IntTypeU,
+    pub lsb: NumberUnsigned,
     pub size: FieldSize,
 }
 
 impl Truncate {
-    pub fn new(lsb: IntTypeU, size: NonZeroTypeU) -> Self {
+    pub fn new(lsb: NumberUnsigned, size: NumberNonZeroUnsigned) -> Self {
         let size = FieldSize::new_bits(size);
         Self { lsb, size }
     }
-    pub fn new_lsb(size: NonZeroTypeU) -> Self {
+    pub fn new_lsb(size: NumberNonZeroUnsigned) -> Self {
         let size = FieldSize::new_bytes(size);
         Self { lsb: 0, size }
     }
-    pub fn new_msb(lsb: IntTypeU) -> Self {
+    pub fn new_msb(lsb: NumberUnsigned) -> Self {
         let size = FieldSize::new_unsized();
         //* 8 because msb is in bytes
         Self { lsb: lsb * 8, size }
     }
-    pub fn input_min_bits(&self) -> Option<NonZeroTypeU> {
+    pub fn input_min_bits(&self) -> Option<NumberNonZeroUnsigned> {
         Some(
-            NonZeroTypeU::new(self.size.possible_value()?.get() + self.lsb)
+            NumberNonZeroUnsigned::new(self.size.possible_value()?.get() + self.lsb)
                 .unwrap(),
         )
     }
@@ -123,12 +122,12 @@ impl Unary {
 }
 
 impl execution::Binary {
-    pub fn execute(&self, left: IntTypeU, right: IntTypeU) -> Option<IntTypeU> {
+    pub fn execute(&self, left: NumberUnsigned, right: NumberUnsigned) -> Option<NumberUnsigned> {
         //COMPILER please optimize this
-        let (left_s, right_s) = (left as IntTypeS, right as IntTypeS);
-        let sig = |x: IntTypeS| x as IntTypeU;
+        let (left_s, right_s) = (left as NumberSigned, right as NumberSigned);
+        let sig = |x: NumberSigned| x as NumberUnsigned;
         let (left_f, right_f) = (left as FloatType, right as FloatType);
-        let float = |x: FloatType| x as IntTypeU;
+        let float = |x: FloatType| x as NumberUnsigned;
         match self {
             Self::Add => left.checked_add(right),
             Self::Sub => left.checked_sub(right),
@@ -147,25 +146,25 @@ impl execution::Binary {
             Self::BitAnd => Some(left & right),
             Self::BitXor => Some(left ^ right),
             Self::BitOr => Some(left | right),
-            Self::Less => Some((left < right) as IntTypeU),
-            Self::Greater => Some((left > right) as IntTypeU),
-            Self::LessEq => Some((left <= right) as IntTypeU),
-            Self::GreaterEq => Some((left >= right) as IntTypeU),
-            Self::SigLess => Some((left_s < right_s) as IntTypeU),
-            Self::SigGreater => Some((left_s > right_s) as IntTypeU),
-            Self::SigLessEq => Some((left_s <= right_s) as IntTypeU),
-            Self::SigGreaterEq => Some((left_s >= right_s) as IntTypeU),
-            Self::FloatLess => Some((left_f < right_f) as IntTypeU),
-            Self::FloatGreater => Some((left_f > right_f) as IntTypeU),
-            Self::FloatLessEq => Some((left_f <= right_f) as IntTypeU),
-            Self::FloatGreaterEq => Some((left_f >= right_f) as IntTypeU),
-            Self::And => Some((left != 0 && right != 0) as IntTypeU),
-            Self::Xor => Some(((left != 0) ^ (right != 0)) as IntTypeU),
-            Self::Or => Some((left != 0 || right != 0) as IntTypeU),
-            Self::Eq => Some((left == right) as IntTypeU),
-            Self::Ne => Some((left != right) as IntTypeU),
-            Self::FloatEq => Some((left_f == right_f) as IntTypeU),
-            Self::FloatNe => Some((left_f != right_f) as IntTypeU),
+            Self::Less => Some((left < right) as NumberUnsigned),
+            Self::Greater => Some((left > right) as NumberUnsigned),
+            Self::LessEq => Some((left <= right) as NumberUnsigned),
+            Self::GreaterEq => Some((left >= right) as NumberUnsigned),
+            Self::SigLess => Some((left_s < right_s) as NumberUnsigned),
+            Self::SigGreater => Some((left_s > right_s) as NumberUnsigned),
+            Self::SigLessEq => Some((left_s <= right_s) as NumberUnsigned),
+            Self::SigGreaterEq => Some((left_s >= right_s) as NumberUnsigned),
+            Self::FloatLess => Some((left_f < right_f) as NumberUnsigned),
+            Self::FloatGreater => Some((left_f > right_f) as NumberUnsigned),
+            Self::FloatLessEq => Some((left_f <= right_f) as NumberUnsigned),
+            Self::FloatGreaterEq => Some((left_f >= right_f) as NumberUnsigned),
+            Self::And => Some((left != 0 && right != 0) as NumberUnsigned),
+            Self::Xor => Some(((left != 0) ^ (right != 0)) as NumberUnsigned),
+            Self::Or => Some((left != 0 || right != 0) as NumberUnsigned),
+            Self::Eq => Some((left == right) as NumberUnsigned),
+            Self::Ne => Some((left != right) as NumberUnsigned),
+            Self::FloatEq => Some((left_f == right_f) as NumberUnsigned),
+            Self::FloatNe => Some((left_f != right_f) as NumberUnsigned),
             //TODO make IntTypeU Ref sized for this reason?
             //carry borrow can only be calculated if the type size is known
             Self::Carry | Self::SCarry | Self::SBorrow => None,

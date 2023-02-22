@@ -1,47 +1,74 @@
+#[macro_use]
+pub mod parser;
+
 pub mod attach;
 pub mod block;
 pub mod define;
 
 use nom::branch::alt;
-use nom::bytes::complete::tag;
-use nom::combinator::{consumed, eof, map};
-use nom::multi::many0;
-use nom::sequence::{
-    delimited, pair, preceded, separated_pair, terminated, tuple,
-};
+use nom::combinator::map;
+use nom::sequence::{separated_pair, tuple};
 use nom::IResult;
 
-use crate::base::{empty_space0, number_unsig, IntTypeU};
-use crate::preprocessor::PreProcOutput;
-use crate::InputSource;
+use crate::preprocessor::token::{Token, TokenType};
+use crate::preprocessor::FilePreProcessor;
+use crate::syntax::parser::Parser;
+use crate::{Number, NumberUnsigned, SleighError, Span, IDENT_INSTRUCTION};
 
 use self::attach::Attach;
 use self::block::pcode_macro::PcodeMacro;
 use self::block::table::Constructor;
 use self::block::with_block::WithBlock;
 use self::define::Define;
+use self::parser::{ident, number, number_signed, number_unsigned};
+
+#[derive(Clone, Debug)]
+pub enum Value {
+    Number(Span, Number),
+    Ident(Span, String),
+}
+
+impl Value {
+    pub fn location(&self) -> &Span {
+        match self {
+            Value::Number(location, _) | Value::Ident(location, _) => location,
+        }
+    }
+    pub fn parse_unsigned(
+        input: &[Token],
+    ) -> IResult<&[Token], Self, SleighError> {
+        alt((
+            map(number_unsigned, |(x, span)| Self::Number(span.clone(), x)),
+            map(ident, |(x, span)| Self::Ident(span.clone(), x)),
+        ))(input)
+    }
+    pub fn parse_signed(
+        input: &[Token],
+    ) -> IResult<&[Token], Self, SleighError> {
+        alt((
+            map(number_signed, |(x, span)| Self::Number(span.clone(), x)),
+            map(ident, |(x, span)| Self::Ident(span.clone(), x)),
+        ))(input)
+    }
+}
 
 //TODO move this
-#[derive(Clone, Copy, Debug)]
-pub struct BitRange<'a> {
-    pub src: &'a str,
-    pub lsb_bit: IntTypeU,
-    pub n_bits: IntTypeU,
+#[derive(Clone, Debug)]
+pub struct BitRange {
+    pub src: Span,
+    pub lsb_bit: NumberUnsigned,
+    pub n_bits: NumberUnsigned,
 }
-impl<'a> BitRange<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl BitRange {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
-            consumed(delimited(
-                pair(tag("["), empty_space0),
-                separated_pair(
-                    number_unsig,
-                    tuple((empty_space0, tag(","), empty_space0)),
-                    number_unsig,
-                ),
-                pair(empty_space0, tag("]")),
+            tuple((
+                tag!("["),
+                separated_pair(number, tag!(","), number),
+                tag!("]"),
             )),
-            |(src, (lsb, n_bits))| Self {
-                src,
+            |(start, ((lsb, _), (n_bits, _)), end)| Self {
+                src: Span::combine(start.clone().start(), end.clone().end()),
                 lsb_bit: lsb,
                 n_bits,
             },
@@ -50,54 +77,92 @@ impl<'a> BitRange<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub enum Assertation<'a> {
-    Define(Define<'a>),
-    Attach(Attach<'a>),
-    TableConstructor(Constructor<'a>),
-    PcodeMacro(PcodeMacro<'a>),
-    WithBlock(WithBlock<'a>),
+pub enum Assertation {
+    Define(Define),
+    Attach(Attach),
+    TableConstructor(Constructor),
+    PcodeMacro(PcodeMacro),
+    WithBlock(WithBlock),
 }
-impl<'a> Assertation<'a> {
-    fn parse(input: &'a str) -> IResult<&'a str, Self> {
-        alt((
-            map(Define::parse, |x| Self::Define(x)),
-            map(Attach::parse, |x| Self::Attach(x)),
-            map(PcodeMacro::parse, |x| Self::PcodeMacro(x)),
-            map(WithBlock::parse, |x| Self::WithBlock(x)),
-            map(Constructor::parse, |x| Self::TableConstructor(x)),
-        ))(input)
+impl Assertation {
+    fn parse(
+        input: &mut FilePreProcessor,
+        buf: &mut Vec<Token>,
+        inside_with_block: bool,
+    ) -> Result<Option<Self>, SleighError> {
+        assert!(buf.is_empty());
+        let token = match input.parse() {
+            Ok(Some(token)) => token,
+            Ok(None) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        buf.push(token);
+        let token_ref = &buf[0];
+        let assertation = match &token_ref.token_type {
+            //TODO make those reserved words into tokens?
+            TokenType::Ident(x) if x == "define" => {
+                input
+                    .parse_until(buf, |x| &x.token_type == &token_type!(";"))?;
+                Define::parse(buf).map(Self::Define)?
+            }
+            TokenType::Ident(x) if x == "attach" => {
+                input
+                    .parse_until(buf, |x| &x.token_type == &token_type!(";"))?;
+                Attach::parse(buf).map(Self::Attach)?
+            }
+            TokenType::Ident(x) if x == "macro" => {
+                input
+                    .parse_until(buf, |x| &x.token_type == &token_type!("}"))?;
+                PcodeMacro::parse(buf).map(Self::PcodeMacro)?
+            }
+            TokenType::Ident(x) if x == "with" => {
+                WithBlock::parse(input, buf).map(Self::WithBlock)?
+            }
+            TokenType::Ident(_table) => {
+                Constructor::parse(input, buf).map(Self::TableConstructor)?
+            }
+            //instruction table
+            TokenType::DubleDot => {
+                let src = token_ref.location.clone();
+                buf.clear();
+                Constructor::parse_table(
+                    input,
+                    buf,
+                    "".to_string(),
+                    src,
+                )
+                .map(Self::TableConstructor)?
+            }
+            //close with_block
+            TokenType::DeliCloseCurly if inside_with_block => return Ok(None),
+            _ => {
+                return Err(SleighError::StatementInvalid(
+                    token_ref.location.clone(),
+                ))
+            }
+        };
+        Ok(Some(assertation))
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct Syntax<'a> {
-    assertations: Vec<Assertation<'a>>,
+#[derive(Clone, Debug)]
+pub struct Sleigh {
+    pub assertations: Vec<Assertation>,
 }
-impl<'a> Syntax<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
-        map(
-            many0(preceded(empty_space0, Assertation::parse)),
-            |assertations| Self { assertations },
-        )(input)
+impl Sleigh {
+    pub fn parse(
+        input: &mut FilePreProcessor,
+        buf: &mut Vec<Token>,
+        inside_with_block: bool,
+    ) -> Result<Self, nom::Err<SleighError>> {
+        let mut assertations = vec![];
+        loop {
+            buf.clear();
+            let Some(ass) = Assertation::parse(input, buf, inside_with_block)? else {
+            break
+        };
+            assertations.push(ass);
+        }
+        Ok(Self { assertations })
     }
-}
-impl<'a> IntoIterator for Syntax<'a> {
-    type Item = Assertation<'a>;
-    type IntoIter = std::vec::IntoIter<Assertation<'a>>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.assertations.into_iter()
-    }
-}
-
-pub fn parse_syntax<'a>(
-    input: &PreProcOutput,
-) -> Result<Syntax, nom::Err<nom::error::Error<InputSource>>> {
-    terminated(Syntax::parse, pair(empty_space0, eof))(input.as_str())
-        .map_err(|err| {
-            err.map_input(|err_pos| {
-                input.source_data_start(err_pos).unwrap().clone()
-            })
-        })
-        .map(|(_, result)| result)
 }

@@ -4,11 +4,12 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
-use crate::base::{IntTypeU, NonZeroTypeU};
-use crate::{InputSource, TokenField, UserFunction};
+use crate::{NumberNonZeroUnsigned, NumberUnsigned, Span, Number};
 
 use super::pcode_macro::PcodeMacroInstance;
 use super::table::{Table, TableError, TableErrorSub};
+use super::token::TokenField;
+use super::user_function::UserFunction;
 use super::varnode::{Bitrange, Context, Varnode};
 use super::{disassembly, GlobalReference, InstNext, InstStart};
 
@@ -22,24 +23,24 @@ pub use self::op::{
 #[derive(Clone, Debug, Error)]
 pub enum ExecutionError {
     #[error("Invalid Ref: {0}")]
-    InvalidRef(InputSource),
+    InvalidRef(Span),
     #[error("Missing Ref: {0}")]
-    MissingRef(InputSource),
+    MissingRef(Span),
 
     //TODO migrate this to PcodeMacro
     #[error("Macro don't allow Build statements")]
     MacroBuildInvalid,
 
     #[error("Invalid Var declaration {0}")]
-    InvalidVarDeclare(InputSource),
+    InvalidVarDeclare(Span),
     #[error("Invalid Var Len {0}")]
-    InvalidVarLen(InputSource),
+    InvalidVarLen(Span),
     #[error("Label invalid {0}")]
-    InvalidLabel(InputSource),
+    InvalidLabel(Span),
     #[error("Label not found {0}")]
-    MissingLabel(InputSource),
+    MissingLabel(Span),
     #[error("Label Duplicated {0}")]
-    DuplicatedLabel(InputSource),
+    DuplicatedLabel(Span),
 
     #[error("Default address space not found")]
     DefaultSpace, //TODO src
@@ -51,20 +52,20 @@ pub enum ExecutionError {
     BitRangeZero, //TODO src
 
     #[error("Can't apply op to variable due to size at {0}")]
-    VarSize(InputSource), //TODO sub-type error
+    VarSize(Span), //TODO sub-type error
 
     #[error("Call user Function with invalid param numbers {0}")]
-    UserFunctionParamNumber(InputSource),
+    UserFunctionParamNumber(Span),
     #[error("Call user Function with invalid return Size {0}")]
-    UserFunctionReturnSize(InputSource),
+    UserFunctionReturnSize(Span),
 
     //TODO remove this
     #[error("Invalid amb1: {0}")]
-    InvalidAmb1(InputSource),
+    InvalidAmb1(Span),
 }
 
 impl ExecutionError {
-    pub fn to_table(self, table_pos: InputSource) -> TableError {
+    pub fn to_table(self, table_pos: Span) -> TableError {
         TableError {
             table_pos,
             sub: TableErrorSub::Execution(self),
@@ -85,7 +86,10 @@ impl Variable {
 
 #[derive(Clone, Debug)]
 pub enum VariableScope {
-    Value { value: IntTypeU, size: NonZeroTypeU },
+    Value {
+        value: NumberUnsigned,
+        size: NumberNonZeroUnsigned,
+    },
     AttachVarnode(GlobalReference<TokenField>),
     TableExport(GlobalReference<Table>),
 }
@@ -117,22 +121,22 @@ pub enum ReferencedValue {
 #[derive(Clone, Debug)]
 pub enum Expr {
     Value(ExprElement),
-    Op(NonZeroTypeU, Binary, Box<Expr>, Box<Expr>),
+    Op(NumberNonZeroUnsigned, Binary, Box<Expr>, Box<Expr>),
 }
 
 #[derive(Clone, Debug)]
 pub enum ExprElement {
     Value(ExprValue),
     UserCall(UserCall),
-    Reference(NonZeroTypeU, ReferencedValue),
-    Op(NonZeroTypeU, Unary, Box<Expr>),
+    Reference(NumberNonZeroUnsigned, ReferencedValue),
+    Op(NumberNonZeroUnsigned, Unary, Box<Expr>),
     New(Box<Expr>, Option<Box<Expr>>),
     CPool(Vec<Expr>),
 }
 
 #[derive(Clone, Debug)]
 pub enum ExprValue {
-    Int(IntTypeU),
+    Int(Number),
     TokenField(GlobalReference<TokenField>),
     InstStart(GlobalReference<InstStart>),
     InstNext(GlobalReference<InstNext>),
@@ -194,7 +198,7 @@ pub enum WriteValue {
 #[derive(Clone, Debug)]
 pub enum ReadValue {
     //value is always unsigned, negatives are preceded by an '-' op
-    Integer(IntTypeU),
+    Integer(NumberUnsigned),
     DisVar(Rc<disassembly::Variable>),
     TokenField(GlobalReference<TokenField>),
     InstStart(GlobalReference<InstStart>),
@@ -257,14 +261,14 @@ pub enum ExportConst {
 }
 #[derive(Clone, Debug)]
 pub enum Export {
-    Const(NonZeroTypeU, ExportConst),
+    Const(NumberNonZeroUnsigned, ExportConst),
     Value(Expr),
     Reference(Expr, AddrDereference),
 }
 
 #[derive(Clone, Debug)]
 pub enum Statement {
-    Delayslot(IntTypeU),
+    Delayslot(NumberUnsigned),
     Export(Export),
     CpuBranch(CpuBranch),
     LocalGoto(LocalGoto),

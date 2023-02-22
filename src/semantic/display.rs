@@ -2,18 +2,19 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
-use crate::{InputSource, TokenField, Varnode};
+use crate::Span;
 
 use super::table::Table;
-use super::varnode::Context;
+use super::token::TokenField;
+use super::varnode::{Context, Varnode};
 use super::{disassembly, GlobalReference, InstNext, InstStart};
 
 #[derive(Clone, Debug, Error)]
 pub enum DisplayError {
     #[error("Invalid Ref {0}")]
-    InvalidRef(InputSource),
+    InvalidRef(Span),
     #[error("Missing Ref {0}")]
-    MissingRef(InputSource),
+    MissingRef(Span),
 }
 
 #[derive(Clone, Debug, Default)]

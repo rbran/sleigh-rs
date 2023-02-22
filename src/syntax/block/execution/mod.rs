@@ -4,36 +4,36 @@ pub mod export;
 pub mod expr;
 pub mod op;
 
-use crate::syntax::block::execution::assignment::Assignment;
-use crate::syntax::block::execution::assignment::Declare;
-use crate::syntax::block::execution::assignment::MemWrite;
+use crate::preprocessor::token::Token;
+use crate::syntax::block::execution::assignment::{
+    Assignment, Declare, MemWrite,
+};
+use crate::syntax::parser::{ident, number, this_ident};
+use crate::{NumberUnsigned, SleighError, Span};
 use nom::branch::alt;
-use nom::bytes::complete::tag;
 use nom::combinator::map;
 use nom::multi::{many0, separated_list0};
-use nom::sequence::{delimited, pair, preceded, terminated, tuple};
+use nom::sequence::{delimited, pair, terminated};
 use nom::IResult;
-
-use crate::base::{empty_space0, ident, number_unsig, IntTypeU};
 
 use self::branch::Branch;
 use self::export::Export;
 
 #[derive(Clone, Debug)]
-pub enum Statement<'a> {
+pub enum Statement {
     Delayslot(Delayslot),
-    Label(Label<'a>),
-    Export(Export<'a>),
-    Branch(Branch<'a>),
-    Build(Build<'a>),
-    Call(UserCall<'a>),
-    Declare(Declare<'a>),
-    Assignment(Assignment<'a>),
-    MemWrite(MemWrite<'a>),
+    Label(Label),
+    Export(Export),
+    Branch(Branch),
+    Build(Build),
+    Call(UserCall),
+    Declare(Declare),
+    Assignment(Assignment),
+    MemWrite(MemWrite),
 }
 
-impl<'a> Statement<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl Statement {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         alt((
             //Move label out of statement?
             map(Label::parse, Self::Label),
@@ -50,160 +50,106 @@ impl<'a> Statement<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Delayslot(pub IntTypeU);
+pub struct Delayslot(pub NumberUnsigned);
 
 impl Delayslot {
-    fn parse(input: &str) -> IResult<&str, Self> {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
             terminated(
                 delimited(
-                    pair(tag("delayslot("), empty_space0),
-                    number_unsig,
-                    pair(empty_space0, tag(")")),
+                    pair(this_ident("delayslot"), tag!("(")),
+                    number,
+                    tag!(")"),
                 ),
-                pair(empty_space0, tag(";")),
+                tag!(";"),
             ),
-            |value| Self(value),
+            |(value, _)| Self(value),
         )(input)
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct Label<'a> {
-    pub name: &'a str,
+pub struct Label {
+    pub src: Span,
+    pub name: String,
 }
 
-impl<'a> Label<'a> {
-    fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl Label {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
-            delimited(
-                pair(tag("<"), empty_space0),
-                ident,
-                pair(empty_space0, tag(">")),
-            ),
-            |name| Self { name },
+            delimited(tag!("<"), ident, tag!(">")),
+            |(name, name_src)| Self {
+                name,
+                src: name_src.clone(),
+            },
         )(input)
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct Build<'a> {
-    pub table: &'a str,
+pub struct Build {
+    pub src: Span,
+    pub table_name: String,
 }
-impl<'a> Build<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl Build {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
-            delimited(
-                pair(tag("build"), empty_space0),
-                ident,
-                pair(empty_space0, tag(";")),
-            ),
-            |table| Self { table },
+            delimited(this_ident("build"), ident, tag!(";")),
+            |(table_name, name_src)| Self {
+                table_name,
+                src: name_src.clone(),
+            },
         )(input)
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct UserCall<'a> {
+pub struct UserCall {
     //top of the stack contains the call (op::Op)
-    pub params: Vec<expr::Expr<'a>>,
-    pub function: &'a str,
+    pub params: Vec<expr::Expr>,
+    pub src: Span,
+    pub name: String,
 }
 
-impl<'a> UserCall<'a> {
-    pub fn new(function: &'a str, params: Vec<expr::Expr<'a>>) -> Self {
-        Self { function, params }
+impl UserCall {
+    pub fn new(function: String, src: Span, params: Vec<expr::Expr>) -> Self {
+        Self {
+            name: function,
+            src,
+            params,
+        }
     }
-    pub fn parse_statement(input: &'a str) -> IResult<&'a str, Self> {
-        terminated(UserCall::parse_expr, pair(empty_space0, tag(";")))(input)
+    pub fn parse_statement(
+        input: &[Token],
+    ) -> IResult<&[Token], Self, SleighError> {
+        terminated(UserCall::parse_expr, tag!(";"))(input)
     }
-    pub fn parse_expr(input: &'a str) -> IResult<&'a str, Self> {
+    pub fn parse_expr(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
             pair(
                 ident,
                 delimited(
-                    tuple((empty_space0, tag("("), empty_space0)),
-                    separated_list0(
-                        tuple((empty_space0, tag(","), empty_space0)),
-                        expr::Expr::parse,
-                    ),
-                    pair(empty_space0, tag(")")),
+                    tag!("("),
+                    separated_list0(tag!(","), expr::Expr::parse),
+                    tag!(")"),
                 ),
             ),
-            |(function, params)| Self { params, function },
+            |((name, name_src), params)| Self {
+                params,
+                src: name_src.clone(),
+                name,
+            },
         )(input)
     }
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Execution<'a> {
-    pub statements: Vec<Statement<'a>>,
+pub struct Execution {
+    pub statements: Vec<Statement>,
 }
 
-impl<'a> Execution<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
-        map(
-            many0(preceded(empty_space0, Statement::parse)),
-            |statements| Self { statements },
-        )(input)
+impl Execution {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+        map(many0(Statement::parse), |statements| Self { statements })(input)
     }
-}
-
-#[cfg(test)]
-mod test {
-    //    use nom::{combinator::eof, sequence::terminated};
-    //
-    //    use crate::processor::table::semantic::{
-    //        parse_semantic, Assignment, ByteRange, Expr, ExprElement, LeftElement,
-    //        OpBinary, OpLeft, OpUnary, SemanticParser, Statement, Value,
-    //    };
-    //
-    //    #[test]
-    //    fn test_assignment1() {
-    //        use Statement::*;
-    //        let test = "local tmp:4 = (value >> 31); tmp2 = tmp(0);";
-    //        let (_, semantic) = terminated(parse_semantic, eof)(test).unwrap();
-    //        assert_eq!(
-    //            semantic,
-    //            SemanticParser {
-    //                statements: vec![
-    //                    VarSet(Assignment {
-    //                        local: true,
-    //                        left: LeftElement {
-    //                            name: "tmp".into(),
-    //                            op: Some(OpLeft::ByteRange(ByteRange {
-    //                                lsb: true,
-    //                                n_bytes: 4,
-    //                            }))
-    //                        },
-    //                        right: Some(Expr {
-    //                            rpn: vec![
-    //                                ExprElement::Value(Value::Var("value".into())),
-    //                                ExprElement::Value(Value::Int(31)),
-    //                                ExprElement::OpBinary(OpBinary::Lsr)
-    //                            ]
-    //                        }),
-    //                    }),
-    //                    VarSet(Assignment {
-    //                        local: false,
-    //                        left: LeftElement {
-    //                            name: "tmp2".into(),
-    //                            op: None
-    //                        },
-    //                        right: Some(Expr {
-    //                            rpn: vec![
-    //                                ExprElement::Value(Value::Var("tmp".into())),
-    //                                ExprElement::OpUnary(OpUnary::ByteRange(
-    //                                    ByteRange {
-    //                                        lsb: false,
-    //                                        n_bytes: 0,
-    //                                    }
-    //                                )),
-    //                            ]
-    //                        }),
-    //                    })
-    //                ]
-    //            }
-    //        );
-    //    }
 }

@@ -1,8 +1,9 @@
 use std::rc::Rc;
 
 use super::inner::PrintFlags;
+use super::varnode::Varnode;
 use super::{GlobalReference, PrintBase, PrintFmt};
-use crate::{IntTypeS, NonZeroTypeU, Varnode};
+use crate::{Number, NumberNonZeroUnsigned};
 
 #[derive(Clone, Debug)]
 pub enum Meaning {
@@ -26,33 +27,37 @@ pub enum Meaning {
     ///In Disassembly, use the translated value.
     ///In Execution, the value is translanted and is automatically expanded to
     ///the required len.
-    Value(PrintBase, Rc<[(usize, IntTypeS)]>),
+    Value(PrintBase, Rc<[(usize, Number)]>),
 }
 
 impl Meaning {
     pub(crate) fn new_variable(
-        print_flags: &PrintFlags,
+        _print_flags: &PrintFlags,
         variables: &Rc<[(usize, GlobalReference<Varnode>)]>,
     ) -> Option<Self> {
-        if print_flags.is_set() {
-            //can't set variable if a print flag is also set
-            return None;
-        }
+        //TODO this happen: a token marked as `dec` is also attach to
+        //name/variable, what to do? Just discarding the flag.
+        //if print_flags.is_set() {
+        //    //can't set variable if a print flag is also set
+        //    return None;
+        //}
         Some(Meaning::Variable(Rc::clone(variables)))
     }
     pub(crate) fn new_name(
-        print_flags: &PrintFlags,
+        _print_flags: &PrintFlags,
         names: &Rc<[(usize, String)]>,
     ) -> Option<Self> {
-        if print_flags.is_set() {
-            //can't set variable if a print flag is also set
-            return None;
-        }
+        //TODO this happen: a token marked as `dec` is also attach to
+        //name/variable, what to do? Just discarding the flag.
+        //if print_flags.is_set() {
+        //    //can't set variable if a print flag is also set
+        //    return None;
+        //}
         Some(Meaning::Name(Rc::clone(names)))
     }
     pub(crate) fn new_value(
         print_flags: &PrintFlags,
-        values: &Rc<[(usize, IntTypeS)]>,
+        values: &Rc<[(usize, Number)]>,
     ) -> Option<Self> {
         //value is printed in dec by default
         let base = print_flags.base.unwrap_or(PrintBase::Dec);
@@ -73,7 +78,7 @@ impl Meaning {
     }
     ///The len in bytes this value will be read/write in execution context.
     ///Only a value that is translated into varnode have a len known.
-    pub fn exec_len_bytes(&self) -> Option<NonZeroTypeU> {
+    pub fn exec_len_bytes(&self) -> Option<NumberNonZeroUnsigned> {
         match self {
             Self::Variable(vars) => {
                 Some(vars.first().unwrap().1.element().len_bytes)

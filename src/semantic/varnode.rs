@@ -1,7 +1,8 @@
 use thiserror::Error;
 
-use crate::base::{IntTypeU, NonZeroTypeU};
-use crate::InputSource;
+use crate::NumberNonZeroUnsigned;
+use crate::NumberUnsigned;
+use crate::Span;
 use crate::RangeBits;
 
 use super::meaning::Meaning;
@@ -11,21 +12,21 @@ use super::GlobalElement;
 #[derive(Clone, Debug, Error)]
 pub enum VarnodeError {
     #[error("Invalid Ref {0}")]
-    InvalidRef(InputSource),
+    InvalidRef(Span),
     #[error("Missing Ref {0}")]
-    MissingRef(InputSource),
+    MissingRef(Span),
     #[error("Attach value/register/name to Context multiple times")]
-    AttachMultiple(InputSource),
+    AttachMultiple(Span),
 }
 
 #[derive(Clone, Debug)]
 pub struct Bitrange {
-    pub location: InputSource,
+    pub location: Span,
     pub range: RangeBits,
     pub varnode: GlobalElement<Varnode>,
 }
 impl Bitrange {
-    pub fn location(&self) -> &InputSource {
+    pub fn location(&self) -> &Span {
         &self.location
     }
     pub fn range(&self) -> &RangeBits {
@@ -38,7 +39,7 @@ impl Bitrange {
 impl GlobalElement<Bitrange> {
     pub(crate) fn new_bitrange(
         name: &str,
-        src: InputSource,
+        src: Span,
         range: RangeBits,
         varnode: GlobalElement<Varnode>,
     ) -> Self {
@@ -54,14 +55,14 @@ impl GlobalElement<Bitrange> {
 }
 #[derive(Clone, Debug)]
 pub struct Context {
-    pub location: InputSource,
+    pub location: Span,
     pub range: RangeBits,
     pub varnode: GlobalElement<Varnode>,
     pub noflow: bool,
     pub meaning: Meaning,
 }
 impl Context {
-    pub fn location(&self) -> &InputSource {
+    pub fn location(&self) -> &Span {
         &self.location
     }
     pub fn range(&self) -> &RangeBits {
@@ -80,11 +81,11 @@ impl Context {
 
 #[derive(Clone, Debug)]
 pub struct Varnode {
-    pub location: InputSource,
+    pub location: Span,
     /// Offset (address) of this varnode in the Address Space
-    pub offset: IntTypeU,
+    pub offset: NumberUnsigned,
     /// Size of the varnode in bytes
-    pub len_bytes: NonZeroTypeU,
+    pub len_bytes: NumberNonZeroUnsigned,
     /// AddressSpace this varnode belongs to
     pub space: GlobalElement<Space>,
     //pub(crate) fields: Box<[Rc<BitRange>]>,
@@ -92,13 +93,13 @@ pub struct Varnode {
 }
 
 impl Varnode {
-    pub fn location(&self) -> &InputSource {
+    pub fn location(&self) -> &Span {
         &self.location
     }
-    pub fn offset(&self) -> IntTypeU {
+    pub fn offset(&self) -> NumberUnsigned {
         self.offset
     }
-    pub fn len_bytes(&self) -> NonZeroTypeU {
+    pub fn len_bytes(&self) -> NumberNonZeroUnsigned {
         self.len_bytes
     }
     pub fn space(&self) -> &GlobalElement<Space> {
@@ -109,9 +110,9 @@ impl Varnode {
 impl GlobalElement<Varnode> {
     pub(crate) fn new_varnode(
         name: &str,
-        src: InputSource,
-        offset: IntTypeU,
-        len_bytes: NonZeroTypeU,
+        src: Span,
+        offset: NumberUnsigned,
+        len_bytes: NumberNonZeroUnsigned,
         space: GlobalElement<Space>,
     ) -> Self {
         Self::new_from(

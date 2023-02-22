@@ -1,47 +1,42 @@
-use nom::bytes::complete::tag;
-use nom::combinator::{consumed, map};
+use nom::combinator::eof;
 use nom::multi::separated_list0;
-use nom::sequence::{delimited, pair, preceded, tuple};
-use nom::IResult;
+use nom::sequence::{delimited, terminated, tuple};
 
-use crate::base::{empty_space0, empty_space1, ident};
+use crate::preprocessor::token::Token;
+use crate::syntax::parser::{ident, this_ident};
+use crate::{SleighError, Span};
 
 use super::execution::Execution;
 
 //TODO impl correctly the PCode Macro
 #[derive(Clone, Debug)]
-pub struct PcodeMacro<'a> {
-    pub src: &'a str,
-    pub name: &'a str,
-    pub params: Vec<&'a str>,
-    pub body: Execution<'a>,
+pub struct PcodeMacro {
+    pub src: Span,
+    pub name: String,
+    pub params: Vec<(String, Span)>,
+    pub body: Execution,
 }
 
-impl<'a> PcodeMacro<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
-        map(
-            consumed(tuple((
-                preceded(pair(tag("macro"), empty_space1), ident),
+impl PcodeMacro {
+    pub fn parse(input: &[Token]) -> Result<Self, SleighError> {
+        let (_eof, (_, (name, src), params, body)) = terminated(
+            tuple((
+                this_ident("macro"),
+                ident,
                 delimited(
-                    tuple((empty_space0, tag("("), empty_space0)),
-                    separated_list0(
-                        tuple((empty_space0, tag(","), empty_space0)),
-                        ident,
-                    ),
-                    pair(empty_space0, tag(")")),
+                    tag!("("),
+                    separated_list0(tag!(","), ident),
+                    tag!(")"),
                 ),
-                delimited(
-                    tuple((empty_space0, tag("{"), empty_space0)),
-                    Execution::parse,
-                    pair(empty_space0, tag("}")),
-                ),
-            ))),
-            |(src, (name, params, body))| Self {
-                name,
-                params,
-                body,
-                src,
-            },
-        )(input)
+                delimited(tag!("{"), Execution::parse, tag!("}")),
+            )),
+            eof,
+        )(input)?;
+        Ok(Self {
+            name,
+            params: params.into_iter().map(|(x, s)| (x, s.clone())).collect(),
+            body,
+            src: src.clone(),
+        })
     }
 }

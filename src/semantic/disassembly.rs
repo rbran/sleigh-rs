@@ -2,9 +2,8 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
-use crate::base::IntTypeU;
 use crate::semantic::varnode::Varnode;
-use crate::InputSource;
+use crate::{Span, NumberUnsigned, Number};
 
 use super::table::Table;
 use super::token::TokenField;
@@ -14,17 +13,17 @@ use super::{GlobalReference, InstNext, InstStart};
 #[derive(Clone, Debug, Error)]
 pub enum DisassemblyError {
     #[error("Invalid Ref {0}")]
-    InvalidRef(InputSource),
+    InvalidRef(Span),
     #[error("Missing Ref {0}")]
-    MissingRef(InputSource),
+    MissingRef(Span),
 
     #[error("GlobalSet Address Ref missing {0}")]
-    GlobalsetAddressMissing(InputSource),
+    GlobalsetAddressMissing(Span),
     #[error("GlobalSet Address Ref invalid {0}")]
-    GlobalsetAddressInvalid(InputSource),
+    GlobalsetAddressInvalid(Span),
 
     #[error("GlobalSet Address Ref not a context {0}")]
-    GlobalsetAddressNotContext(InputSource),
+    GlobalsetAddressNotContext(Span),
 }
 
 #[derive(Clone, Debug, Copy)]
@@ -50,7 +49,7 @@ pub enum Op {
 pub enum ReadScope {
     //TODO: table??? Handle tables that the execution is just export Disassembly
     //Table(Reference<GlobalElement<Table>>),
-    Integer(IntTypeU),
+    Integer(Number),
     Context(GlobalReference<Context>),
     TokenField(GlobalReference<TokenField>),
     InstStart(GlobalReference<InstStart>),
@@ -66,7 +65,7 @@ pub enum WriteScope {
 
 #[derive(Clone, Debug)]
 pub enum AddrScope {
-    Integer(IntTypeU),
+    Integer(NumberUnsigned),
     Table(GlobalReference<Table>),
     Varnode(GlobalReference<Varnode>),
     //TokenField(GlobalReference<TokenField>),

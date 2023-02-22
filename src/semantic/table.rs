@@ -2,8 +2,7 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
-use crate::base::NonZeroTypeU;
-use crate::{from_error, InputSource};
+use crate::{from_error, Span, NumberNonZeroUnsigned};
 
 pub use super::disassembly::DisassemblyError;
 pub use super::display::{Display, DisplayError};
@@ -19,18 +18,18 @@ pub use super::pattern::{Pattern, PatternError};
 #[derive(Clone, Debug, Error)]
 #[error("at {table_pos}\n{sub}")]
 pub struct TableError {
-    pub table_pos: InputSource,
+    pub table_pos: Span,
     pub sub: TableErrorSub,
 }
 
 pub trait ToTableError<X> {
-    fn to_table(self, table_pos: InputSource) -> Result<X, TableError>;
+    fn to_table(self, table_pos: Span) -> Result<X, TableError>;
 }
 impl<X, T> ToTableError<X> for Result<X, T>
 where
     T: Into<TableErrorSub>,
 {
-    fn to_table(self, table_pos: InputSource) -> Result<X, TableError> {
+    fn to_table(self, table_pos: Span) -> Result<X, TableError> {
         self.map_err(|e| TableError {
             table_pos,
             sub: e.into(),
@@ -56,7 +55,7 @@ pub enum TableErrorSub {
     Execution(ExecutionError),
 }
 impl TableErrorSub {
-    pub fn to_table(self, table_pos: InputSource) -> TableError {
+    pub fn to_table(self, table_pos: Span) -> TableError {
         TableError {
             table_pos,
             sub: self,
@@ -74,18 +73,18 @@ pub enum ExecutionExport {
     #[default]
     None,
     //value that is known at Dissassembly time
-    Const(NonZeroTypeU),
+    Const(NumberNonZeroUnsigned),
     //value that can be know at execution time
-    Value(NonZeroTypeU),
+    Value(NumberNonZeroUnsigned),
     //References/registers and other mem locations, all with the same size
-    Reference(NonZeroTypeU),
+    Reference(NumberNonZeroUnsigned),
     //multiple source, can by any kind of return, value or address,
     //but all with the same size
-    Multiple(NonZeroTypeU),
+    Multiple(NumberNonZeroUnsigned),
 }
 
 impl ExecutionExport {
-    pub fn len(&self) -> Option<NonZeroTypeU> {
+    pub fn len(&self) -> Option<NumberNonZeroUnsigned> {
         match self {
             Self::None => None,
             Self::Const(len)
@@ -101,7 +100,7 @@ pub struct Constructor {
     pub pattern: Pattern,
     pub display: Display,
     pub execution: Option<Execution>,
-    pub src: InputSource,
+    pub src: Span,
 }
 
 #[derive(Clone, Debug)]

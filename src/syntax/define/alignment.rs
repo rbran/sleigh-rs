@@ -1,18 +1,19 @@
-use nom::bytes::complete::tag;
 use nom::combinator::map;
-use nom::sequence::{preceded, tuple};
+use nom::sequence::{pair, preceded};
 use nom::IResult;
 
-use crate::base::{empty_space0, number_unsig, IntTypeU};
+use crate::preprocessor::token::Token;
+use crate::syntax::parser::{number, this_ident};
+use crate::{NumberUnsigned, SleighError};
 
 #[derive(Clone, Debug)]
-pub struct Alignment(pub IntTypeU);
+pub struct Alignment(pub NumberUnsigned);
 
 impl Alignment {
-    pub fn parse(input: &str) -> IResult<&str, Self> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         preceded(
-            tuple((tag("alignment"), empty_space0, tag("="), empty_space0)),
-            map(number_unsig, Self),
+            pair(this_ident("alignment"), tag!("=")),
+            map(number, |(num, _span)| Self(num)),
         )(input)
     }
 }

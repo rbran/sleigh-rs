@@ -5,18 +5,21 @@ use crate::semantic::inner::token::TokenField;
 use crate::semantic::inner::varnode::Context;
 use crate::semantic::inner::Solved;
 use crate::semantic::varnode::Bitrange;
+use crate::semantic::varnode::Varnode;
 use crate::semantic::GlobalElement;
 use crate::semantic::GlobalReference;
 use crate::semantic::InstNext;
 use crate::semantic::InstStart;
+use crate::Number;
+use crate::NumberNonZeroUnsigned;
+use crate::NumberUnsigned;
+use crate::Span;
 use std::rc::Rc;
 
-use crate::base::{IntTypeU, NonZeroTypeU};
 use crate::semantic;
 use crate::semantic::execution::{Binary, ExecutionError};
 use crate::semantic::inner::pcode_macro::Parameter;
 use crate::semantic::inner::{disassembly, FieldSize, SolverStatus, Table};
-use crate::{InputSource, Varnode};
 
 use super::FieldSizeMutOwned;
 use super::{
@@ -28,18 +31,13 @@ pub type FinalExpr = semantic::execution::Expr;
 #[derive(Clone, Debug)]
 pub enum Expr {
     Value(ExprElement),
-    Op(InputSource, FieldSize, Binary, Box<Expr>, Box<Expr>),
+    Op(Span, FieldSize, Binary, Box<Expr>, Box<Expr>),
 }
 impl Expr {
     pub fn new_value(value: ExprElement) -> Self {
         Self::Value(value)
     }
-    pub fn new_op(
-        src: InputSource,
-        op: Binary,
-        left: Expr,
-        mut right: Expr,
-    ) -> Self {
+    pub fn new_op(src: Span, op: Binary, left: Expr, mut right: Expr) -> Self {
         let size = match op {
             Binary::Lsl | Binary::Lsr | Binary::Asr => {
                 //rotation is unlikelly to rotate more then 128 bits,
@@ -76,7 +74,7 @@ impl Expr {
         };
         Self::Op(src, size, op, Box::new(left), Box::new(right))
     }
-    pub fn src(&self) -> &InputSource {
+    pub fn src(&self) -> &Span {
         match self {
             Expr::Value(value) => value.src(),
             Expr::Op(src, _, _, _, _) => src,
@@ -106,14 +104,21 @@ impl Expr {
                 //TODO make this less akward and remove the unecessary deref
                 //and recreation of Box's
                 //akwardly move values from self, replacing with a dummy value
-                let dummy_src = InputSource {
-                    line: 0,
-                    column: 0,
-                    file: Rc::from(std::path::Path::new("")),
-                };
-                let mut self_tmp = Expr::Value(ExprElement::Value(
-                    ExprValue::Int(dummy_src, FieldSize::default(), 0),
-                ));
+                let dummy_src = Span::File(crate::FileSpan {
+                    start: crate::FileLocation {
+                        file: Rc::from(std::path::Path::new("")),
+                        line: 0,
+                        column: 0,
+                    },
+                    end_line: 0,
+                    end_column: 0,
+                });
+                let mut self_tmp =
+                    Expr::Value(ExprElement::Value(ExprValue::Int(
+                        dummy_src,
+                        FieldSize::default(),
+                        Number::Positive(0),
+                    )));
                 std::mem::swap(self_moved, &mut self_tmp);
                 match self_tmp {
                     Expr::Op(src, out_size, op, left, right) => {
@@ -138,12 +143,14 @@ impl Expr {
             ) => {
                 solved.i_did_a_thing();
                 solved.iam_not_finished_location(&src, file!(), line!());
-                let value = op.execute(left, right).ok_or_else(|| {
-                    //TODO better error
-                    ExecutionError::InvalidExport
-                })?;
+                let value = op
+                    .execute(left.as_unsigned(), right.as_unsigned())
+                    .ok_or_else(|| {
+                        //TODO better error
+                        ExecutionError::InvalidExport
+                    })?;
                 //replace self with our new value
-                Expr::Value(Ele::Value(Value::new_int(src, value)))
+                Expr::Value(Ele::Value(Value::new_int(src, value.into())))
             }
 
             //convert some kinds of bit_and into bitrange if the value is a an
@@ -162,12 +169,16 @@ impl Expr {
                 value,
             ) if out_size
                 .final_value()
-                .map(|bits| bits.get() == integer.count_ones().into())
+                .map(|bits| {
+                    bits.get() == integer.as_unsigned().count_ones().into()
+                })
                 .unwrap_or(false)
                 && value
                     .size()
                     .final_value()
-                    .map(|bits| bits.get() >= integer.count_ones().into())
+                    .map(|bits| {
+                        bits.get() >= integer.as_unsigned().count_ones().into()
+                    })
                     .unwrap_or(true) =>
             {
                 solved.i_did_a_thing();
@@ -193,7 +204,8 @@ impl Expr {
                 .zip(value.size().final_value())
                 .map(|(out_bits, val_bits)| (out_bits.get(), val_bits.get()))
                 .map(|(out_bits, val_bits)| {
-                    val_bits >= lsb && out_bits == (val_bits - lsb)
+                    val_bits >= lsb.as_unsigned()
+                        && out_bits == (val_bits - lsb.as_unsigned())
                 })
                 .unwrap_or(false) =>
             {
@@ -204,7 +216,7 @@ impl Expr {
                 //safe because the self is overwriten after
                 Expr::Value(Ele::Truncate(
                     src.clone(),
-                    Truncate::new(lsb, size),
+                    Truncate::new(lsb.as_unsigned(), size),
                     Box::new(value),
                 ))
             }
@@ -358,7 +370,7 @@ pub enum ReferencedValue {
 }
 
 impl ReferencedValue {
-    pub fn src(&self) -> &InputSource {
+    pub fn src(&self) -> &Span {
         match self {
             Self::TokenField(x) => x.location(),
             Self::Table(x) => x.location(),
@@ -385,25 +397,21 @@ pub type FinalExprElement = semantic::execution::ExprElement;
 pub enum ExprElement {
     Value(ExprValue),
     UserCall(FieldSize, UserCall),
-    Reference(InputSource, FieldSize, ReferencedValue),
-    DeReference(InputSource, AddrDereference, Box<Expr>),
-    Truncate(InputSource, Truncate, Box<Expr>),
-    Op(InputSource, FieldSize, Unary, Box<Expr>),
+    Reference(Span, FieldSize, ReferencedValue),
+    DeReference(Span, AddrDereference, Box<Expr>),
+    Truncate(Span, Truncate, Box<Expr>),
+    Op(Span, FieldSize, Unary, Box<Expr>),
     //TODO allow full expr??
-    New(InputSource, Box<Expr>, Option<Box<Expr>>),
+    New(Span, Box<Expr>, Option<Box<Expr>>),
     //TODO allow full expr??
-    CPool(InputSource, Vec<Expr>),
+    CPool(Span, Vec<Expr>),
 }
 impl ExprElement {
-    pub fn new_truncate(
-        src: InputSource,
-        truncate: Truncate,
-        expr: Expr,
-    ) -> Self {
+    pub fn new_truncate(src: Span, truncate: Truncate, expr: Expr) -> Self {
         Self::Truncate(src, truncate, Box::new(expr))
     }
     pub fn new_deref(
-        src: InputSource,
+        src: Span,
         deref: AddrDereference,
         mut addr: Expr,
     ) -> Self {
@@ -412,7 +420,7 @@ impl ExprElement {
             .set(FieldSize::new_bytes(deref.space.element().addr_bytes()));
         Self::DeReference(src, deref, Box::new(addr))
     }
-    pub fn new_op(src: InputSource, mut op: Unary, expr: Expr) -> Self {
+    pub fn new_op(src: Span, mut op: Unary, expr: Expr) -> Self {
         let size = match &mut op {
             Unary::FloatNan => {
                 //the output can be one bit (true/false)
@@ -422,7 +430,7 @@ impl ExprElement {
         };
         Self::Op(src, size, op, Box::new(expr))
     }
-    pub fn src(&self) -> &InputSource {
+    pub fn src(&self) -> &Span {
         match self {
             Self::Value(value) => value.src(),
             Self::UserCall(_, call) => call.src(),
@@ -534,10 +542,10 @@ impl ExprElement {
                 //the output min size is: log2(bit_len(input) + 1)
                 if let Some(input_num_bits) = input.size().final_value() {
                     //equivalent to log2(bit_len(input) + 1)
-                    let output_min =
-                        IntTypeU::BITS - input_num_bits.get().leading_zeros();
+                    let output_min = NumberUnsigned::BITS
+                        - input_num_bits.get().leading_zeros();
                     if let Some(output_min) =
-                        NonZeroTypeU::new(output_min.into())
+                        NumberNonZeroUnsigned::new(output_min.into())
                     {
                         if size
                             .update_action(|size| {
@@ -655,7 +663,8 @@ impl ExprElement {
                 } else {
                     let size = value.size().final_value().unwrap();
                     let size =
-                        NonZeroTypeU::new(size.get() - truncate.lsb).unwrap();
+                        NumberNonZeroUnsigned::new(size.get() - truncate.lsb)
+                            .unwrap();
                     FinalExprElement::Op(
                         size,
                         super::FinalUnary::Truncate(FinalTruncate::new(
@@ -717,8 +726,8 @@ impl ExprElement {
 pub type FinalExprValue = semantic::execution::ExprValue;
 #[derive(Debug, Clone)]
 pub enum ExprValue {
-    Int(InputSource, FieldSize, IntTypeU),
-    DisVar(InputSource, FieldSize, Rc<disassembly::Variable>),
+    Int(Span, FieldSize, Number),
+    DisVar(Span, FieldSize, Rc<disassembly::Variable>),
     TokenField(FieldSize, GlobalReference<TokenField>),
     InstStart(FieldSize, GlobalReference<InstStart>),
     InstNext(FieldSize, GlobalReference<InstNext>),
@@ -727,23 +736,28 @@ pub enum ExprValue {
     Context(FieldSize, GlobalReference<Context>),
     Bitrange(FieldSize, GlobalReference<Bitrange>),
     Table(GlobalReference<Table>),
-    ExeVar(InputSource, Rc<Variable>),
-    Param(InputSource, Rc<Parameter>),
+    ExeVar(Span, Rc<Variable>),
+    Param(Span, Rc<Parameter>),
 }
 
 impl ExprValue {
-    pub fn new_int(src: InputSource, value: IntTypeU) -> Self {
-        let new_size = IntTypeU::BITS - value.leading_zeros();
+    pub fn new_int(src: Span, value: Number) -> Self {
+        let value = match value {
+            Number::Positive(value) => value,
+            Number::Negative(_) => todo!(),
+        };
+        let new_size = NumberUnsigned::BITS - value.leading_zeros();
         //if result is 0, this is 1 bit
-        let new_size = NonZeroTypeU::new(new_size.max(1).into()).unwrap();
+        let new_size =
+            NumberNonZeroUnsigned::new(new_size.max(1).into()).unwrap();
         let new_size = FieldSize::new_unsized()
             .set_possible_min()
             .set_min(new_size)
             .unwrap();
-        Self::Int(src, new_size, value)
+        Self::Int(src, new_size, Number::Positive(value))
     }
     pub fn new_token_field(
-        src: InputSource,
+        src: Span,
         value: &GlobalElement<TokenField>,
     ) -> Self {
         Self::TokenField(
@@ -752,38 +766,29 @@ impl ExprValue {
         )
     }
     pub fn new_inst_start(
-        src: InputSource,
+        src: Span,
         len: FieldSize,
         value: &GlobalElement<InstStart>,
     ) -> Self {
         Self::InstStart(len, value.reference_from(src))
     }
     pub fn new_inst_next(
-        src: InputSource,
+        src: Span,
         len: FieldSize,
         value: &GlobalElement<InstNext>,
     ) -> Self {
         Self::InstNext(len, value.reference_from(src))
     }
-    pub fn new_varnode(
-        src: InputSource,
-        value: &GlobalElement<Varnode>,
-    ) -> Self {
+    pub fn new_varnode(src: Span, value: &GlobalElement<Varnode>) -> Self {
         Self::Varnode(GlobalReference::from_element(value, src))
     }
-    pub fn new_context(
-        src: InputSource,
-        value: &GlobalElement<Context>,
-    ) -> Self {
+    pub fn new_context(src: Span, value: &GlobalElement<Context>) -> Self {
         Self::Context(
             value.exec_out_value_bits(),
             GlobalReference::from_element(value, src),
         )
     }
-    pub fn new_bitrange(
-        src: InputSource,
-        value: &GlobalElement<Bitrange>,
-    ) -> Self {
+    pub fn new_bitrange(src: Span, value: &GlobalElement<Bitrange>) -> Self {
         let size = FieldSize::new_unsized()
             .set_possible_min()
             .set_min(value.range.len_bits())
@@ -791,7 +796,7 @@ impl ExprValue {
             .set_possible_min();
         Self::Bitrange(size, GlobalReference::from_element(value, src))
     }
-    pub fn src(&self) -> &InputSource {
+    pub fn src(&self) -> &Span {
         match self {
             Self::Int(src, _, _)
             | Self::DisVar(src, _, _)

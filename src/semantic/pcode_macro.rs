@@ -5,20 +5,20 @@ use super::varnode::{Bitrange, Context, Varnode};
 use super::{GlobalReference, InstNext, InstStart};
 use thiserror::Error;
 
-use crate::{from_error, InputSource};
+use crate::{from_error, Span};
 
 use super::execution::{Execution, ExecutionError};
 
 #[derive(Clone, Debug, Error)]
 #[error("PcodeMacro error: sub {sub}")]
 pub struct PcodeMacroError {
-    pub macro_pos: InputSource,
+    pub macro_pos: Span,
     pub sub: PcodeMacroErrorSub,
 }
 pub trait ToPcodeMacroError<X> {
     fn to_pcode_macro(
         self,
-        macro_pos: InputSource,
+        macro_pos: Span,
     ) -> Result<X, PcodeMacroError>;
 }
 impl<'a, X, T> ToPcodeMacroError<X> for Result<X, T>
@@ -27,7 +27,7 @@ where
 {
     fn to_pcode_macro(
         self,
-        macro_pos: InputSource,
+        macro_pos: Span,
     ) -> Result<X, PcodeMacroError> {
         self.map_err(|e| PcodeMacroError {
             macro_pos,
@@ -38,9 +38,9 @@ where
 #[derive(Clone, Debug, Error)]
 pub enum PcodeMacroErrorSub {
     #[error("Invalid Ref {0}")]
-    InvalidRef(InputSource),
+    InvalidRef(Span),
     #[error("Missing Ref {0}")]
-    MissingRef(InputSource),
+    MissingRef(Span),
 
     #[error("Execution Error")]
     Execution(ExecutionError),

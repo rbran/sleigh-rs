@@ -1,35 +1,34 @@
 use std::rc::Rc;
 
-use crate::base::{NonZeroTypeU, Value};
 use crate::semantic::inner::execution::{
     AddrDereference, BranchCall, ExecutionError, Unary,
 };
 use crate::semantic::inner::{GlobalScope, Table};
 use crate::semantic::GlobalElement;
-use crate::syntax::block;
+use crate::syntax::{block, Value};
+use crate::{Number, NumberNonZeroUnsigned};
 
 use super::*;
 
-pub trait ExecutionBuilder<'a> {
-    fn sleigh(&self) -> &Sleigh<'a>;
+pub trait ExecutionBuilder {
+    fn sleigh(&self) -> &Sleigh;
     fn execution(&self) -> &Execution;
     fn execution_mut(&mut self) -> &mut Execution;
     fn read_scope(
         &mut self,
-        name: &'a str,
+        name: &str,
+        src: &Span,
     ) -> Result<ExprValue, ExecutionError>;
     fn write_scope(
         &mut self,
-        name: &'a str,
+        name: &str,
+        src: &Span,
     ) -> Result<WriteValue, ExecutionError>;
     fn table<'b>(
         &'b self,
-        name: &'a str,
-    ) -> Result<&'b GlobalElement<Table>, ExecutionError>
-    where
-        'a: 'b,
-    {
-        let src = self.sleigh().input_src(name);
+        name: &str,
+        src: &Span,
+    ) -> Result<&'b GlobalElement<Table>, ExecutionError> {
         self.sleigh()
             .get_global(name)
             .ok_or(ExecutionError::MissingRef(src.clone()))?
@@ -38,12 +37,9 @@ pub trait ExecutionBuilder<'a> {
     }
     fn space<'b>(
         &'b self,
-        name: &'a str,
-    ) -> Result<&'b GlobalElement<Space>, ExecutionError>
-    where
-        'a: 'b,
-    {
-        let src = self.sleigh().input_src(name);
+        name: &str,
+        src: &Span,
+    ) -> Result<&'b GlobalElement<Space>, ExecutionError> {
         self.sleigh()
             .get_global(name)
             .ok_or(ExecutionError::MissingRef(src.clone()))?
@@ -52,10 +48,10 @@ pub trait ExecutionBuilder<'a> {
     }
     fn current_block(&self) -> Rc<Block>;
     fn current_block_mut(&mut self) -> &mut Rc<Block>;
-    fn block(&self, name: &'a str) -> Option<Rc<Block>> {
+    fn block(&self, name: &str) -> Option<Rc<Block>> {
         self.execution().block(name)
     }
-    fn create_block(&mut self, name: &'a str) -> Option<Rc<Block>> {
+    fn create_block(&mut self, name: &str) -> Option<Rc<Block>> {
         self.execution_mut().new_block(name)
     }
     fn set_current_block(&mut self, block: Rc<Block>) {
@@ -73,11 +69,10 @@ pub trait ExecutionBuilder<'a> {
     }
     fn create_variable(
         &mut self,
-        name: &'a str,
-        //scope: VariableScope,
+        name: &str,
+        src: &Span,
     ) -> Result<Rc<Variable>, ExecutionError> {
-        let src = self.sleigh().input_src(name);
-        let var = self.execution_mut().create_variable(name, src)?;
+        let var = self.execution_mut().create_variable(name, src.clone())?;
         self.insert_statement(Statement::Declare(Rc::clone(&var)));
         Ok(var)
     }
@@ -88,15 +83,15 @@ pub trait ExecutionBuilder<'a> {
     }
     fn extend(
         &mut self,
-        input: block::execution::Execution<'a>,
+        input: block::execution::Execution,
     ) -> Result<(), ExecutionError> {
         //start by creating all the blocks
         for statement in input.statements.iter() {
             match statement {
                 block::execution::Statement::Label(label) => {
-                    let src = self.sleigh().input_src(label.name);
-                    self.create_block(label.name)
-                        .ok_or(ExecutionError::DuplicatedLabel(src))?;
+                    self.create_block(&label.name).ok_or_else(|| {
+                        ExecutionError::DuplicatedLabel(label.src.clone())
+                    })?;
                 }
                 _ => (),
             }
@@ -107,7 +102,7 @@ pub trait ExecutionBuilder<'a> {
             match statement {
                 block::execution::Statement::Label(x) => {
                     //finding label means changing block
-                    let new_current_block = self.block(x.name).unwrap();
+                    let new_current_block = self.block(&x.name).unwrap();
                     self.set_current_block(new_current_block);
                 }
                 block::execution::Statement::Delayslot(x) => {
@@ -139,13 +134,12 @@ pub trait ExecutionBuilder<'a> {
                     self.insert_statement(call);
                 }
                 block::execution::Statement::Declare(x) => {
-                    let var = self.create_variable(x.ident)?;
+                    let var = self.create_variable(&x.name, &x.src)?;
                     if let Some(size) = x.size {
-                        let size = NonZeroTypeU::new(size.value)
+                        let size = NumberNonZeroUnsigned::new(size.value)
                             .map(FieldSize::new_bytes)
                             .ok_or_else(|| {
-                                let src = self.sleigh().input_src(size.src);
-                                ExecutionError::InvalidVarLen(src)
+                                ExecutionError::InvalidVarLen(size.src)
                             })?;
                         var.len().set(size);
                     }
@@ -218,19 +212,21 @@ pub trait ExecutionBuilder<'a> {
 
     fn new_build(
         &mut self,
-        input: block::execution::Build<'a>,
+        input: block::execution::Build,
     ) -> Result<Build, ExecutionError> {
-        let src = self.sleigh().input_src(&input.table);
-        let table = self.table(input.table)?;
-        Ok(Build::new(GlobalReference::from_element(table, src)))
+        let table = self.table(&input.table_name, &input.src)?;
+        Ok(Build::new(GlobalReference::from_element(
+            table,
+            input.src.clone(),
+        )))
     }
     fn new_export_const(
         &mut self,
-        input: &'a str,
+        input: &str,
+        src: &Span,
     ) -> Result<ExportConst, ExecutionError> {
         use ExprValue::*;
-        match self.read_scope(input)? {
-            //Int(InputSource, FieldSize, IntTypeU) => todo!(),
+        match self.read_scope(input, src)? {
             DisVar(src, _size, dis) => {
                 Ok(ExportConst::DisVar(src, dis.clone()))
             }
@@ -242,20 +238,16 @@ pub trait ExecutionBuilder<'a> {
                 }
                 //TODO more specific error
                 //a const export can only use a table that also export const
-                Some(_) => Err(ExecutionError::InvalidRef(
-                    self.sleigh().input_src(input),
-                )),
+                Some(_) => Err(ExecutionError::InvalidRef(src.clone())),
                 //to constructors are available yet, can't use this table
-                None => Err(ExecutionError::InvalidRef(
-                    self.sleigh().input_src(input),
-                )),
+                None => Err(ExecutionError::InvalidRef(src.clone())),
             },
             x => todo!("Error export invalid const {:#?}", x),
         }
     }
     fn new_export(
         &mut self,
-        input: block::execution::export::Export<'a>,
+        input: block::execution::export::Export,
     ) -> Result<Export, ExecutionError> {
         use block::execution::export::Export as RawExport;
         match input {
@@ -269,7 +261,7 @@ pub trait ExecutionBuilder<'a> {
                     ))) => Ok(Export::new_reference(
                         Expr::Value(ExprElement::Value(ExprValue::new_int(
                             varnode.location().clone(),
-                            varnode.element().offset,
+                            Number::Positive(varnode.element().offset),
                         ))),
                         AddrDereference::new(
                             GlobalReference::from_element(
@@ -288,9 +280,10 @@ pub trait ExecutionBuilder<'a> {
                 let deref = self.new_addr_derefence(&space)?;
                 Ok(Export::new_reference(addr, deref))
             }
-            RawExport::Const { size, value } => {
-                let value = self.new_export_const(value)?;
-                let size = NonZeroTypeU::new(size.value).unwrap(/*TODO*/);
+            RawExport::Const { size, value, src } => {
+                let value = self.new_export_const(&value, &src)?;
+                let size =
+                    NumberNonZeroUnsigned::new(size.value).unwrap(/*TODO*/);
                 let size = FieldSize::new_bytes(size);
                 Ok(Export::new_const(size, value))
             }
@@ -298,68 +291,74 @@ pub trait ExecutionBuilder<'a> {
     }
     fn new_call_statement(
         &mut self,
-        input: block::execution::UserCall<'a>,
+        input: block::execution::UserCall,
     ) -> Result<Statement, ExecutionError> {
         let params = input
             .params
             .into_iter()
             .map(|param| self.new_expr(param))
             .collect::<Result<Vec<_>, _>>()?;
-        let src = self.sleigh().input_src(input.function);
         match self
             .sleigh()
-            .get_global(input.function)
-            .ok_or(ExecutionError::MissingRef(src.clone()))?
+            .get_global(&input.name)
+            .ok_or(ExecutionError::MissingRef(input.src.clone()))?
         {
-            GlobalScope::UserFunction(x) => Ok(Statement::UserCall(
-                UserCall::new(params, GlobalReference::from_element(x, src)),
-            )),
-            GlobalScope::PcodeMacro(x) => Ok(Statement::MacroCall(
-                MacroCall::new(params, GlobalReference::from_element(x, src)),
-            )),
-            _ => Err(ExecutionError::InvalidRef(src)),
+            GlobalScope::UserFunction(x) => {
+                Ok(Statement::UserCall(UserCall::new(
+                    params,
+                    GlobalReference::from_element(x, input.src),
+                )))
+            }
+            GlobalScope::PcodeMacro(x) => {
+                Ok(Statement::MacroCall(MacroCall::new(
+                    params,
+                    GlobalReference::from_element(x, input.src),
+                )))
+            }
+            _ => Err(ExecutionError::InvalidRef(input.src)),
         }
     }
     fn new_call_expr(
         &mut self,
-        input: block::execution::UserCall<'a>,
+        input: block::execution::UserCall,
     ) -> Result<ExprElement, ExecutionError> {
         let params = input
             .params
             .into_iter()
             .map(|param| self.new_expr(param))
             .collect::<Result<Vec<_>, _>>()?;
-        let src = self.sleigh().input_src(input.function);
         match self
             .sleigh()
-            .get_global(input.function)
-            .ok_or(ExecutionError::MissingRef(src.clone()))?
+            .get_global(&input.name)
+            .ok_or_else(|| ExecutionError::MissingRef(input.src.clone()))?
         {
             GlobalScope::UserFunction(x) => Ok(ExprElement::UserCall(
                 //TODO better min output handler
                 FIELD_SIZE_BOOL,
-                UserCall::new(params, GlobalReference::from_element(x, src)),
+                UserCall::new(
+                    params,
+                    GlobalReference::from_element(x, input.src),
+                ),
             )),
             GlobalScope::PcodeMacro(x) => {
                 todo!("user defined {} exports?", x.name)
             }
-            _ => Err(ExecutionError::InvalidRef(src)),
+            _ => Err(ExecutionError::InvalidRef(input.src)),
         }
     }
 
     fn new_assignment(
         &mut self,
-        input: block::execution::assignment::Assignment<'a>,
+        input: block::execution::assignment::Assignment,
     ) -> Result<Statement, ExecutionError> {
         let mut right = self.new_expr(input.right)?;
-        let var = self.write_scope(input.ident).ok();
-        let src = self.sleigh().input_src(input.ident);
+        let var = self.write_scope(&input.ident, &input.src).ok();
         match (var, input.local) {
             //variable don't exists, create it
             (None, _) => {
                 //the var size is defined if ByteRangeLsb is present
                 //add the var creation statement
-                let new_var = self.create_variable(input.ident)?;
+                let new_var = self.create_variable(&input.ident, &input.src)?;
                 match &input.op {
                     Some(
                         block::execution::assignment::OpLeft::ByteRangeLsb(x),
@@ -368,7 +367,8 @@ pub trait ExecutionBuilder<'a> {
                             .len()
                             .get()
                             .set_final_value(
-                                NonZeroTypeU::new(x.value * 8).unwrap(),
+                                NumberNonZeroUnsigned::new(x.value * 8)
+                                    .unwrap(),
                             )
                             .unwrap();
                         new_var.len().set(new_len);
@@ -376,16 +376,17 @@ pub trait ExecutionBuilder<'a> {
                     Some(_) => todo!("create var with this op?"),
                     None => (),
                 }
-                let src = self.sleigh().input_src(input.ident);
                 Ok(Statement::Assignment(Assignment::new(
-                    WriteValue::ExeVar(src.clone(), new_var),
+                    WriteValue::ExeVar(input.src.clone(), new_var),
                     None,
-                    src,
+                    input.src,
                     right,
                 )))
             }
             //variable exists, with local is error
-            (Some(_), true) => Err(ExecutionError::InvalidVarDeclare(src)),
+            (Some(_), true) => {
+                Err(ExecutionError::InvalidVarDeclare(input.src))
+            }
             //variable exists, just return it
             (Some(var), false) => {
                 let op = input
@@ -407,7 +408,7 @@ pub trait ExecutionBuilder<'a> {
                         let addr = Expr::Value(ExprElement::Value(
                             ExprValue::new_int(
                                 var.location().clone(),
-                                var_ele.offset,
+                                Number::Positive(var_ele.offset),
                             ),
                         ));
                         right.size_mut().update_action(|size| {
@@ -416,11 +417,11 @@ pub trait ExecutionBuilder<'a> {
                             ))
                         });
                         Ok(Statement::MemWrite(MemWrite::new(
-                            addr, mem, src, right,
+                            addr, mem, input.src, right,
                         )))
                     }
                     var => Ok(Statement::Assignment(Assignment::new(
-                        var, op, src, right,
+                        var, op, input.src, right,
                     ))),
                 }
             }
@@ -428,13 +429,12 @@ pub trait ExecutionBuilder<'a> {
     }
     fn new_mem_write(
         &mut self,
-        input: block::execution::assignment::MemWrite<'a>,
+        input: block::execution::assignment::MemWrite,
     ) -> Result<MemWrite, ExecutionError> {
         let mem = self.new_addr_derefence(&input.mem)?;
         let addr = self.new_expr(input.addr)?;
-        let src = self.sleigh().input_src(input.src);
         let right = self.new_expr(input.right)?;
-        Ok(MemWrite::new(addr, mem, src, right))
+        Ok(MemWrite::new(addr, mem, input.src, right))
     }
     fn new_assignment_op(
         &self,
@@ -445,12 +445,14 @@ pub trait ExecutionBuilder<'a> {
         let error = ExecutionError::BitRangeZero;
         let ass = match input {
             OpLeft::BitRange(range) => {
-                let size = NonZeroTypeU::new(range.n_bits).ok_or(error)?;
+                let size =
+                    NumberNonZeroUnsigned::new(range.n_bits).ok_or(error)?;
                 Truncate::new(range.lsb_bit, size)
             }
             OpLeft::ByteRangeMsb(msb) => Truncate::new_msb(msb.value),
             OpLeft::ByteRangeLsb(lsb) => {
-                let size = NonZeroTypeU::new(lsb.value).ok_or(error)?;
+                let size =
+                    NumberNonZeroUnsigned::new(lsb.value).ok_or(error)?;
                 Truncate::new_lsb(size)
             }
         };
@@ -458,7 +460,7 @@ pub trait ExecutionBuilder<'a> {
     }
     fn new_cpu_branch_dst(
         &mut self,
-        input: block::execution::branch::BranchDst<'a>,
+        input: block::execution::branch::BranchDst,
     ) -> Result<(bool, Expr), ExecutionError> {
         use block::execution::branch::BranchDst::*;
         Ok(match input {
@@ -468,7 +470,7 @@ pub trait ExecutionBuilder<'a> {
     }
     fn new_cpu_branch(
         &mut self,
-        input: block::execution::branch::Branch<'a>,
+        input: block::execution::branch::Branch,
     ) -> Result<CpuBranch, ExecutionError> {
         let cond = input.cond.map(|x| self.new_expr(x)).transpose()?;
         let call = input.call;
@@ -485,45 +487,41 @@ pub trait ExecutionBuilder<'a> {
     }
     fn new_local_goto(
         &mut self,
-        input: block::execution::branch::Branch<'a>,
+        input: block::execution::branch::Branch,
     ) -> Result<LocalGoto, ExecutionError> {
         let cond = input.cond.map(|x| self.new_expr(x)).transpose()?;
         if !matches!(input.call, BranchCall::Goto) {
             return Err(ExecutionError::InvalidLocalGoto);
         }
         let dst = match input.dst {
-            block::execution::branch::BranchDst::Label(x) => {
-                self.block(x.name).ok_or(ExecutionError::MissingLabel(
-                    self.sleigh().input_src(x.name),
-                ))?
-            }
+            block::execution::branch::BranchDst::Label(x) => self
+                .block(&x.name)
+                .ok_or_else(|| ExecutionError::MissingLabel(x.src.clone()))?,
             _ => unreachable!(),
         };
         Ok(LocalGoto::new(cond, dst)?)
     }
     fn new_expr_element(
         &mut self,
-        input: block::execution::expr::ExprElement<'a>,
+        input: block::execution::expr::ExprElement,
     ) -> Result<ExprElement, ExecutionError> {
         use block::execution::expr::ExprElement as RawExprElement;
         match input {
             RawExprElement::Value(Value::Number(src, value)) => {
-                let src = self.sleigh().input_src(src);
                 Ok(ExprElement::Value(ExprValue::new_int(src, value)))
             }
-            RawExprElement::Value(Value::Ident(value)) => {
-                self.read_scope(value).map(ExprElement::Value)
+            RawExprElement::Value(Value::Ident(src, value)) => {
+                self.read_scope(&value, &src).map(ExprElement::Value)
             }
             RawExprElement::Reference(src, size, value) => {
-                let src = self.sleigh().input_src(src);
                 let ref_bytes = size
                     .map(|x| {
                         //TODO non generic error here
-                        NonZeroTypeU::new(x.value)
+                        NumberNonZeroUnsigned::new(x.value)
                             .ok_or(ExecutionError::BitRangeZero)
                     })
                     .transpose()?;
-                let value = match self.read_scope(value)? {
+                let value = match self.read_scope(&value, &src)? {
                     ExprValue::TokenField(_, ass) => ExprElement::Reference(
                         src,
                         ref_bytes.map(FieldSize::new_bytes).unwrap_or_default(),
@@ -565,7 +563,7 @@ pub trait ExecutionBuilder<'a> {
                                     var.element().space.addr_bytes(),
                                 ),
                             ),
-                            var.element().offset,
+                            Number::Positive(var.element().offset),
                         ))
                     }
                     ExprValue::Table(table) => ExprElement::Reference(
@@ -574,21 +572,15 @@ pub trait ExecutionBuilder<'a> {
                         ReferencedValue::Table(table),
                     ),
                     //ExprValue::Param(_, _) => todo!(),
-                    _ => {
-                        return Err(ExecutionError::InvalidRef(
-                            self.sleigh().input_src(value),
-                        ))
-                    }
+                    _ => return Err(ExecutionError::InvalidRef(src)),
                 };
                 Ok(value)
             }
             RawExprElement::Op(src, raw_op, input) => {
-                let src = self.sleigh().input_src(src);
                 let input = self.new_expr(*input)?;
                 self.new_op_unary(&raw_op, src, input)
             }
             RawExprElement::New(src, param0, param1) => {
-                let src = self.sleigh().input_src(src);
                 let param0 = self.new_expr(*param0).map(Box::new)?;
                 let param1 = param1
                     .map(|param| self.new_expr(*param).map(Box::new))
@@ -596,7 +588,6 @@ pub trait ExecutionBuilder<'a> {
                 Ok(ExprElement::New(src, param0, param1))
             }
             RawExprElement::CPool(src, params) => {
-                let src = self.sleigh().input_src(src);
                 let params = params
                     .into_iter()
                     .map(|param| self.new_expr(param))
@@ -610,10 +601,10 @@ pub trait ExecutionBuilder<'a> {
                 param_src,
             } => {
                 //can be one of two possibilities:
-                if let Ok(value) = self.read_scope(name) {
+                if let Ok(value) = self.read_scope(&name, &param_src) {
                     //first: value with ByteRangeMsb operator
                     Ok(ExprElement::new_truncate(
-                        self.sleigh().input_src(param_src),
+                        param_src,
                         Truncate::new_msb(param),
                         Expr::Value(ExprElement::Value(value)),
                     ))
@@ -624,9 +615,13 @@ pub trait ExecutionBuilder<'a> {
                     //user_function
                     self.new_call_expr(block::execution::UserCall::new(
                         name,
+                        param_src.clone(),
                         vec![block::execution::expr::Expr::Value(
                             block::execution::expr::ExprElement::Value(
-                                crate::base::Value::Number(param_src, param),
+                                crate::syntax::Value::Number(
+                                    param_src,
+                                    Number::Positive(param),
+                                ),
                             ),
                         )],
                     ))
@@ -636,7 +631,7 @@ pub trait ExecutionBuilder<'a> {
     }
     fn new_expr(
         &mut self,
-        input: block::execution::expr::Expr<'a>,
+        input: block::execution::expr::Expr,
     ) -> Result<Expr, ExecutionError> {
         use block::execution::expr::Expr as RawExpr;
         match input {
@@ -644,7 +639,6 @@ pub trait ExecutionBuilder<'a> {
                 self.new_expr_element(value).map(Expr::Value)
             }
             RawExpr::Op(src, op, left, right) => {
-                let src = self.sleigh().input_src(src);
                 let left = self.new_expr(*left)?;
                 let right = self.new_expr(*right)?;
                 Ok(Expr::new_op(src, op, left, right))
@@ -653,14 +647,14 @@ pub trait ExecutionBuilder<'a> {
     }
     fn new_op_unary(
         &self,
-        input: &block::execution::op::Unary<'a>,
-        src: InputSource,
+        input: &block::execution::op::Unary,
+        src: Span,
         expr: Expr,
     ) -> Result<ExprElement, ExecutionError> {
         use block::execution::op::Unary as Op;
         let to_nonzero =
             //TODO generic error here
-            |x: IntTypeU| NonZeroTypeU::new(x).ok_or(ExecutionError::BitRangeZero);
+            |x: NumberUnsigned| NumberNonZeroUnsigned::new(x).ok_or(ExecutionError::BitRangeZero);
         let op = match input {
             Op::ByteRangeMsb(x) => {
                 return Ok(ExprElement::Truncate(
@@ -680,7 +674,7 @@ pub trait ExecutionBuilder<'a> {
                         src,
                         //TODO error
                         len.intersection(FieldSize::new_bytes(
-                            NonZeroTypeU::new(x.value).unwrap(),
+                            NumberNonZeroUnsigned::new(x.value).unwrap(),
                         ))
                         .unwrap(),
                         value,
@@ -695,7 +689,7 @@ pub trait ExecutionBuilder<'a> {
                         src,
                         //TODO error
                         len.intersection(FieldSize::new_bytes(
-                            NonZeroTypeU::new(x.value).unwrap(),
+                            NumberNonZeroUnsigned::new(x.value).unwrap(),
                         ))
                         .unwrap(),
                         value,
@@ -744,31 +738,30 @@ pub trait ExecutionBuilder<'a> {
     }
     fn new_addr_derefence(
         &self,
-        input: &block::execution::op::AddrDereference<'a>,
+        input: &block::execution::op::AddrDereference,
     ) -> Result<AddrDereference, ExecutionError> {
         let space = input
             .space
             .as_ref()
-            .map(|x| self.space(x.name))
+            .map(|x| self.space(&x.name, &x.src))
             .unwrap_or_else(|| {
-                self.sleigh()
-                    .default_space()
-                    .ok_or(ExecutionError::DefaultSpace)
-            })?;
+            self.sleigh()
+                .default_space()
+                .ok_or(ExecutionError::DefaultSpace)
+        })?;
         //size will be the lsb of size, if specified, otherwise  we can't know
         //the size directly
-        let size = match input.size {
+        let size = match input.size.as_ref() {
             Some(size) => FieldSize::new_bytes(
-                NonZeroTypeU::new(size.value)
+                NumberNonZeroUnsigned::new(size.value)
                     .ok_or(ExecutionError::BitRangeZero)?,
             ),
             None => FieldSize::new_unsized(),
         };
-        let src = self.sleigh().input_src(input.src);
         Ok(AddrDereference::new(
-            GlobalReference::from_element(space, src.clone()),
+            GlobalReference::from_element(space, input.src.clone()),
             size,
-            src,
+            input.src.clone(),
         ))
     }
 }

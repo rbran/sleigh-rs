@@ -1,11 +1,11 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::base::NonZeroTypeU;
+use crate::semantic::token::Token;
+use crate::{RangeBits, Span, NumberNonZeroUnsigned, NumberUnsigned};
 use crate::semantic::meaning::Meaning;
 use crate::semantic::{GlobalConvert, SemanticError};
 use crate::syntax::define;
-use crate::{InputSource, IntTypeU, RangeBits, Token};
 
 use super::{
     Endian, FieldSize, GlobalElement, GlobalScope, PrintFlags, Sleigh,
@@ -21,7 +21,7 @@ use super::{
 
 type FinalTokenField = crate::semantic::token::TokenField;
 pub struct TokenField {
-    pub src: InputSource,
+    pub src: Span,
     pub range: RangeBits,
     pub token: GlobalElement<Token>,
     //start with false, if set to true, unable to modify
@@ -39,8 +39,8 @@ impl std::fmt::Debug for TokenField {
 impl GlobalElement<Token> {
     pub fn new_token(
         name: &str,
-        src: InputSource,
-        len_bytes: NonZeroTypeU,
+        src: Span,
+        len_bytes: NumberNonZeroUnsigned,
         endian: Endian,
     ) -> Self {
         let token = Token::new(src, len_bytes, endian);
@@ -51,9 +51,9 @@ impl GlobalElement<Token> {
 impl GlobalElement<TokenField> {
     pub fn new_token_field(
         name: &str,
-        src: InputSource,
-        lsb_bit: IntTypeU,
-        n_bits: NonZeroTypeU,
+        src: Span,
+        lsb_bit: NumberUnsigned,
+        n_bits: NumberNonZeroUnsigned ,
         print_flags: PrintFlags,
         token: GlobalElement<Token>,
     ) -> Self {
@@ -121,16 +121,15 @@ impl GlobalConvert for TokenField {
     }
 }
 
-impl<'a> Sleigh<'a> {
+impl Sleigh {
     pub fn create_token(
         &mut self,
-        input: define::Token<'a>,
+        input: define::Token,
     ) -> Result<(), SemanticError> {
-        let src = self.input_src(&input.name);
         let size = input
             .size
             .checked_div(8)
-            .and_then(NonZeroTypeU::new)
+            .and_then(NumberNonZeroUnsigned::new)
             .ok_or(SemanticError::TokenInvalidSize)?;
         let size_bits = input.size;
         let endian = input
@@ -138,7 +137,7 @@ impl<'a> Sleigh<'a> {
             .or(self.endian)
             .expect("Global endian undefined at this point is a logical error");
         let token =
-            GlobalElement::new_token(&input.name, src.clone(), size, endian);
+            GlobalElement::new_token(&input.name, input.src.clone(), size, endian);
         self.idents
             .insert(Rc::clone(&token.name), GlobalScope::Token(token.clone()))
             .map(|_| Err(SemanticError::NameDuplicated))
@@ -149,16 +148,16 @@ impl<'a> Sleigh<'a> {
                 return Err(SemanticError::TokenFieldInvalidSize);
             }
             let print_flags =
-                PrintFlags::from_token_att(&src, field.attributes.iter())?;
+                PrintFlags::from_token_att(&input.src, field.attributes.iter())?;
             //default into print in hex format
             let lsb_bit = field.start;
             //TODO error not panic
             assert!(field.end >= field.start);
             let n_bits =
-                NonZeroTypeU::new(1 + field.end - field.start).unwrap();
+                NumberNonZeroUnsigned::new(1 + field.end - field.start).unwrap();
             let field_ele = GlobalElement::new_token_field(
                 &field.name,
-                self.input_src(field.name),
+                input.src.clone(),
                 lsb_bit,
                 n_bits,
                 print_flags,

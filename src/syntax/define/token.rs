@@ -1,40 +1,40 @@
-use nom::bytes::complete::tag;
 use nom::combinator::{cut, map, opt};
 use nom::multi::many0;
-use nom::sequence::{
-    delimited, pair, preceded, separated_pair, terminated, tuple,
-};
+use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
 
-use crate::base::{empty_space0, empty_space1, ident, number_unsig, IntTypeU};
+use crate::preprocessor::token::Token as SleighToken;
+
 use crate::syntax::define::Endian;
+use crate::syntax::parser::{ident, number, this_ident};
+use crate::{NumberUnsigned, SleighError, Span};
 
 #[derive(Clone, Debug)]
-pub struct Token<'a> {
-    pub name: &'a str,
-    pub size: IntTypeU,
+pub struct Token {
+    pub name: String,
+    pub src: Span,
+    pub size: NumberUnsigned,
     pub endian: Option<Endian>,
-    pub token_fields: Vec<TokenField<'a>>,
+    pub token_fields: Vec<TokenField>,
 }
 
-impl<'a> Token<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl Token {
+    pub fn parse(
+        input: &[SleighToken],
+    ) -> IResult<&[SleighToken], Self, SleighError> {
         map(
             preceded(
-                pair(tag("token"), empty_space1),
+                this_ident("token"),
                 cut(tuple((
                     ident,
-                    delimited(
-                        tuple((empty_space0, tag("("), empty_space0)),
-                        number_unsig,
-                        tuple((empty_space0, tag(")"))),
-                    ),
-                    opt(preceded(empty_space0, Endian::parse)),
-                    many0(preceded(empty_space1, TokenField::parse)),
+                    delimited(tag!("("), number, tag!(")")),
+                    opt(Endian::parse),
+                    many0(TokenField::parse),
                 ))),
             ),
-            |(name, size, endian, token_fields)| Token {
+            |((name, name_span), (size, _), endian, token_fields)| Token {
                 name,
+                src: name_span.clone(),
                 size,
                 endian,
                 token_fields,
@@ -44,37 +44,36 @@ impl<'a> Token<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub struct TokenField<'a> {
-    pub name: &'a str,
-    pub start: IntTypeU,
-    pub end: IntTypeU,
+pub struct TokenField {
+    pub name: String,
+    pub name_span: Span,
+    pub start: NumberUnsigned,
+    pub end: NumberUnsigned,
     pub attributes: Vec<TokenFieldAttribute>,
 }
 
-impl<'a> TokenField<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl TokenField {
+    pub fn parse(
+        input: &[SleighToken],
+    ) -> IResult<&[SleighToken], Self, SleighError> {
         map(
             tuple((
-                terminated(
-                    ident,
-                    tuple((empty_space0, tag("="), empty_space0)),
-                ),
+                terminated(ident, tag!("=")),
                 delimited(
-                    pair(tag("("), empty_space0),
-                    separated_pair(
-                        number_unsig,
-                        tuple((empty_space0, tag(","), empty_space0)),
-                        number_unsig,
-                    ),
-                    pair(empty_space0, tag(")")),
+                    tag!("("),
+                    separated_pair(number, tag!(","), number),
+                    tag!(")"),
                 ),
-                many0(preceded(empty_space0, TokenFieldAttribute::parse)),
+                many0(TokenFieldAttribute::parse),
             )),
-            |(name, (start, end), attributes)| TokenField {
-                name,
-                start,
-                end,
-                attributes,
+            |((name, name_span), ((start, _), (end, _)), attributes)| {
+                TokenField {
+                    name,
+                    name_span: name_span.clone(),
+                    start,
+                    end,
+                    attributes,
+                }
             },
         )(input)
     }
@@ -96,13 +95,12 @@ impl TokenFieldAttribute {
             _ => None,
         }
     }
-    fn parse(input_ori: &str) -> IResult<&str, TokenFieldAttribute> {
-        let (input, att) = ident(input_ori)?;
-        Self::from_str(att)
+    fn parse(
+        input_ori: &[SleighToken],
+    ) -> IResult<&[SleighToken], TokenFieldAttribute, SleighError> {
+        let (input, (att, span)) = ident(input_ori)?;
+        Self::from_str(&att)
             .map(|att| (input, att))
-            .ok_or(nom::Err::Error(nom::error::Error {
-                input,
-                code: nom::error::ErrorKind::MapOpt,
-            }))
+            .ok_or(nom::Err::Error(SleighError::StatementInvalid(span.clone())))
     }
 }

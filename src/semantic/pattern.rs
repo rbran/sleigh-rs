@@ -3,8 +3,7 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
-use crate::base::IntTypeU;
-use crate::{from_error, InputSource};
+use crate::{from_error, Span, NumberUnsigned};
 
 use super::disassembly::{Assertation, DisassemblyError, Expr, Variable};
 use super::table::Table;
@@ -15,26 +14,26 @@ use super::{GlobalReference, InstStart};
 #[derive(Clone, Debug, Error)]
 pub enum PatternError {
     #[error("Invalid Ref {0}")]
-    InvalidRef(InputSource),
+    InvalidRef(Span),
     #[error("Missing Ref {0}")]
-    MissingRef(InputSource),
+    MissingRef(Span),
     #[error("Unable to merge Blocks mixing & and | {0}")]
-    InvalidMixOp(InputSource),
+    InvalidMixOp(Span),
 
     #[error("Invalid Recursive at {0}")]
-    InvalidRecursive(InputSource),
+    InvalidRecursive(Span),
     #[error("In Or block, all elements need to have the same len")]
-    InvalidOrLen(InputSource),
+    InvalidOrLen(Span),
     #[error("Each patern can only have a single recursive")]
-    MultipleRecursives(InputSource),
+    MultipleRecursives(Span),
     #[error("Mix `|` and `&` operations on pattern is forbidden")]
-    MixOperations(InputSource),
+    MixOperations(Span),
     #[error("Field produced multiple times at {0} and {1}")]
-    MultipleProduction(InputSource, InputSource),
+    MultipleProduction(Span, Span),
     #[error("Field produced is implicit and abiguous")]
-    AmbiguousProduction(InputSource),
+    AmbiguousProduction(Span),
     #[error("Pattern in Or statement without constraint")]
-    UnrestrictedOr(InputSource),
+    UnrestrictedOr(Span),
 
     #[error("Invalid assignment Error")]
     ConstraintExpr(DisassemblyError),
@@ -43,30 +42,30 @@ from_error!(PatternError, DisassemblyError, ConstraintExpr);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PatternLen {
-    Defined(IntTypeU),
-    Range { min: IntTypeU, max: IntTypeU },
-    Min(IntTypeU),
+    Defined(NumberUnsigned),
+    Range { min: NumberUnsigned, max: NumberUnsigned },
+    Min(NumberUnsigned),
 }
 
 impl PatternLen {
     pub fn is_recursive(&self) -> bool {
         matches!(self, Self::Min(_))
     }
-    pub fn min(&self) -> IntTypeU {
+    pub fn min(&self) -> NumberUnsigned {
         match self {
             Self::Min(min)
             | Self::Defined(min)
             | Self::Range { min, max: _ } => *min,
         }
     }
-    pub fn max(&self) -> Option<IntTypeU> {
+    pub fn max(&self) -> Option<NumberUnsigned> {
         match self {
             Self::Defined(value) => Some(*value),
             Self::Range { min: _, max } => Some(*max),
             Self::Min(_) => None,
         }
     }
-    pub fn defined(&self) -> Option<IntTypeU> {
+    pub fn defined(&self) -> Option<NumberUnsigned> {
         match self {
             Self::Defined(value) => Some(*value),
             Self::Min(_) | Self::Range { .. } => None,
@@ -203,7 +202,7 @@ impl Pattern {
 pub enum Block {
     And {
         len: PatternLen,
-        token_len: IntTypeU,
+        token_len: NumberUnsigned,
         token_fields: Box<[ProducedTokenField]>,
         tables: Box<[ProducedTable]>,
         verifications: Box<[Verification]>,
@@ -264,7 +263,7 @@ pub enum Verification {
         value: ConstraintValue,
     },
     SubPattern {
-        location: InputSource,
+        location: Span,
         pattern: Pattern,
     },
 }

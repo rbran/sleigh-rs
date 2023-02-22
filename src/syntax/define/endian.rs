@@ -1,19 +1,20 @@
 use nom::branch::alt;
-use nom::bytes::complete::tag;
 use nom::combinator::{cut, value};
-use nom::sequence::{preceded, tuple};
+use nom::sequence::{pair, preceded};
 use nom::IResult;
 
-use crate::base::empty_space0;
+use crate::SleighError;
+use crate::preprocessor::token::Token;
 use crate::syntax::define::Endian;
+use crate::syntax::parser::this_ident;
 
 impl Endian {
-    pub fn parse(input: &str) -> IResult<&str, Self> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         preceded(
-            tuple((tag("endian"), empty_space0, tag("="), empty_space0)),
+            pair(this_ident("endian"), tag!("=")),
             cut(alt((
-                value(Self::Little, tag("little")),
-                value(Self::Big, tag("big")),
+                value(Self::Little, this_ident("little")),
+                value(Self::Big, this_ident("big")),
             ))),
         )(input)
     }

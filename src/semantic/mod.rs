@@ -15,45 +15,170 @@ pub mod varnode;
 mod inner;
 
 use indexmap::IndexMap;
-use std::fmt::Formatter;
 use std::rc::Rc;
 use std::rc::Weak;
 
 use thiserror::Error;
 
-use crate::preprocessor::PreProcOutput;
+use crate::Endian;
+use crate::NumberNonZeroUnsigned;
 use crate::semantic::inner::{SolvedLocation, SolverStatus};
-use crate::InputSource;
-use crate::NonZeroTypeU;
-use crate::Table;
-use crate::{PcodeMacro, Space, UserFunction, Varnode};
+use crate::syntax;
+use crate::Span;
 
 use self::disassembly::DisassemblyError;
 use self::inner::GlobalConvert;
 use self::inner::Solved;
 use self::pattern::PatternError;
+use self::pcode_macro::PcodeMacro;
 use self::pcode_macro::PcodeMacroError;
+use self::space::Space;
+use self::table::Table;
 use self::table::TableError;
 use self::token::*;
+use self::user_function::UserFunction;
 use self::varnode::Bitrange;
 use self::varnode::Context;
+use self::varnode::Varnode;
 
-use super::syntax;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub enum Endian {
-    Little,
-    Big,
+#[macro_export]
+macro_rules! from_error {
+    ($parent:ident, $child:ident, $name:ident $(,)?) => {
+        impl From<$child> for $parent {
+            fn from(input: $child) -> $parent {
+                $parent::$name(input)
+            }
+        }
+    };
 }
 
-impl Endian {
-    pub fn is_little(&self) -> bool {
-        matches!(self, Self::Little)
-    }
-    pub fn is_big(&self) -> bool {
-        matches!(self, Self::Big)
-    }
+#[derive(Clone, Debug, Error)]
+pub enum WithBlockError {
+    #[error("Table name Error")]
+    TableName,
+    #[error("Pattern Error")]
+    Pattern(PatternError),
+    #[error("Disassembly Error")]
+    Disassembly(DisassemblyError),
 }
+from_error!(WithBlockError, PatternError, Pattern);
+from_error!(WithBlockError, DisassemblyError, Disassembly);
+
+#[derive(Error, Debug, Clone)]
+pub enum SemanticError {
+    #[error("Missing global endian definition")]
+    EndianMissing,
+
+    #[error("Multiple alignment definitions")]
+    AlignmentMult,
+    #[error("Multiple global endian definitions")]
+    EndianMult,
+
+    //TODO Src for duplication
+    #[error("Name already taken")]
+    NameDuplicated,
+
+    #[error("Missing alignment definition")]
+    AlignmentMissing,
+    #[error("Missing default Space Address")]
+    SpaceMissingDefault,
+    #[error("Multiple default Space Address")]
+    SpaceMultipleDefault,
+
+    #[error("Space Address not found")]
+    SpaceMissing,
+    #[error("Invalid ref Space Address")]
+    SpaceInvalid,
+    #[error("Space duplicate attribute")]
+    SpaceInvalidAtt,
+    #[error("Space missing size")]
+    SpaceMissingSize,
+    #[error("Space invalid size")]
+    SpaceInvalidSize,
+    #[error("Space invalid wordsize")]
+    SpaceInvalidWordSize,
+
+    #[error("Invalid Varnode Size")]
+    VarnodeInvalidVarnodeSize,
+    #[error("Invalid Varnode Memory Size is too big")]
+    VarnodeInvalidMemorySize,
+    #[error("Invalid Varnode Memory Size is too big")]
+    VarnodeInvalidMemoryEnd,
+    #[error("Varnode not found")]
+    VarnodeMissing,
+    #[error("Varnode ref invalid")]
+    VarnodeInvalid,
+
+    #[error("Bitrange invalid bit size")]
+    BitrangeInvalidSize,
+    #[error("Bitrange ref varnode is too small")]
+    BitrangeInvalidVarnodeSize,
+
+    #[error("Context invalid Size")]
+    ContextInvalidSize,
+    #[error("Context duplicated attribute")]
+    ContextInvalidAtt,
+
+    #[error("Token invalid Size")]
+    TokenInvalidSize,
+
+    #[error("Token Field invalid Size")]
+    TokenFieldInvalidSize,
+    #[error("Token Field Duplicated Attribute {0}")]
+    TokenFieldAttDup(Span),
+    #[error("TokenField not found")]
+    TokenFieldMissing,
+    #[error("Token Field ref invalid")]
+    TokenFieldInvalid,
+    #[error("Token Field Attach duplicated {0}")]
+    TokenFieldAttachDup(Span),
+    #[error("Attach to a field with print flags set{0}")]
+    AttachWithPrintFlags(Span),
+    //#[error("Invalid Data {message}")]
+    //InvalidData { message: String },
+    //
+    #[error("Table not found")]
+    TableMissing,
+    #[error("Invalid ref Table")]
+    TableInvalid,
+
+    #[error("Pattern Missing Ref")]
+    PatternMissingRef,
+    #[error("Pattern Invalid Ref")]
+    PatternInvalidRef,
+
+    #[error("Disassembly Ref not found")]
+    DisassemblyMissingRef(Span),
+    #[error("Disassembly Invalid Ref")]
+    DisassemblyInvalidRef(Span),
+
+    #[error("Display Ref not found")]
+    DisplayMissingRef,
+    #[error("Display Invalid Ref")]
+    DisplayInvalidRef,
+
+    #[error("Execution Label is defined multiple times")]
+    ExecutionDuplicatedLabel,
+    #[error("Execution Label not found")]
+    ExecutionMissingLabel,
+
+    //TODO: remove Satan
+    #[error("TODO: Remove Satan")]
+    Satanic,
+    #[error("TODO: Remove Satan with ref")]
+    SatanicRef(Span),
+
+    //TODO: FOR REAL!!!
+    #[error("Table Error: {0}")]
+    Table(TableError),
+    #[error("PcodeMacro Error")]
+    PcodeMacro(PcodeMacroError),
+    #[error("WithBlock Invalid name")]
+    WithBlock(WithBlockError),
+}
+from_error!(SemanticError, TableError, Table);
+from_error!(SemanticError, PcodeMacroError, PcodeMacro);
+from_error!(SemanticError, WithBlockError, WithBlock);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum PrintBase {
@@ -135,13 +260,13 @@ impl<T> Clone for GlobalAnonReference<T> {
 
 #[derive(Debug)]
 pub struct GlobalReference<T> {
-    src: InputSource,
+    src: Span,
     name: Rc<str>,
     value: Weak<T>,
 }
 
 impl<T> GlobalReference<T> {
-    pub fn from_element(element: &GlobalElement<T>, src: InputSource) -> Self {
+    pub fn from_element(element: &GlobalElement<T>, src: Span) -> Self {
         Self {
             src,
             name: Rc::clone(element.name_raw()),
@@ -154,7 +279,7 @@ impl<T> GlobalReference<T> {
     pub fn name(&self) -> &str {
         &self.name
     }
-    pub fn location(&self) -> &InputSource {
+    pub fn location(&self) -> &Span {
         &self.src
     }
     pub fn element(&self) -> GlobalElement<T> {
@@ -258,10 +383,7 @@ impl<T> GlobalElement<T> {
             value: Rc::downgrade(self.element_raw()),
         }
     }
-    pub(crate) fn reference_from(
-        &self,
-        location: InputSource,
-    ) -> GlobalReference<T> {
+    pub(crate) fn reference_from(&self, location: Span) -> GlobalReference<T> {
         GlobalReference {
             src: location,
             name: Rc::clone(self.name_raw()),
@@ -350,7 +472,7 @@ pub struct Sleigh {
 
     //pub default_space: Rc<space::Space>,
     //pub instruction_table: Rc<table::Table>,
-    addr_len_bytes: NonZeroTypeU,
+    addr_len_bytes: NumberNonZeroUnsigned,
 
     //scope with all the global identifiers
     pub global_scope: IndexMap<Rc<str>, GlobalScope>,
@@ -363,164 +485,11 @@ impl Sleigh {
     pub fn alignment(&self) -> u8 {
         self.alignment
     }
-    pub fn addr_len_bytes(&self) -> NonZeroTypeU {
+    pub fn addr_len_bytes(&self) -> NumberNonZeroUnsigned {
         self.addr_len_bytes
     }
-}
-
-#[macro_export]
-macro_rules! from_error {
-    ($parent:ident, $child:ident, $name:ident $(,)?) => {
-        impl From<$child> for $parent {
-            fn from(input: $child) -> $parent {
-                $parent::$name(input)
-            }
-        }
-    };
-}
-
-pub trait DisplayBacktrace {
-    fn display_backtrace(
-        &self,
-        f: &mut Formatter<'_>,
-        output: PreProcOutput,
-    ) -> Result<(), std::fmt::Error>;
-}
-
-#[derive(Clone, Debug, Error)]
-pub enum WithBlockError {
-    #[error("Table name Error")]
-    TableName,
-    #[error("Pattern Error")]
-    Pattern(PatternError),
-    #[error("Disassembly Error")]
-    Disassembly(DisassemblyError),
-}
-from_error!(WithBlockError, PatternError, Pattern);
-from_error!(WithBlockError, DisassemblyError, Disassembly);
-
-#[derive(Error, Debug, Clone)]
-pub enum SemanticError {
-    #[error("Missing global endian definition")]
-    EndianMissing,
-
-    #[error("Multiple alignment definitions")]
-    AlignmentMult,
-    #[error("Multiple global endian definitions")]
-    EndianMult,
-
-    //TODO Src for duplication
-    #[error("Name already taken")]
-    NameDuplicated,
-
-    #[error("Missing alignment definition")]
-    AlignmentMissing,
-    #[error("Missing default Space Address")]
-    SpaceMissingDefault,
-    #[error("Multiple default Space Address")]
-    SpaceMultipleDefault,
-
-    #[error("Space Address not found")]
-    SpaceMissing,
-    #[error("Invalid ref Space Address")]
-    SpaceInvalid,
-    #[error("Space duplicate attribute")]
-    SpaceInvalidAtt,
-    #[error("Space missing size")]
-    SpaceMissingSize,
-    #[error("Space invalid size")]
-    SpaceInvalidSize,
-    #[error("Space invalid wordsize")]
-    SpaceInvalidWordSize,
-
-    #[error("Invalid Varnode Size")]
-    VarnodeInvalidVarnodeSize,
-    #[error("Invalid Varnode Memory Size is too big")]
-    VarnodeInvalidMemorySize,
-    #[error("Invalid Varnode Memory Size is too big")]
-    VarnodeInvalidMemoryEnd,
-    #[error("Varnode not found")]
-    VarnodeMissing,
-    #[error("Varnode ref invalid")]
-    VarnodeInvalid,
-
-    #[error("Bitrange invalid bit size")]
-    BitrangeInvalidSize,
-    #[error("Bitrange ref varnode is too small")]
-    BitrangeInvalidVarnodeSize,
-
-    #[error("Context invalid Size")]
-    ContextInvalidSize,
-    #[error("Context duplicated attribute")]
-    ContextInvalidAtt,
-
-    #[error("Token invalid Size")]
-    TokenInvalidSize,
-
-    #[error("Token Field invalid Size")]
-    TokenFieldInvalidSize,
-    #[error("Token Field Duplicated Attribute {0}")]
-    TokenFieldAttDup(InputSource),
-    #[error("TokenField not found")]
-    TokenFieldMissing,
-    #[error("Token Field ref invalid")]
-    TokenFieldInvalid,
-    #[error("Token Field Attach duplicated {0}")]
-    TokenFieldAttachDup(InputSource),
-    #[error("Attach to a field with print flags set{0}")]
-    AttachWithPrintFlags(InputSource),
-    //#[error("Invalid Data {message}")]
-    //InvalidData { message: String },
-    //
-    #[error("Table not found")]
-    TableMissing,
-    #[error("Invalid ref Table")]
-    TableInvalid,
-
-    #[error("Pattern Missing Ref")]
-    PatternMissingRef,
-    #[error("Pattern Invalid Ref")]
-    PatternInvalidRef,
-
-    #[error("Disassembly Ref not found")]
-    DisassemblyMissingRef(InputSource),
-    #[error("Disassembly Invalid Ref")]
-    DisassemblyInvalidRef(InputSource),
-
-    #[error("Display Ref not found")]
-    DisplayMissingRef,
-    #[error("Display Invalid Ref")]
-    DisplayInvalidRef,
-
-    #[error("Execution Label is defined multiple times")]
-    ExecutionDuplicatedLabel,
-    #[error("Execution Label not found")]
-    ExecutionMissingLabel,
-
-    //TODO: remove Satan
-    #[error("TODO: Remove Satan")]
-    Satanic,
-    #[error("TODO: Remove Satan with ref")]
-    SatanicRef(InputSource),
-
-    //TODO: FOR REAL!!!
-    #[error("Table Error: {0}")]
-    Table(TableError),
-    #[error("PcodeMacro Error")]
-    PcodeMacro(PcodeMacroError),
-    #[error("WithBlock Invalid name")]
-    WithBlock(WithBlockError),
-}
-from_error!(SemanticError, TableError, Table);
-from_error!(SemanticError, PcodeMacroError, PcodeMacro);
-from_error!(SemanticError, WithBlockError, WithBlock);
-
-impl Sleigh {
-    pub fn new<'a>(
-        value: syntax::Syntax<'a>,
-        root: &'a PreProcOutput,
-    ) -> Result<Self, SemanticError> {
-        let inner = inner::Sleigh::new(value, root)?;
+    pub(crate) fn new(value: syntax::Sleigh) -> Result<Self, SemanticError> {
+        let inner = inner::Sleigh::new(value)?;
         //HACK: verify that indirect recursion don't happen
         //NOTE we don't need to worry about direct (self) recursion.
         //AKA `TableA` calling itself

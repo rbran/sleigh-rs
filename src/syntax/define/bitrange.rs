@@ -1,32 +1,30 @@
-use nom::bytes::complete::tag;
 use nom::combinator::{cut, map};
 use nom::multi::many0;
-use nom::sequence::{pair, preceded, terminated, tuple};
+use nom::sequence::{preceded, terminated, tuple};
 use nom::IResult;
 
-use crate::base::{empty_space0, empty_space1, ident};
+use crate::preprocessor::token::Token;
+use crate::syntax::parser::{ident, this_ident};
 use crate::syntax::BitRange;
+use crate::{SleighError, Span};
 
 #[derive(Clone, Debug)]
-pub struct BitRangeDef<'a> {
-    ranges: Vec<VarnodeField<'a>>,
+pub struct BitRangeDef {
+    ranges: Vec<VarnodeField>,
 }
 
-impl<'a> BitRangeDef<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl BitRangeDef {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
-            preceded(
-                pair(tag("bitrange"), empty_space1),
-                cut(many0(preceded(empty_space0, VarnodeField::parse))),
-            ),
+            preceded(this_ident("bitrange"), cut(many0(VarnodeField::parse))),
             |bitranges| BitRangeDef { ranges: bitranges },
         )(input)
     }
 }
 
-impl<'a> IntoIterator for BitRangeDef<'a> {
-    type Item = VarnodeField<'a>;
-    type IntoIter = std::vec::IntoIter<VarnodeField<'a>>;
+impl IntoIterator for BitRangeDef {
+    type Item = VarnodeField;
+    type IntoIter = std::vec::IntoIter<VarnodeField>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.ranges.into_iter()
@@ -34,27 +32,26 @@ impl<'a> IntoIterator for BitRangeDef<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub struct VarnodeField<'a> {
-    pub name: &'a str,
-    pub varnode_name: &'a str,
-    pub range: BitRange<'a>,
+pub struct VarnodeField {
+    pub src: Span,
+    pub name: String,
+    pub varnode_name: String,
+    pub varnode_name_span: Span,
+    pub range: BitRange,
 }
 
-impl<'a> VarnodeField<'a> {
-    fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl VarnodeField {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
-            tuple((
-                terminated(
-                    ident,
-                    tuple((empty_space0, tag("="), empty_space0)),
-                ),
-                terminated(ident, empty_space0),
-                BitRange::parse,
-            )),
-            |(name, varnode_name, range)| VarnodeField {
-                name,
-                varnode_name,
-                range,
+            tuple((terminated(ident, tag!("=")), ident, BitRange::parse)),
+            |((name, name_span), (varnode_name, varnode_name_span), range)| {
+                VarnodeField {
+                    name,
+                    src: name_span.clone(),
+                    varnode_name,
+                    varnode_name_span: varnode_name_span.clone(),
+                    range,
+                }
             },
         )(input)
     }

@@ -2,69 +2,57 @@ use std::cmp::Ordering;
 use std::ops::Range;
 
 use nom::branch::alt;
-use nom::bytes::complete::tag;
-use nom::combinator::{consumed, map, opt, value};
-use nom::sequence::{delimited, pair, preceded, separated_pair, tuple};
+use nom::combinator::{map, opt};
+use nom::sequence::{delimited, preceded, separated_pair, tuple};
 use nom::IResult;
 
-use crate::base::{empty_space0, ident, number_unsig, IntTypeU};
-pub use crate::semantic::execution::Binary;
+use crate::preprocessor::token::Token;
+use crate::semantic::execution::Binary;
+use crate::syntax::parser::{ident, number};
 use crate::syntax::BitRange;
-use crate::ParamNumber;
+use crate::{NumberUnsigned, ParamNumber, SleighError, Span};
 
-//impl<'a> Op<'a> {
-//pub fn precedence(&self, other: &Self) -> Ordering {
-//    match (self, other) {
-//        (Op::Unary(x), Op::Unary(y)) => x.precedence(y),
-//        (Op::Binary(x), Op::Binary(y)) => x.cmp(y),
-//        (Op::Var(_), Op::Var(_)) => Ordering::Equal,
-//        (Op::Unary(_), _) => Ordering::Greater,
-//        (_, Op::Unary(_)) => Ordering::Less,
-//        (Op::Binary(_), _) => Ordering::Greater,
-//        (_, Op::Binary(_)) => Ordering::Less,
-//    }
-//}
-//}
-
-#[derive(Clone, Copy, Debug)]
-pub struct ByteRangeMsb<'a> {
-    pub value: IntTypeU,
-    pub src: &'a str,
+#[derive(Clone, Debug)]
+pub struct ByteRangeMsb {
+    pub value: NumberUnsigned,
+    pub src: Span,
 }
-impl<'a> ByteRangeMsb<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, ByteRangeMsb<'a>> {
-        map(
-            consumed(delimited(
-                pair(tag("("), empty_space0),
-                number_unsig,
-                pair(empty_space0, tag(")")),
-            )),
-            |(src, value)| Self { src, value },
-        )(input)
+impl ByteRangeMsb {
+    pub fn parse(
+        input: &[Token],
+    ) -> IResult<&[Token], ByteRangeMsb, SleighError> {
+        map(delimited(tag!("("), number, tag!(")")), |(value, src)| {
+            Self {
+                src: src.clone(),
+                value,
+            }
+        })(input)
     }
 }
-#[derive(Clone, Copy, Debug)]
-pub struct ByteRangeLsb<'a> {
-    pub value: IntTypeU,
-    pub src: &'a str,
+#[derive(Clone, Debug)]
+pub struct ByteRangeLsb {
+    pub value: NumberUnsigned,
+    pub src: Span,
 }
-impl<'a> ByteRangeLsb<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, ByteRangeLsb<'a>> {
-        map(
-            consumed(preceded(pair(tag(":"), empty_space0), number_unsig)),
-            |(src, value)| Self { src, value },
-        )(input)
+impl ByteRangeLsb {
+    pub fn parse(
+        input: &[Token],
+    ) -> IResult<&[Token], ByteRangeLsb, SleighError> {
+        map(preceded(tag!(":"), number), |(value, src)| Self {
+            src: src.clone(),
+            value,
+        })(input)
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum Unary<'a> {
+pub enum Unary {
     //NOTE: ByteRangeMsb is part of the expr::ExprElement::Ambiguous1
-    ByteRangeMsb(ByteRangeMsb<'a>),
-    ByteRangeLsb(ByteRangeLsb<'a>),
-    BitRange(BitRange<'a>),
-    Dereference(AddrDereference<'a>),
-    //Reference(AddrReference<'a>),
+    ByteRangeMsb(ByteRangeMsb),
+    ByteRangeLsb(ByteRangeLsb),
+    BitRange(BitRange),
+    Dereference(AddrDereference),
+    //Reference(AddrReference),
     Negation,
     BitNegation,
     Negative,
@@ -83,7 +71,7 @@ pub enum Unary<'a> {
     FloatRound,
 }
 
-impl<'a> Unary<'a> {
+impl Unary {
     pub fn precedence(&self, other: &Self) -> Ordering {
         macro_rules! order_enum {
             ($a:ident, $b:ident, $($elem:pat),* $(,)?) => {
@@ -123,67 +111,84 @@ impl<'a> Unary<'a> {
             FloatRound,
         )
     }
-    pub fn parse_range(input: &str) -> IResult<&str, Range<IntTypeU>> {
+    pub fn parse_range(
+        input: &[Token],
+    ) -> IResult<&[Token], Range<NumberUnsigned>, SleighError> {
         map(
             delimited(
-                pair(tag("["), empty_space0),
-                separated_pair(
-                    number_unsig,
-                    tuple((empty_space0, tag(","), empty_space0)),
-                    number_unsig,
-                ),
-                pair(empty_space0, tag("]")),
+                tag!("["),
+                separated_pair(number, tag!(","), number),
+                tag!("]"),
             ),
-            |(lsb, n_bits)| lsb..lsb + n_bits,
+            |((lsb, _), (n_bits, _))| lsb..lsb + n_bits,
         )(input)
     }
-    pub fn parse_after(input: &'a str) -> IResult<&'a str, Self> {
+    pub fn parse_after(
+        input: &[Token],
+    ) -> IResult<&[Token], (Self, Span), SleighError> {
         alt((
-            map(BitRange::parse, Self::BitRange),
-            map(ByteRangeMsb::parse, Self::ByteRangeMsb),
-            map(ByteRangeLsb::parse, Self::ByteRangeLsb),
+            map(BitRange::parse, |x| {
+                let location = x.src.clone();
+                (Self::BitRange(x), location)
+            }),
+            map(ByteRangeMsb::parse, |x| {
+                let location = x.src.clone();
+                (Self::ByteRangeMsb(x), location)
+            }),
+            map(ByteRangeLsb::parse, |x| {
+                let location = x.src.clone();
+                (Self::ByteRangeLsb(x), location)
+            }),
         ))(input)
     }
-    pub fn parse_before(input: &'a str) -> IResult<&'a str, Self> {
+    pub fn parse_before(
+        input: &[Token],
+    ) -> IResult<&[Token], (Self, Span), SleighError> {
         alt((
-            value(Self::Negation, tag("!")),
-            value(Self::BitNegation, tag("~")),
-            value(Self::Negative, tag("-")),
-            value(Self::FloatNegative, tag("f-")),
-            //map(AddrReference::parse, Self::Reference),
-            map(AddrDereference::parse, Self::Dereference),
+            map(tag!("!"), |span| (Self::Negation, span.clone())),
+            map(tag!("~"), |span| (Self::BitNegation, span.clone())),
+            map(tag!("-"), |span| (Self::Negative, span.clone())),
+            map(tag!("f-"), |span| (Self::FloatNegative, span.clone())),
+            map(AddrDereference::parse, |x| {
+                let location = x.src.clone();
+                (Self::Dereference(x), location)
+            }),
         ))(input)
     }
-    pub fn parse_call_name(input_ori: &'a str) -> IResult<&'a str, Self> {
+    pub fn parse_call_name(
+        input_ori: &[Token],
+    ) -> IResult<&[Token], (Self, &Span), SleighError> {
         alt((
-            value(Self::Popcount, tag("popcount")),
-            value(Self::Zext, tag("zext")),
-            value(Self::Sext, tag("sext")),
-            value(Self::FloatNan, tag("nan")),
-            value(Self::FloatAbs, tag("abs")),
-            value(Self::FloatSqrt, tag("sqrt")),
-            value(Self::Int2Float, tag("int2float")),
-            value(Self::Float2Float, tag("float2float")),
-            value(Self::SignTrunc, tag("trunc")),
-            value(Self::FloatCeil, tag("ceil")),
-            value(Self::FloatFloor, tag("floor")),
-            value(Self::FloatRound, tag("round")),
+            map(tag!("popcount"), |span| (Self::Popcount, span)),
+            map(tag!("zext"), |span| (Self::Zext, span)),
+            map(tag!("sext"), |span| (Self::Sext, span)),
+            map(tag!("nan"), |span| (Self::FloatNan, span)),
+            map(tag!("abs"), |span| (Self::FloatAbs, span)),
+            map(tag!("sqrt"), |span| (Self::FloatSqrt, span)),
+            map(tag!("int2float"), |span| (Self::Int2Float, span)),
+            map(tag!("float2float"), |span| (Self::Float2Float, span)),
+            map(tag!("trunc"), |span| (Self::SignTrunc, span)),
+            map(tag!("ceil"), |span| (Self::FloatCeil, span)),
+            map(tag!("floor"), |span| (Self::FloatFloor, span)),
+            map(tag!("round"), |span| (Self::FloatRound, span)),
         ))(input_ori)
     }
 }
 
 macro_rules! op_parser {
-    ($name:ident, $op:ident, $tag:literal) => {
-        pub fn $name(input: &str) -> IResult<&str, Self> {
-            value(Self::$op, tag($tag))(input)
+    ($name:ident, $op:ident, $tag:tt) => {
+        pub fn $name(
+            input: &[Token],
+        ) -> IResult<&[Token], (Self, &Span), SleighError> {
+            map(tag!($tag), |span| (Self::$op, span))(input)
         }
     };
 }
 //used to define precedence
 macro_rules! op_parser_levels {
-    ($level:ident, $(($name:ident, $op:ident, $tag:literal)),* $(,)? ) => {
+    ($level:ident, $(($name:ident, $op:ident, $tag:tt)),* $(,)? ) => {
         $(op_parser!($name, $op, $tag);)*
-        pub fn $level(input: &str) -> IResult<&str, Self> {
+        pub fn $level(input: &[Token]) -> IResult<&[Token], (Self, &Span), SleighError> {
             alt(($(Self::$name),*))(input)
         }
     };
@@ -251,11 +256,13 @@ impl Binary {
         (bit_xor, BitXor, "^"),
         (bit_or, BitOr, "|"),
     );
-    pub fn parse_call_name(input_ori: &str) -> IResult<&str, Self> {
+    pub fn parse_call_name(
+        input_ori: &[Token],
+    ) -> IResult<&[Token], (Self, &Span), SleighError> {
         alt((
-            value(Self::Carry, tag("carry")),
-            value(Self::SCarry, tag("scarry")),
-            value(Self::SBorrow, tag("sborrow")),
+            map(tag!("carry"), |src| (Self::Carry, src)),
+            map(tag!("scarry"), |src| (Self::SCarry, src)),
+            map(tag!("sborrow"), |src| (Self::SBorrow, src)),
         ))(input_ori)
     }
 }
@@ -301,16 +308,16 @@ impl PrimitiveFunction {
 }
 
 #[derive(Clone, Debug)]
-pub enum Function<'a> {
+pub enum Function {
     Primitive(PrimitiveFunction),
     // could be PCode/Macro
-    UserDefined(&'a str),
+    UserDefined(String),
 }
-impl<'a> Function<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
-        let (input, ident) = ident(input)?;
+impl Function {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+        let (input, (ident, _)) = ident(input)?;
         let function =
-            if let Some(function) = PrimitiveFunction::find_call_name(ident) {
+            if let Some(function) = PrimitiveFunction::find_call_name(&ident) {
                 Self::Primitive(function)
             } else {
                 Self::UserDefined(ident)
@@ -326,37 +333,42 @@ impl<'a> Function<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub struct SpaceReference<'a> {
-    pub name: &'a str,
+pub struct SpaceReference {
+    pub src: Span,
+    pub name: String,
 }
-impl<'a> SpaceReference<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl SpaceReference {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
-            delimited(
-                tuple((empty_space0, tag("["), empty_space0)),
-                ident,
-                tuple((empty_space0, tag("]"), empty_space0)),
-            ),
-            |name| Self { name },
+            delimited(tag!("["), ident, tag!("]")),
+            |(name, name_src)| Self {
+                name,
+                src: name_src.clone(),
+            },
         )(input)
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct AddrDereference<'a> {
-    pub src: &'a str,
-    pub space: Option<SpaceReference<'a>>,
-    pub size: Option<ByteRangeLsb<'a>>,
+pub struct AddrDereference {
+    pub src: Span,
+    pub space: Option<SpaceReference>,
+    pub size: Option<ByteRangeLsb>,
 }
 
-impl<'a> AddrDereference<'a> {
-    pub fn parse(input: &'a str) -> IResult<&'a str, Self> {
+impl AddrDereference {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
-            consumed(preceded(
-                tag("*"),
-                pair(opt(SpaceReference::parse), opt(ByteRangeLsb::parse)),
+            tuple((
+                tag!("*"),
+                opt(SpaceReference::parse),
+                opt(ByteRangeLsb::parse),
             )),
-            |(src, (space, size))| Self { src, space, size },
+            |(src, space, size)| Self {
+                src: src.clone(),
+                space,
+                size,
+            },
         )(input)
     }
 }
