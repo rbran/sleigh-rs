@@ -16,6 +16,7 @@ pub type FloatType = f64;
 pub type NumberUnsigned = u64;
 pub type NumberSigned = i64;
 pub type NumberSuperSigned = i128;
+pub type NumberSuperUnsigned = u128;
 pub type NumberNonZeroUnsigned = std::num::NonZeroU64;
 pub type NumberNonZeroSigned = std::num::NonZeroI64;
 pub type NumberNonZeroSuperSigned = std::num::NonZeroI128;
@@ -64,10 +65,16 @@ impl Number {
         }
     }
 
-    pub(crate) fn as_unsigned(&self) -> u64 {
+    pub fn as_unsigned(&self) -> Option<NumberUnsigned> {
         match self {
-            Number::Positive(value) => *value,
-            Number::Negative(value) => *value as u64,
+            Number::Positive(value) => Some(*value),
+            Number::Negative(value) => {
+                //TODO improve this to use Super Signed?
+                NumberSigned::try_from(*value)
+                    .ok()?
+                    .checked_neg()
+                    .map(|x| x as NumberUnsigned)
+            }
         }
     }
 }
@@ -239,7 +246,7 @@ pub enum SleighError {
 
     //TODO delete this
     #[error("SemanticError {0}")]
-    SemanticError(#[from] SemanticError)
+    SemanticError(#[from] SemanticError),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -502,13 +509,12 @@ impl std::fmt::Display for FileLocation {
     }
 }
 
-
 pub fn file_to_sleigh(filename: &Path) -> Result<Sleigh, SleighError> {
-        let mut pro = FilePreProcessor::new(&filename)?;
-        let mut buf = vec![];
-        let syntax = crate::syntax::Sleigh::parse(&mut pro, &mut buf, false)?;
-        let sleigh = crate::semantic::Sleigh::new(syntax)?;
-        Ok(sleigh)
+    let mut pro = FilePreProcessor::new(&filename)?;
+    let mut buf = vec![];
+    let syntax = crate::syntax::Sleigh::parse(&mut pro, &mut buf, false)?;
+    let sleigh = crate::semantic::Sleigh::new(syntax)?;
+    Ok(sleigh)
 }
 
 #[cfg(test)]

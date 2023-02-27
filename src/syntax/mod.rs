@@ -13,7 +13,7 @@ use nom::IResult;
 use crate::preprocessor::token::{Token, TokenType};
 use crate::preprocessor::FilePreProcessor;
 use crate::syntax::parser::Parser;
-use crate::{Number, NumberUnsigned, SleighError, Span, IDENT_INSTRUCTION};
+use crate::{Number, NumberUnsigned, SleighError, Span};
 
 use self::attach::Attach;
 use self::block::pcode_macro::PcodeMacro;

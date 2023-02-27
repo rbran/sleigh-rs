@@ -1,6 +1,8 @@
 use crate::semantic::inner::{FieldSize, SolverStatus};
 use crate::semantic::space::Space;
-use crate::{Span, NumberUnsigned, NumberNonZeroUnsigned, NumberSigned, FloatType};
+use crate::{
+    FloatType, NumberNonZeroUnsigned, NumberSigned, NumberUnsigned, Span,
+};
 
 use crate::semantic::{execution, GlobalReference};
 
@@ -61,8 +63,10 @@ impl Truncate {
     }
     pub fn input_min_bits(&self) -> Option<NumberNonZeroUnsigned> {
         Some(
-            NumberNonZeroUnsigned::new(self.size.possible_value()?.get() + self.lsb)
-                .unwrap(),
+            NumberNonZeroUnsigned::new(
+                self.size.possible_value()?.get() + self.lsb,
+            )
+            .unwrap(),
         )
     }
     pub fn output_size(&self) -> &FieldSize {
@@ -122,7 +126,11 @@ impl Unary {
 }
 
 impl execution::Binary {
-    pub fn execute(&self, left: NumberUnsigned, right: NumberUnsigned) -> Option<NumberUnsigned> {
+    pub fn execute(
+        &self,
+        left: NumberUnsigned,
+        right: NumberUnsigned,
+    ) -> Option<NumberUnsigned> {
         //COMPILER please optimize this
         let (left_s, right_s) = (left as NumberSigned, right as NumberSigned);
         let sig = |x: NumberSigned| x as NumberUnsigned;

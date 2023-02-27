@@ -143,8 +143,13 @@ impl Expr {
             ) => {
                 solved.i_did_a_thing();
                 solved.iam_not_finished_location(&src, file!(), line!());
+                //TODO create an error if the value is too big, for now let the
+                //unwrap so we can detect if ghidra uses value > u64
                 let value = op
-                    .execute(left.as_unsigned(), right.as_unsigned())
+                    .execute(
+                        left.as_unsigned().unwrap(),
+                        right.as_unsigned().unwrap(),
+                    )
                     .ok_or_else(|| {
                         //TODO better error
                         ExecutionError::InvalidExport
@@ -170,14 +175,20 @@ impl Expr {
             ) if out_size
                 .final_value()
                 .map(|bits| {
-                    bits.get() == integer.as_unsigned().count_ones().into()
+                    bits.get()
+                        == integer.as_unsigned().unwrap().count_ones().into()
                 })
                 .unwrap_or(false)
                 && value
                     .size()
                     .final_value()
                     .map(|bits| {
-                        bits.get() >= integer.as_unsigned().count_ones().into()
+                        bits.get()
+                            >= integer
+                                .as_unsigned()
+                                .unwrap()
+                                .count_ones()
+                                .into()
                     })
                     .unwrap_or(true) =>
             {
@@ -190,6 +201,10 @@ impl Expr {
                     Box::new(value),
                 ))
             }
+
+            //TODO create an error if the value is too big, and as_unsigned
+            //fails for now let the unwrap so we can detect if ghidra uses
+            //value > u64
 
             //convert if the output bit size, if the left hand is a value with
             //an defined bit size and the right side an integer, the output
@@ -204,8 +219,8 @@ impl Expr {
                 .zip(value.size().final_value())
                 .map(|(out_bits, val_bits)| (out_bits.get(), val_bits.get()))
                 .map(|(out_bits, val_bits)| {
-                    val_bits >= lsb.as_unsigned()
-                        && out_bits == (val_bits - lsb.as_unsigned())
+                    val_bits >= lsb.as_unsigned().unwrap()
+                        && out_bits == (val_bits - lsb.as_unsigned().unwrap())
                 })
                 .unwrap_or(false) =>
             {
@@ -216,7 +231,7 @@ impl Expr {
                 //safe because the self is overwriten after
                 Expr::Value(Ele::Truncate(
                     src.clone(),
-                    Truncate::new(lsb.as_unsigned(), size),
+                    Truncate::new(lsb.as_unsigned().unwrap(), size),
                     Box::new(value),
                 ))
             }

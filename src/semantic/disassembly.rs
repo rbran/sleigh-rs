@@ -109,27 +109,6 @@ pub enum ExprElement {
     Op(Op),
     OpUnary(OpUnary),
 }
-//impl<T> ExprElement<T> {
-//    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> ExprElement<U> {
-//        match self {
-//            Self::Value(i) => ExprElement::Value(i.map(|i| f(i))),
-//            Self::Op(op) => ExprElement::Op(op),
-//            Self::OpUnary(op) => ExprElement::OpUnary(op),
-//        }
-//    }
-//}
-//impl<T, E> ExprElement<Result<T, E>> {
-//    pub fn transpose(self) -> Result<ExprElement<T>, E> {
-//        match self {
-//            Self::Value(x) => match x.transpose() {
-//                Ok(x) => Ok(ExprElement::Value(x)),
-//                Err(e) => Err(e),
-//            },
-//            Self::Op(op) => Ok(ExprElement::Op(op)),
-//            Self::OpUnary(op) => Ok(ExprElement::OpUnary(op)),
-//        }
-//    }
-//}
 
 #[derive(Clone, Debug)]
 pub struct GlobalSet {
