@@ -103,16 +103,16 @@ impl Display {
         pattern: &mut Pattern,
         is_root: bool,
     ) -> Result<Self, DisplayError> {
+        use block::display::DisplayElement::*;
+
         let mut out = vec![];
         let mut iter = display.0.into_iter();
 
         //in root table first element is the mneumonic
         if is_root {
             if let Some(ele) = iter.next() {
-                use block::display::DisplayElement::*;
                 match ele {
                     //no empty mneumonic
-                    Concat => (),
                     Ident(_src, x) => {
                         out.push(DisplayElement::Literal(x.to_owned()))
                     }
@@ -126,9 +126,7 @@ impl Display {
         }
 
         for ele in iter {
-            use block::display::DisplayElement::*;
             match ele {
-                Concat => (),
                 Literal(_src, x) => out.push(DisplayElement::Literal(x)),
                 Ident(src, name) => {
                     out.push(get_display_ref(sleigh, pattern, &name, &src)?)
