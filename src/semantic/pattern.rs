@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
-use crate::{from_error, Span, NumberUnsigned};
+use crate::{from_error, NumberUnsigned, Span};
 
 use super::disassembly::{Assertation, DisassemblyError, Expr, Variable};
 use super::table::Table;
@@ -43,7 +43,10 @@ from_error!(PatternError, DisassemblyError, ConstraintExpr);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PatternLen {
     Defined(NumberUnsigned),
-    Range { min: NumberUnsigned, max: NumberUnsigned },
+    Range {
+        min: NumberUnsigned,
+        max: NumberUnsigned,
+    },
     Min(NumberUnsigned),
 }
 

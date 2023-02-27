@@ -39,7 +39,11 @@ impl Sleigh {
         };
         let space_type = space_type.unwrap_or(SpaceType::Register);
         let space = GlobalElement::new_space(
-            &space.name, src, space_type, word_size, addr_size,
+            &space.name,
+            src,
+            space_type,
+            word_size,
+            addr_size,
         );
         if default {
             self.default_space

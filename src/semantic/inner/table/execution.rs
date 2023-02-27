@@ -19,11 +19,7 @@ pub struct Builder<'b, 'c> {
 }
 
 impl<'b, 'c> Builder<'b, 'c> {
-    pub fn new(
-        sleigh: &'b Sleigh,
-        pattern: &'c Pattern,
-        src: &Span,
-    ) -> Self {
+    pub fn new(sleigh: &'b Sleigh, pattern: &'c Pattern, src: &Span) -> Self {
         let execution = Execution::new_empty(src);
         let current_block = Rc::clone(&execution.entry_block);
         Self {
@@ -82,7 +78,9 @@ impl<'b, 'c> ExecutionBuilder for Builder<'b, 'c> {
                     //TODO filter out epsilon
                     //TODO make sure all fields used on execution can be
                     //produced by the pattern
-                    TokenField(x) => Ok(ExprValue::new_token_field(src.clone(), x)),
+                    TokenField(x) => {
+                        Ok(ExprValue::new_token_field(src.clone(), x))
+                    }
                     InstStart(x) => {
                         //TODO error
                         let len = self.sleigh().exec_addr_size().unwrap();
@@ -139,10 +137,15 @@ impl<'b, 'c> ExecutionBuilder for Builder<'b, 'c> {
                             meaning.as_ref(),
                             Some(Meaning::Variable(_))
                         ) {
-                            return Err(ExecutionError::InvalidRef(src.clone()));
+                            return Err(ExecutionError::InvalidRef(
+                                src.clone(),
+                            ));
                         }
                         Ok(WriteValue::TokenField(
-                            GlobalReference::from_element(token_field, src.clone()),
+                            GlobalReference::from_element(
+                                token_field,
+                                src.clone(),
+                            ),
                         ))
                     }
                     GlobalScope::Table(table) => Ok(WriteValue::Table(

@@ -5,8 +5,8 @@ use indexmap::IndexMap;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use crate::{semantic, Number};
 use crate::semantic::execution::{self, BranchCall, ExecutionError};
+use crate::{semantic, Number};
 use crate::{NumberUnsigned, Span};
 
 use super::pcode_macro::{Parameter, PcodeMacroInstance};
@@ -1001,7 +1001,7 @@ impl Drop for Execution {
 }
 
 impl Execution {
-    pub fn src(&self) -> &Span{
+    pub fn src(&self) -> &Span {
         &self.src
     }
     pub fn new_empty(src: &Span) -> Self {

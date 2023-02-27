@@ -7,11 +7,11 @@ use nom::sequence::{delimited, pair, preceded, terminated, tuple};
 use nom::IResult;
 
 use super::ifs::{if_cond, if_cond_owned, IfCheck, IfCheckOwned};
+use super::parser::{empty_line, end_of_line, ident, number, string};
 use super::{
     MACRO_DEFINE, MACRO_ELIF, MACRO_ELSE, MACRO_ENDIF, MACRO_IF, MACRO_IFDEF,
     MACRO_IFNDEF, MACRO_INCLUDE, MACRO_UNDEFINE,
 };
-use super::parser::{empty_line, end_of_line, ident, number, string};
 
 fn macro_include(input: &str) -> IResult<&str, String> {
     delimited(

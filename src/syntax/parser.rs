@@ -7,7 +7,7 @@ use nom::IResult;
 use crate::preprocessor::token::{Token, TokenType};
 use crate::preprocessor::FilePreProcessor;
 use crate::{
-    Number, NumberUnsigned, RangeBits, SleighError, Span, NumberNonZeroUnsigned,
+    Number, NumberNonZeroUnsigned, NumberUnsigned, RangeBits, SleighError, Span,
 };
 
 pub trait TokenHelper {

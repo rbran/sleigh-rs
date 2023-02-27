@@ -721,7 +721,10 @@ impl Block {
                                 )
                             }
                         }
-                        Ok(Verification::SubPattern { location: location.clone(), pattern })
+                        Ok(Verification::SubPattern {
+                            location: location.clone(),
+                            pattern,
+                        })
                     }
                 }
             })
@@ -994,7 +997,8 @@ impl Block {
                 }
 
                 block::pattern::Field::SubPattern(sub) => {
-                    let pattern = Pattern::new(sleigh, sub.clone(), this_table)?;
+                    let pattern =
+                        Pattern::new(sleigh, sub.clone(), this_table)?;
                     //add/verify all token fields
                     pattern
                         .token_fields

@@ -8,8 +8,8 @@ mod user_function;
 mod varnode;
 
 use nom::branch::alt;
-use nom::combinator::{cut, map, eof};
-use nom::sequence::{preceded, terminated, pair};
+use nom::combinator::{cut, eof, map};
+use nom::sequence::{pair, preceded, terminated};
 
 use crate::{Endian, SleighError};
 
@@ -38,9 +38,7 @@ pub enum Define {
 }
 
 impl Define {
-    pub fn parse(
-        input: &[ParserToken],
-    ) -> Result<Define, SleighError> {
+    pub fn parse(input: &[ParserToken]) -> Result<Define, SleighError> {
         let (_eof, define) = preceded(
             this_ident("define"),
             cut(terminated(

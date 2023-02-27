@@ -4,8 +4,8 @@ use nom::combinator::map;
 use nom::combinator::value;
 use nom::IResult;
 
-use crate::NumberUnsigned;
 use crate::preprocessor::parser::ident;
+use crate::NumberUnsigned;
 
 use super::parser::{number, string};
 use super::Span;

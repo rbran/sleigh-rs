@@ -39,5 +39,6 @@ pub enum DisplayScope {
     InstNext(GlobalReference<InstNext>),
     Disassembly(Rc<disassembly::Variable>),
     Table(GlobalReference<Table>),
+    Space,
     Literal(String),
 }

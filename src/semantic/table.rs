@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
-use crate::{from_error, Span, NumberNonZeroUnsigned};
+use crate::{from_error, NumberNonZeroUnsigned, Span};
 
 pub use super::disassembly::DisassemblyError;
 pub use super::display::{Display, DisplayError};

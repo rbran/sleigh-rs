@@ -3,10 +3,10 @@ use nom::combinator::{cut, value};
 use nom::sequence::{pair, preceded};
 use nom::IResult;
 
-use crate::SleighError;
 use crate::preprocessor::token::Token;
 use crate::syntax::define::Endian;
 use crate::syntax::parser::this_ident;
+use crate::SleighError;
 
 impl Endian {
     pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {

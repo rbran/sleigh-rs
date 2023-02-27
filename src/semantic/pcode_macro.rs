@@ -16,19 +16,13 @@ pub struct PcodeMacroError {
     pub sub: PcodeMacroErrorSub,
 }
 pub trait ToPcodeMacroError<X> {
-    fn to_pcode_macro(
-        self,
-        macro_pos: Span,
-    ) -> Result<X, PcodeMacroError>;
+    fn to_pcode_macro(self, macro_pos: Span) -> Result<X, PcodeMacroError>;
 }
 impl<'a, X, T> ToPcodeMacroError<X> for Result<X, T>
 where
     T: Into<PcodeMacroErrorSub>,
 {
-    fn to_pcode_macro(
-        self,
-        macro_pos: Span,
-    ) -> Result<X, PcodeMacroError> {
+    fn to_pcode_macro(self, macro_pos: Span) -> Result<X, PcodeMacroError> {
         self.map_err(|e| PcodeMacroError {
             macro_pos,
             sub: e.into(),

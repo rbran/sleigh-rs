@@ -23,11 +23,19 @@ pub enum DisplayElement {
     Table(GlobalReference<Table>),
     Dissasembly(Rc<disassembly::Variable>),
     Literal(String),
+    Space,
+}
+
+impl DisplayElement {
+    fn is_space(&self) -> bool {
+        matches!(self, Self::Space)
+    }
 }
 
 impl From<DisplayElement> for crate::semantic::display::DisplayScope {
     fn from(value: DisplayElement) -> Self {
         match value {
+            DisplayElement::Space => Self::Space,
             DisplayElement::TokenField(x) => {
                 Self::TokenField(x.convert_reference())
             }
@@ -104,55 +112,97 @@ impl Display {
         is_root: bool,
     ) -> Result<Self, DisplayError> {
         use block::display::DisplayElement::*;
-
+        //solve the idents, plus condensate multiple literals, plus split said
+        //literals with spaces
         let mut out = vec![];
+        let mut str_acc = String::new();
         let mut iter = display.0.into_iter();
-
         //in root table first element is the mneumonic
         if is_root {
-            if let Some(ele) = iter.next() {
-                match ele {
-                    //no empty mneumonic
-                    Ident(_src, x) => {
-                        out.push(DisplayElement::Literal(x.to_owned()))
-                    }
-                    Literal(_src, x) => {
-                        out.push(DisplayElement::Literal(x.to_string()))
-                    }
-                }
-            } else {
-                return Ok(Self(out));
+            let Some(ele) = iter.next() else {
+                return Ok(Self(vec![]));
+            };
+            match ele {
+                Concat => (),
+                Ident(_src, x) | Literal(_src, x) => str_acc.push_str(&x),
             }
         }
-
         for ele in iter {
             match ele {
-                Literal(_src, x) => out.push(DisplayElement::Literal(x)),
+                Concat => (),
+                Literal(_str, x) => str_acc.push_str(&x),
                 Ident(src, name) => {
+                    if !str_acc.is_empty() {
+                        split_spaces_add_literals(&mut out, &str_acc);
+                        str_acc.clear();
+                    }
                     out.push(get_display_ref(sleigh, pattern, &name, &src)?)
                 }
             }
         }
+        if !str_acc.is_empty() {
+            split_spaces_add_literals(&mut out, &str_acc);
+        }
 
-        let (str_acc, mut out) = out.into_iter().fold(
-            (String::new(), vec![]),
-            |(mut str_acc, mut acc), x| {
-                match x {
-                    DisplayElement::Literal(x) => str_acc.push_str(&x),
-                    x => {
-                        if !str_acc.is_empty() {
-                            let str_taken = std::mem::take(&mut str_acc);
-                            acc.push(DisplayElement::Literal(str_taken));
-                        }
-                        acc.push(x);
+        //remove spaces from start, end and duplicated spaces in the middle
+        let mut found_first_non_space = false;
+        let mut last_was_space = false;
+        let mut out: Vec<_> = out
+            .into_iter()
+            //first first spaces
+            .filter(|x| {
+                match (found_first_non_space, x.is_space()) {
+                    //filter this starting space
+                    (false, true) => false,
+                    //found first non space, mark it, and pass it
+                    (false, false) => {
+                        found_first_non_space = true;
+                        true
+                    }
+                    //after the first non starting space all others are allowed
+                    (true, _) => true,
+                }
+            })
+            //filter duplicated middle spaces
+            .filter(|x| {
+                match (last_was_space, x.is_space()) {
+                    //last was space, remove duplicated
+                    (true, true) => false,
+                    //non space, after other non space, just let it pass
+                    (false, false) => true,
+                    //non space, after one or more spaces, let it pass, clean mark
+                    (true, false) => {
+                        last_was_space = false;
+                        true
+                    }
+                    //found first space, let it pass, but mark so next dont
+                    (false, true) => {
+                        last_was_space = true;
+                        true
                     }
                 }
-                (str_acc, acc)
-            },
-        );
-        if !str_acc.is_empty() {
-            out.push(DisplayElement::Literal(str_acc));
+            })
+            .collect();
+        //remove the space at the end
+        if out.last().map(DisplayElement::is_space).unwrap_or(false) {
+            out.pop();
         }
         Ok(Display(out))
+    }
+}
+
+fn split_spaces_add_literals(acc: &mut Vec<DisplayElement>, literal: &str) {
+    //if the str start with space add it
+    if literal.starts_with(char::is_whitespace) {
+        acc.push(DisplayElement::Space);
+    }
+    //this may add an extra space at the end, but that will be removed next
+    for literal in literal.split_whitespace() {
+        acc.push(DisplayElement::Literal(literal.to_owned()));
+        acc.push(DisplayElement::Space);
+    }
+    //if the str DONT ends with space, remove the one added previously
+    if !literal.ends_with(char::is_whitespace) {
+        acc.pop();
     }
 }

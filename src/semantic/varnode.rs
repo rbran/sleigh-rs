@@ -2,8 +2,8 @@ use thiserror::Error;
 
 use crate::NumberNonZeroUnsigned;
 use crate::NumberUnsigned;
-use crate::Span;
 use crate::RangeBits;
+use crate::Span;
 
 use super::meaning::Meaning;
 use super::space::Space;

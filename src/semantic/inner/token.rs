@@ -1,11 +1,11 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::semantic::token::Token;
-use crate::{RangeBits, Span, NumberNonZeroUnsigned, NumberUnsigned};
 use crate::semantic::meaning::Meaning;
+use crate::semantic::token::Token;
 use crate::semantic::{GlobalConvert, SemanticError};
 use crate::syntax::define;
+use crate::{NumberNonZeroUnsigned, NumberUnsigned, RangeBits, Span};
 
 use super::{
     Endian, FieldSize, GlobalElement, GlobalScope, PrintFlags, Sleigh,
@@ -53,7 +53,7 @@ impl GlobalElement<TokenField> {
         name: &str,
         src: Span,
         lsb_bit: NumberUnsigned,
-        n_bits: NumberNonZeroUnsigned ,
+        n_bits: NumberNonZeroUnsigned,
         print_flags: PrintFlags,
         token: GlobalElement<Token>,
     ) -> Self {
@@ -136,8 +136,12 @@ impl Sleigh {
             .endian
             .or(self.endian)
             .expect("Global endian undefined at this point is a logical error");
-        let token =
-            GlobalElement::new_token(&input.name, input.src.clone(), size, endian);
+        let token = GlobalElement::new_token(
+            &input.name,
+            input.src.clone(),
+            size,
+            endian,
+        );
         self.idents
             .insert(Rc::clone(&token.name), GlobalScope::Token(token.clone()))
             .map(|_| Err(SemanticError::NameDuplicated))
@@ -147,14 +151,17 @@ impl Sleigh {
             if field.start > field.end || field.end >= size_bits {
                 return Err(SemanticError::TokenFieldInvalidSize);
             }
-            let print_flags =
-                PrintFlags::from_token_att(&input.src, field.attributes.iter())?;
+            let print_flags = PrintFlags::from_token_att(
+                &input.src,
+                field.attributes.iter(),
+            )?;
             //default into print in hex format
             let lsb_bit = field.start;
             //TODO error not panic
             assert!(field.end >= field.start);
             let n_bits =
-                NumberNonZeroUnsigned::new(1 + field.end - field.start).unwrap();
+                NumberNonZeroUnsigned::new(1 + field.end - field.start)
+                    .unwrap();
             let field_ele = GlobalElement::new_token_field(
                 &field.name,
                 input.src.clone(),

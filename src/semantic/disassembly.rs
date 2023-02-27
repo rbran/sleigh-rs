@@ -3,7 +3,7 @@ use std::rc::Rc;
 use thiserror::Error;
 
 use crate::semantic::varnode::Varnode;
-use crate::{Span, NumberUnsigned, Number};
+use crate::{Number, NumberUnsigned, Span};
 
 use super::table::Table;
 use super::token::TokenField;

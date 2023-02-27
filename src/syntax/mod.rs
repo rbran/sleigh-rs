@@ -125,13 +125,8 @@ impl Assertation {
             TokenType::DubleDot => {
                 let src = token_ref.location.clone();
                 buf.clear();
-                Constructor::parse_table(
-                    input,
-                    buf,
-                    "".to_string(),
-                    src,
-                )
-                .map(Self::TableConstructor)?
+                Constructor::parse_table(input, buf, "".to_string(), src)
+                    .map(Self::TableConstructor)?
             }
             //close with_block
             TokenType::DeliCloseCurly if inside_with_block => return Ok(None),

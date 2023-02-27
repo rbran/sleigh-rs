@@ -145,8 +145,12 @@ impl Block {
                     Field::SubPattern(pat) => pat.src.clone(),
                     Field::Field { src, .. } => src.clone(),
                 };
-                Self { first, elements, src }
-            }
+                Self {
+                    first,
+                    elements,
+                    src,
+                }
+            },
         )(input)
     }
 }
@@ -170,11 +174,12 @@ impl IntoIterator for Pattern {
 
 impl Pattern {
     pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
-        let (rest, pattern) = map(separated_list0(tag!(";"), Block::parse), |blocks| Pattern {
-            //TODO improve the src here
-            src: input.get(0).unwrap().location.clone(),
-            blocks,
-        })(input)?;
+        let (rest, pattern) =
+            map(separated_list0(tag!(";"), Block::parse), |blocks| Pattern {
+                //TODO improve the src here
+                src: input.get(0).unwrap().location.clone(),
+                blocks,
+            })(input)?;
         Ok((rest, pattern))
     }
 }

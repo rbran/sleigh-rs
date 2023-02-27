@@ -20,10 +20,10 @@ use std::rc::Weak;
 
 use thiserror::Error;
 
-use crate::Endian;
-use crate::NumberNonZeroUnsigned;
 use crate::semantic::inner::{SolvedLocation, SolverStatus};
 use crate::syntax;
+use crate::Endian;
+use crate::NumberNonZeroUnsigned;
 use crate::Span;
 
 use self::disassembly::DisassemblyError;

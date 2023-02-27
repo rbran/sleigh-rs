@@ -3,9 +3,9 @@ use nom::combinator::{map, opt, value};
 use nom::sequence::{delimited, preceded, terminated, tuple};
 use nom::IResult;
 
-use crate::SleighError;
 use crate::preprocessor::token::Token;
 use crate::semantic::execution::BranchCall;
+use crate::SleighError;
 
 use super::expr::Expr;
 use super::{expr, Label};
@@ -36,7 +36,9 @@ impl Branch {
 }
 
 impl BranchCall {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], BranchCall, SleighError> {
+    pub fn parse(
+        input: &[Token],
+    ) -> IResult<&[Token], BranchCall, SleighError> {
         alt((
             value(BranchCall::Goto, tag!("goto")),
             value(BranchCall::Call, tag!("call")),

@@ -1,10 +1,11 @@
-use crate::Span;
 use crate::preprocessor::DisplayToken;
 use crate::preprocessor::FilePreProcessor;
 use crate::SleighError;
+use crate::Span;
 
 #[derive(Clone, Debug)]
 pub enum DisplayElement {
+    Concat,
     Ident(Span, String),
     Literal(Span, String),
 }
@@ -19,7 +20,7 @@ impl Display {
             let token = input.parse_display()?;
             match token {
                 DisplayToken::End => break,
-                DisplayToken::Concat => (),
+                DisplayToken::Concat => display.push(DisplayElement::Concat),
                 DisplayToken::Ident(src, ident) => {
                     display.push(DisplayElement::Ident(src, ident))
                 }

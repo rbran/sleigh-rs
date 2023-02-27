@@ -150,7 +150,9 @@ impl<'a> InnerExpr<'a> {
         &mut self,
         input: &'a [Token],
     ) -> IResult<&'a [Token], (), SleighError> {
-        map(Value::parse_signed, |x| self.output.push(ExprElement::Value(x)))(input)
+        map(Value::parse_signed, |x| {
+            self.output.push(ExprElement::Value(x))
+        })(input)
     }
     fn expr_rec(
         &mut self,

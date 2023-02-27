@@ -460,7 +460,6 @@ impl<'a> From<Constructor> for FinalConstructor {
     }
 }
 
-
 impl Sleigh {
     pub(crate) fn insert_table_constructor(
         &mut self,

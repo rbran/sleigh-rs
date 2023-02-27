@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
-use crate::{NumberNonZeroUnsigned, NumberUnsigned, Span, Number};
+use crate::{Number, NumberNonZeroUnsigned, NumberUnsigned, Span};
 
 use super::pcode_macro::PcodeMacroInstance;
 use super::table::{Table, TableError, TableErrorSub};
