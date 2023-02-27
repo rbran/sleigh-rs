@@ -133,6 +133,26 @@ impl Display {
                 }
             }
         }
+
+        let (str_acc, mut out) = out.into_iter().fold(
+            (String::new(), vec![]),
+            |(mut str_acc, mut acc), x| {
+                match x {
+                    DisplayElement::Literal(x) => str_acc.push_str(&x),
+                    x => {
+                        if !str_acc.is_empty() {
+                            let str_taken = std::mem::take(&mut str_acc);
+                            acc.push(DisplayElement::Literal(str_taken));
+                        }
+                        acc.push(x);
+                    }
+                }
+                (str_acc, acc)
+            },
+        );
+        if !str_acc.is_empty() {
+            out.push(DisplayElement::Literal(str_acc));
+        }
         Ok(Display(out))
     }
 }
