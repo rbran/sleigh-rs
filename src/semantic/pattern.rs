@@ -51,9 +51,21 @@ pub enum PatternLen {
 }
 
 impl PatternLen {
+    /// new range/defined len for a pattern
+    pub fn new(min: NumberUnsigned, max: NumberUnsigned) -> Self {
+        match min.cmp(&max) {
+            std::cmp::Ordering::Greater => {
+                unreachable!("PatternLen min({}) > max({})", min, max)
+            }
+            std::cmp::Ordering::Equal => Self::Defined(min),
+            std::cmp::Ordering::Less => Self::Range { min, max },
+        }
+    }
+    /// is this pattern can contain itself and grown to infinite
     pub fn is_recursive(&self) -> bool {
         matches!(self, Self::Min(_))
     }
+    /// min size of the token this patterns requires to match
     pub fn min(&self) -> NumberUnsigned {
         match self {
             Self::Min(min)
@@ -61,6 +73,7 @@ impl PatternLen {
             | Self::Range { min, max: _ } => *min,
         }
     }
+    /// max size of the token this patterns requires to match
     pub fn max(&self) -> Option<NumberUnsigned> {
         match self {
             Self::Defined(value) => Some(*value),
@@ -68,10 +81,66 @@ impl PatternLen {
             Self::Min(_) => None,
         }
     }
-    pub fn defined(&self) -> Option<NumberUnsigned> {
+    /// token size, if this pattern is non-growing
+    pub fn single_len(&self) -> Option<NumberUnsigned> {
         match self {
             Self::Defined(value) => Some(*value),
             Self::Min(_) | Self::Range { .. } => None,
+        }
+    }
+    /// create a new range calculated from the concatenation of the two original
+    /// ranges
+    pub fn concat(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Defined(x), Self::Defined(y)) => Self::Defined(x + y),
+            (
+                Self::Defined(ix @ ax) | Self::Range { min: ix, max: ax },
+                Self::Defined(iy @ ay) | Self::Range { min: iy, max: ay },
+            ) => {
+                let min = ix + iy;
+                let max = ax + ay;
+                Self::new(min, max)
+            }
+            (
+                Self::Min(x) | Self::Defined(x) | Self::Range { min: x, .. },
+                Self::Min(y) | Self::Defined(y) | Self::Range { min: y, .. },
+            ) => Self::Min(x + y),
+        }
+    }
+    /// creates a new range that includes the two original ranges
+    pub(crate) fn union(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Defined(x), Self::Defined(y)) => Self::Defined(x.max(y)),
+            (
+                Self::Defined(ix @ ax) | Self::Range { min: ix, max: ax },
+                Self::Defined(iy @ ay) | Self::Range { min: iy, max: ay },
+            ) => {
+                let min = ix.max(iy);
+                let max = ax.max(ay);
+                Self::new(min, max)
+            }
+            (
+                Self::Min(x) | Self::Defined(x) | Self::Range { min: x, .. },
+                Self::Min(y) | Self::Defined(y) | Self::Range { min: y, .. },
+            ) => Self::Min(x.max(y)),
+        }
+    }
+    /// creates a new range that only include the intersection of the orignal
+    /// ranges
+    pub(crate) fn intersection(self, other: Self) -> Self {
+        match (self, other) {
+            (
+                Self::Defined(ix @ ax) | Self::Range { min: ix, max: ax },
+                Self::Defined(iy @ ay) | Self::Range { min: iy, max: ay },
+            ) => {
+                let min = ix.min(iy);
+                let max = ax.max(ay);
+                Self::new(min, max)
+            }
+            (
+                Self::Min(x) | Self::Defined(x) | Self::Range { min: x, .. },
+                Self::Min(y) | Self::Defined(y) | Self::Range { min: y, .. },
+            ) => Self::Min(x.min(y)),
         }
     }
 }

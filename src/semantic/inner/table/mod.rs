@@ -14,7 +14,8 @@ use super::disassembly;
 use super::display::Display;
 use super::execution::ExecutionExport;
 use super::execution::{Execution, ExecutionBuilder};
-use super::pattern::{Pattern, PatternConstraint};
+use super::pattern::constraint::PatternConstraint;
+use super::pattern::Pattern;
 use super::{
     FieldSize, FieldSizeMut, GlobalConvert, GlobalScope, Sleigh, SolverStatus,
     WithBlockCurrent,
@@ -221,7 +222,7 @@ impl Table {
 
             //if both are Some, we can return a range
             (Some(min), Some(max)) => {
-                let len = PatternLen::new_range(min, max);
+                let len = PatternLen::new(min, max);
                 self.pattern_len.set(Some(len));
                 solved.i_did_a_thing();
             }
@@ -330,15 +331,20 @@ impl GlobalConvert for Table {
         let constructors: Vec<(Constructor, PatternConstraint)> = constructors
             .into_iter()
             .map(|constructor| {
-                let patt = constructor.pattern.pattern_constrait();
+                let patt = constructor.pattern.constraint();
                 (constructor, patt)
             })
             .collect();
         let mut new_constructors: Vec<(Constructor, PatternConstraint)> =
             vec![];
         for (constructor, pattern) in constructors.into_iter() {
+            //TODO detect conflicting instead of just looking for contains
             let pos = new_constructors.iter().enumerate().find_map(
-                |(i, (_con, pat))| pattern.contains(&pat).then_some(i),
+                |(i, (_con, pat))| {
+                    pattern
+                        .partial_cmp(&pat)
+                        .and_then(|cmp| cmp.is_contains().then_some(i))
+                },
             );
             //insert constructors in the correct order accordingly with the
             //rules of `7.8.1. Matching`

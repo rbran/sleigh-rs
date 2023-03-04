@@ -20,10 +20,10 @@ use parser::empty_space0;
 use crate::preprocessor::macros::MacroLine;
 use crate::{FileLocation, FileSpan, Location, MacroLocation, Span};
 
-use self::ifs::IfCheckOwned;
-use self::macros::{expansion, DefineDataOwned};
-use self::parser::display_token;
-use self::token::{Token, TokenType};
+use ifs::IfCheckOwned;
+use macros::{expansion, DefineDataOwned};
+use parser::display_token;
+use token::{Token, TokenType};
 
 const MACRO_IF: &str = "@if";
 const MACRO_IFDEF: &str = "@ifdef";

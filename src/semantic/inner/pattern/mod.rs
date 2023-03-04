@@ -15,233 +15,19 @@ use crate::{NumberUnsigned, Span};
 
 use crate::syntax::block;
 
-use super::disassembly::{Assertation, Expr, ExprBuilder, ReadScope, Variable};
+use super::disassembly::{
+    Assertation, Expr, ExprBuilder, ExprElement, ReadScope, Variable,
+};
 use super::token::TokenField;
 use super::varnode::Context;
 use super::{Sleigh, SolverStatus};
 
-use bitvec::prelude::*;
+pub mod constraint;
+use constraint::{BitConstraint, PatternConstraint};
 
-//TODO instead of a bit-vec where 1 is constrained and 0 not, should we
-//use a BitVec of Free/Set(1)/Set(0)? This way we can detect conflicts in
-//the constrain, such `c0102=3 & c0203=0`
-#[derive(Clone, Debug, Default)]
-pub struct PatternConstraint(BitVec);
+mod pattern_len;
+pub use pattern_len::*;
 
-impl PatternConstraint {
-    //7.8.1. Matching
-    //one pattern contains the other if all the cases that match the contained,
-    //also match the pattern.
-    //eg: `a` contains `b` if all cases that match `b` also match `a`. In other
-    //words `a` is a special case of `b`.
-    //NOTE the opose don't need to be true.
-    pub fn contains(&self, other: &Self) -> bool {
-        if self.0.len() != other.0.len() {
-            return false;
-        }
-        self.0
-            .iter()
-            .zip(other.0.iter())
-            //None means `b` restrain something `a` don't, so a don't contains b
-            //Some(false) means `a`/`b` are identical.
-            //Some(true) means `b` is fully contained in `a`
-            .try_fold(false, |acc, (a, b)| match (*a, *b) {
-                (false, false) | (true, true) => Some(acc),
-                (true, false) => Some(true),
-                (false, true) => None,
-            })
-            .unwrap_or(false)
-    }
-}
-impl PatternLen {
-    pub fn new_range(min: NumberUnsigned, max: NumberUnsigned) -> Self {
-        match min.cmp(&max) {
-            std::cmp::Ordering::Greater => {
-                unreachable!("PatternLen min({}) > max({})", min, max)
-            }
-            std::cmp::Ordering::Equal => Self::Defined(min),
-            std::cmp::Ordering::Less => Self::Range { min, max },
-        }
-    }
-    pub fn single_len(&self) -> Option<NumberUnsigned> {
-        match self {
-            Self::Defined(value) => Some(*value),
-            Self::Min(_) | Self::Range { .. } => None,
-        }
-    }
-    pub fn add(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Defined(x), Self::Defined(y)) => Self::Defined(x + y),
-            (
-                Self::Defined(ix @ ax) | Self::Range { min: ix, max: ax },
-                Self::Defined(iy @ ay) | Self::Range { min: iy, max: ay },
-            ) => {
-                let min = ix + iy;
-                let max = ax + ay;
-                Self::new_range(min, max)
-            }
-            (
-                Self::Min(x) | Self::Defined(x) | Self::Range { min: x, .. },
-                Self::Min(y) | Self::Defined(y) | Self::Range { min: y, .. },
-            ) => Self::Min(x + y),
-        }
-    }
-    ///Used to solve recursives in Growing/NonGrowing patterns
-    pub fn greater(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Defined(x), Self::Defined(y)) => Self::Defined(x.max(y)),
-            (
-                Self::Defined(ix @ ax) | Self::Range { min: ix, max: ax },
-                Self::Defined(iy @ ay) | Self::Range { min: iy, max: ay },
-            ) => {
-                let min = ix.max(iy);
-                let max = ax.max(ay);
-                Self::new_range(min, max)
-            }
-            (
-                Self::Min(x) | Self::Defined(x) | Self::Range { min: x, .. },
-                Self::Min(y) | Self::Defined(y) | Self::Range { min: y, .. },
-            ) => Self::Min(x.max(y)),
-        }
-    }
-    pub fn intersection(self, other: Self) -> Self {
-        match (self, other) {
-            (
-                Self::Defined(ix @ ax) | Self::Range { min: ix, max: ax },
-                Self::Defined(iy @ ay) | Self::Range { min: iy, max: ay },
-            ) => {
-                let min = ix.min(iy);
-                let max = ax.max(ay);
-                Self::new_range(min, max)
-            }
-            (
-                Self::Min(x) | Self::Defined(x) | Self::Range { min: x, .. },
-                Self::Min(y) | Self::Defined(y) | Self::Range { min: y, .. },
-            ) => Self::Min(x.min(y)),
-        }
-    }
-}
-
-//Describe a Block/Pattern possible len
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConstructorPatternLen {
-    //Cases with the pattern call it own table, NOTE: the table can only call
-    //itself once.
-    //self-Recursive, non-growing, basically unrestricted, but indicating
-    //to tables that this don't change the table.pattern_len directly.
-    //Value is the len that this constructor will generate, not including
-    //the recursive itself
-    NonGrowingRecursive(PatternLen),
-    //self-Recrusive, growing, similat to NonGrowing, but is possible that this
-    //keep calling itself, in a infinite growing patter. It is the context job
-    //to limit the size of it.
-    //grow, is the len of the size that will be added to the len, and non_grow,
-    //is the value that was taken from NonGrowing Recursive
-    GrowingRecursive {
-        grow: PatternLen,
-        non_grow: PatternLen,
-    },
-
-    Basic(PatternLen),
-}
-impl ConstructorPatternLen {
-    pub fn single_len(&self) -> Option<NumberUnsigned> {
-        match self {
-            Self::Basic(basic) => basic.single_len(),
-            Self::NonGrowingRecursive(_) | Self::GrowingRecursive { .. } => {
-                None
-            }
-        }
-    }
-    pub fn is_basic(&self) -> bool {
-        matches!(self, Self::Basic(_))
-    }
-    pub fn basic(&self) -> Option<PatternLen> {
-        match self {
-            Self::Basic(basic) => Some(*basic),
-            Self::NonGrowingRecursive(_) | Self::GrowingRecursive { .. } => {
-                None
-            }
-        }
-    }
-    ///if is some kind of recursive
-    pub fn is_recursive(&self) -> bool {
-        match self {
-            Self::Basic(basic) => basic.is_recursive(),
-            Self::NonGrowingRecursive(_) | Self::GrowingRecursive { .. } => {
-                true
-            }
-        }
-    }
-    ///the min possible pattern len size, None means the min can't be calculated
-    ///because this is a recursive and the len depends on the other constructors
-    pub fn min(&self) -> Option<NumberUnsigned> {
-        self.basic().map(|len| len.min())
-    }
-    ///the max possible pattern len size, None is infinite maximum possible len
-    pub fn max(&self) -> Option<NumberUnsigned> {
-        self.basic().map(|len| len.max()).flatten()
-    }
-    //TODO replace Option with Result?
-    pub fn add(self, other: Self) -> Option<Self> {
-        let new_self = match (self, other) {
-            (Self::Basic(x), Self::Basic(y)) => Self::Basic(x.add(y)),
-            //NonGrowingRecursize concat with a basic block, result in a
-            //GrowingRecursive
-            (Self::NonGrowingRecursive(non_grow), Self::Basic(basic))
-            | (Self::Basic(basic), Self::NonGrowingRecursive(non_grow)) => {
-                Self::GrowingRecursive {
-                    grow: basic,
-                    non_grow,
-                }
-            }
-            //Growing Recursive concat with a basic, just grows
-            (Self::GrowingRecursive { grow, non_grow }, Self::Basic(basic))
-            | (Self::Basic(basic), Self::GrowingRecursive { grow, non_grow }) => {
-                Self::GrowingRecursive {
-                    grow: grow.add(basic),
-                    non_grow,
-                }
-            }
-            //a pattern can only have one SelfRecursive, so this is invalid
-            (
-                Self::GrowingRecursive { .. } | Self::NonGrowingRecursive(_),
-                Self::GrowingRecursive { .. } | Self::NonGrowingRecursive(_),
-            ) => return None,
-        };
-        Some(new_self)
-    }
-    pub fn greater(self, other: Self) -> Option<Self> {
-        match (self, other) {
-            (
-                Self::GrowingRecursive { .. } | Self::NonGrowingRecursive(_),
-                Self::GrowingRecursive { .. } | Self::NonGrowingRecursive(_),
-            ) => return None,
-            (Self::Basic(x), Self::Basic(y)) => Some(Self::Basic(x.greater(y))),
-            (
-                Self::Basic(x) | Self::NonGrowingRecursive(x),
-                Self::Basic(y) | Self::NonGrowingRecursive(y),
-            ) => Some(Self::NonGrowingRecursive(x.greater(y))),
-            (Self::Basic(_), Self::GrowingRecursive { .. })
-            | (Self::GrowingRecursive { .. }, Self::Basic(_)) => {
-                //This only happen if recursive block is in a sub_pattern
-                //what i think is not allowed
-                unimplemented!()
-            }
-        }
-    }
-}
-impl From<PatternLen> for ConstructorPatternLen {
-    fn from(value: PatternLen) -> Self {
-        Self::Basic(value)
-    }
-}
-fn is_len_finished(len: &Option<ConstructorPatternLen>) -> bool {
-    match len.as_ref() {
-        Some(len) => len.is_basic(),
-        None => false,
-    }
-}
 struct FindValues(IndexMap<*const TokenField, GlobalReference<TokenField>>);
 impl FindValues {
     fn search<'a>(
@@ -521,20 +307,26 @@ impl Pattern {
     pub fn len_mut(&mut self) -> &mut Option<ConstructorPatternLen> {
         &mut self.len
     }
-    pub fn constrain(&self, constraint: &mut BitSlice) {
+    pub fn sub_pattern_constraint_bits(
+        &self,
+        constraint: &mut [BitConstraint],
+    ) {
         let mut current = constraint;
         for block in self.blocks.iter() {
-            block.constrain(current);
-            let block_len = block.root_len();
-            current = &mut current[block_len.try_into().unwrap()..];
+            block.constraint_bits(current);
+            let Some(next_offset) = block.len.unwrap().basic().unwrap().single_len() else {
+                break;
+            };
+            //the block have a len, but there is nothing to constraint, usually
+            //is just table(s)
+            if current.len() < next_offset as usize * 8 {
+                break;
+            }
+            current = &mut current[next_offset as usize * 8..];
         }
     }
-    pub fn pattern_constrait(&self) -> PatternConstraint {
-        //TODO unwrap into error
-        let size = self.root_len();
-        let mut value = bitvec![0; size.try_into().unwrap()];
-        self.constrain(&mut value);
-        PatternConstraint(value)
+    pub fn constraint(&self) -> PatternConstraint {
+        PatternConstraint::new(self)
     }
     pub fn convert(self) -> FinalPattern {
         let Pattern {
@@ -1323,31 +1115,42 @@ impl Block {
             }
         }
     }
-    pub fn constrain(&self, constraint: &mut BitSlice) {
+    pub fn constraint_bits(&self, constraint: &mut [BitConstraint]) {
         match self.op {
             Op::Or => {
                 let mut verifications_iter = self.verifications.iter();
                 let first = verifications_iter
                     .next()
                     .expect("LOGIC_ERROR: Block with Or operator but no elements is invalid");
-                let mut out = bitvec![0; constraint.len()];
-                first.constrain(&mut out);
-                let mut ele_out = bitvec![0; constraint.len()];
-                for ele in verifications_iter {
-                    ele_out.set_elements(0);
-                    ele.constrain(&mut ele_out);
-                    for (mut out, ele) in out.iter_mut().zip(ele_out.iter()) {
-                        *out = *out & *ele;
+                let mut or_pattern =
+                    vec![BitConstraint::default(); constraint.len()];
+                first.constraint_bits(&mut or_pattern);
+                let mut this_branch =
+                    vec![BitConstraint::default(); constraint.len()];
+                for verification in verifications_iter {
+                    this_branch
+                        .iter_mut()
+                        .for_each(|x| *x = BitConstraint::default());
+                    verification.constraint_bits(&mut this_branch);
+                    for (or_pattern, this_branch) in
+                        or_pattern.iter_mut().zip(this_branch.iter())
+                    {
+                        *or_pattern =
+                            or_pattern.least_restrictive(*this_branch);
                     }
                 }
-                for (mut out, ele) in constraint.iter_mut().zip(out.iter()) {
-                    *out = *out | *ele;
+                for (constraint, or_pattern) in
+                    constraint.iter_mut().zip(or_pattern.iter())
+                {
+                    //TODO create an error here
+                    *constraint =
+                        constraint.most_restrictive(*or_pattern).unwrap();
                 }
             }
             Op::And => self
                 .verifications
                 .iter()
-                .for_each(|ele| ele.constrain(constraint)),
+                .for_each(|ele| ele.constraint_bits(constraint)),
         }
     }
 }
@@ -1652,27 +1455,46 @@ impl Verification {
             } => pattern.len(),
         }
     }
-    pub fn constrain(&self, constraint: &mut BitSlice) {
+    pub fn constraint_bits(&self, constraint: &mut [BitConstraint]) {
         match self {
             Self::SubPattern {
                 location: _,
                 pattern,
-            } => pattern.constrain(constraint),
-            Self::TokenFieldCheck {
-                field,
-                op: CmpOp::Eq | CmpOp::Ne,
-                value: _,
-            } => {
-                let field = field.element();
-                field.range().into_iter().for_each(|bit| {
-                    constraint.set(bit.try_into().unwrap(), true)
-                });
+            } => pattern.sub_pattern_constraint_bits(constraint),
+
+            Self::TokenFieldCheck { field, op, value } => {
+                let field_range: std::ops::Range<NumberUnsigned> =
+                    (*field.element().range()).into();
+                let range =
+                    field_range.start as usize..field_range.end as usize;
+                let bits = constraint[range].iter_mut();
+
+                let ConstraintValue { expr: Expr { rpn } } = value;
+                match (op, rpn.first()) {
+                    (
+                        CmpOp::Eq,
+                        Some(ExprElement::Value(ReadScope::Integer(value))),
+                    ) => {
+                        let value_bits = bits.enumerate().map(|(i, b)| {
+                            (b, value.signed_super() & (1 << i) != 0)
+                        });
+                        for (bit, value_bit) in value_bits {
+                            //TODO create error here for this
+                            *bit = bit.define(value_bit).unwrap();
+                        }
+                    }
+                    (CmpOp::Eq | CmpOp::Ne, _) => {
+                        for bit in bits {
+                            //error never happen with `BitConstraint::Restrained`
+                            *bit = bit
+                                .most_restrictive(BitConstraint::Restrained)
+                                .unwrap()
+                        }
+                    }
+                    (_, _) => (),
+                }
             }
-            //TODO: in some cases, in the `CmpOp::L*` is possible to restrict
-            //some bits. Do it?
-            Self::TokenFieldCheck { .. }
-            | Self::ContextCheck { .. }
-            | Self::TableBuild { .. } => (),
+            Self::ContextCheck { .. } | Self::TableBuild { .. } => (),
         }
     }
 }
