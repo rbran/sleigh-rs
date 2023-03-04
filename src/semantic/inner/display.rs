@@ -52,12 +52,17 @@ impl From<DisplayElement> for crate::semantic::display::DisplayScope {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Display(pub Vec<DisplayElement>);
+pub struct Display {
+    mneumonic: Option<String>,
+    elements: Vec<DisplayElement>,
+}
 
 impl From<Display> for crate::semantic::display::Display {
     fn from(value: Display) -> Self {
-        let elements = value.0.into_iter().map(|x| x.into()).collect();
-        Self::new(elements)
+        Self::new(
+            value.mneumonic,
+            value.elements.into_iter().map(|x| x.into()).collect(),
+        )
     }
 }
 
@@ -118,15 +123,21 @@ impl Display {
         let mut str_acc = String::new();
         let mut iter = display.0.into_iter();
         //in root table first element is the mneumonic
-        if is_root {
+        let mneumonic = if is_root {
             let Some(ele) = iter.next() else {
-                return Ok(Self(vec![]));
+                return Ok(Self::default());
             };
             match ele {
-                Concat => (),
-                Ident(_src, x) | Literal(_src, x) => str_acc.push_str(&x),
+                Concat => None,
+                Ident(_src, x) => Some(x),
+                Literal(_src, x) => {
+                    str_acc.push_str(&x);
+                    None
+                }
             }
-        }
+        } else {
+            None
+        };
         for ele in iter {
             match ele {
                 Concat => (),
@@ -144,13 +155,17 @@ impl Display {
             split_spaces_add_literals(&mut out, &str_acc);
         }
 
-        //remove spaces from start, end and duplicated spaces in the middle
+        //remove duplicated spaces in the middle
         let mut found_first_non_space = false;
         let mut last_was_space = false;
-        let mut out: Vec<_> = out
+        let mut elements: Vec<_> = out
             .into_iter()
             //first first spaces
             .filter(|x| {
+                //if mneumonic, don't remove spaces from the start
+                if mneumonic.is_some() {
+                    return true;
+                }
                 match (found_first_non_space, x.is_space()) {
                     //filter this starting space
                     (false, true) => false,
@@ -184,10 +199,17 @@ impl Display {
             })
             .collect();
         //remove the space at the end
-        if out.last().map(DisplayElement::is_space).unwrap_or(false) {
-            out.pop();
+        if elements
+            .last()
+            .map(DisplayElement::is_space)
+            .unwrap_or(false)
+        {
+            elements.pop();
         }
-        Ok(Display(out))
+        Ok(Display {
+            mneumonic,
+            elements,
+        })
     }
 }
 
