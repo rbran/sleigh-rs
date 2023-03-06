@@ -341,9 +341,12 @@ impl GlobalConvert for Table {
             //TODO detect conflicting instead of just looking for contains
             let pos = new_constructors.iter().enumerate().find_map(
                 |(i, (_con, pat))| {
-                    pattern
-                        .partial_cmp(&pat)
-                        .and_then(|cmp| cmp.is_contains().then_some(i))
+                    //TODO how to handle inter-intersections? such:
+                    //first variant of self contains the second variant of other
+                    //AND
+                    //second variant of self contains the first variant of other
+                    let ord = pattern.ordering(&pat);
+                    (ord.contains > 0).then_some(i)
                 },
             );
             //insert constructors in the correct order accordingly with the

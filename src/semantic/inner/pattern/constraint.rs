@@ -1,11 +1,19 @@
 use crate::PatternLen;
 
-use super::Pattern;
+use super::{Block, Pattern};
 
 #[derive(Clone, Debug)]
 pub struct PatternConstraint {
     pub total_len: PatternLen,
-    pub bits: Vec<BitConstraint>,
+    pub blocks: Vec<BlockConstraint>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BlockConstraint {
+    pub len: PatternLen,
+    pub base: Vec<BitConstraint>,
+    //0 or 2 or more, never 1
+    pub variants: Vec<Vec<BitConstraint>>,
 }
 
 /// Represent how a bit is limited in a pattern
@@ -21,14 +29,113 @@ pub enum BitConstraint {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PatternConstraintOrdering {
+pub enum SinglePatternOrdering {
     Eq,
     Conflict,
     Contains,
     Contained,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MultiplePatternOrdering {
+    pub contained: usize,
+    pub contains: usize,
+    pub conflict: usize,
+}
 
-impl PatternConstraintOrdering {
+pub trait PatternBits<'a, I>: Clone + Iterator<Item = I> + Clone + 'a
+where
+    I: Iterator<Item = BitConstraint> + Clone + 'a,
+{
+}
+#[derive(Clone, Copy)]
+pub enum BlockConstraintIter<'a> {
+    Single(usize, &'a [BitConstraint]),
+    //Empty vars means end
+    Multiple {
+        len: usize,
+        base: &'a [BitConstraint],
+        vars: &'a [Vec<BitConstraint>],
+    },
+}
+#[derive(Clone, Copy)]
+pub struct BitConstraintIter<'a> {
+    len: usize,
+    base: &'a [BitConstraint],
+    variant: Option<&'a [BitConstraint]>,
+}
+impl<'a> Iterator for BlockConstraintIter<'a> {
+    type Item = BitConstraintIter<'a>;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            BlockConstraintIter::Multiple { vars: [], .. } => None,
+            BlockConstraintIter::Single(len, base) => {
+                let iter = BitConstraintIter {
+                    len: *len,
+                    base,
+                    variant: None,
+                };
+                *self = Self::Multiple {
+                    len: *len,
+                    base,
+                    vars: &[],
+                };
+                Some(iter)
+            }
+            BlockConstraintIter::Multiple {
+                len,
+                base,
+                vars: [first, rest @ ..],
+            } => {
+                let iter = BitConstraintIter {
+                    len: *len,
+                    base,
+                    variant: Some(first),
+                };
+                *self = Self::Multiple {
+                    len: *len,
+                    base,
+                    vars: rest,
+                };
+                Some(iter)
+            }
+        }
+    }
+}
+impl<'a> Iterator for BitConstraintIter<'a> {
+    type Item = BitConstraint;
+    fn next(&mut self) -> Option<Self::Item> {
+        let Some((first_base, rest_base)) = self.base.split_first() else {
+                    //concat the Unrestructed to fill the len.
+                    match self.len {
+                        0 => return None,
+                        _x => {
+                            self.len -= 1;
+                            return Some(BitConstraint::Unrestrained)
+                        },
+                    }
+                };
+        if let Some((first_var, rest_var)) =
+            self.variant.map(|var| var.split_first().unwrap())
+        {
+            *self = Self {
+                len: self.len,
+                base: rest_base,
+                variant: Some(rest_var),
+            };
+            Some(first_base.most_restrictive(*first_var).unwrap())
+        } else {
+            *self = Self {
+                len: self.len,
+                base: rest_base,
+                variant: None,
+            };
+            Some(*first_base)
+        }
+    }
+}
+impl<'a> PatternBits<'a, BitConstraintIter<'a>> for BlockConstraintIter<'a> {}
+
+impl SinglePatternOrdering {
     pub fn is_eq(self) -> bool {
         matches!(self, Self::Eq)
     }
@@ -41,49 +148,88 @@ impl PatternConstraintOrdering {
     pub fn is_conflict(self) -> bool {
         matches!(self, Self::Conflict)
     }
+    pub fn combine(self, other: Self) -> Self {
+        use SinglePatternOrdering::*;
+        match (self, other) {
+            (Conflict, _) | (_, Conflict) => Conflict,
+            (Eq, other) | (other, Eq) => other,
+            (Contains, Contains) | (Contained, Contained) => self,
+            (Contains, Contained) | (Contained, Contains) => Conflict,
+        }
+    }
+}
+impl std::iter::FromIterator<SinglePatternOrdering> for SinglePatternOrdering {
+    fn from_iter<T: IntoIterator<Item = SinglePatternOrdering>>(
+        iter: T,
+    ) -> Self {
+        use SinglePatternOrdering::*;
+        let mut acc = Eq;
+        for i in iter {
+            acc = acc.combine(i);
+            if acc == Conflict {
+                return Conflict;
+            }
+        }
+        acc
+    }
+}
+
+impl MultiplePatternOrdering {
+    pub fn add(&mut self, ord: SinglePatternOrdering) {
+        match ord {
+            SinglePatternOrdering::Eq => (),
+            SinglePatternOrdering::Conflict => self.conflict += 1,
+            SinglePatternOrdering::Contains => self.contains += 1,
+            SinglePatternOrdering::Contained => self.contained += 1,
+        }
+    }
 }
 
 impl PatternConstraint {
     pub fn new(pattern: &Pattern) -> Self {
-        let mut bits_len = 0usize;
-        for block in pattern.blocks.iter() {
-            let block_len = block.len.unwrap().basic().unwrap();
-            let block_root_len = usize::try_from(block_len.min()).unwrap() * 8;
-            bits_len += block_root_len;
-            //this block is not exacly sized, so ignore all blocks after that
-            if block_len.single_len().is_none() {
-                break;
-            }
-        }
-        //not constraint the bits
-        let mut bits = vec![BitConstraint::default(); bits_len];
-        let mut current = &mut bits[..];
-        for block in pattern.blocks.iter() {
-            let block_len = block.len.unwrap().basic().unwrap();
-            let block_root_len = usize::try_from(block_len.min()).unwrap() * 8;
-            block.constraint_bits(&mut current[..block_root_len]);
-            //next block
-            current = &mut current[block_root_len..];
-            //this block is the last one, so just stop
-            if current.is_empty() {
-                break;
-            }
-        }
+        let blocks = pattern
+            .blocks
+            .iter()
+            .scan(false, |found_undefined_len, block| {
+                if *found_undefined_len {
+                    return None;
+                }
+                //parse until and including a block with multiple possible len.
+                if block.len.unwrap().basic().unwrap().single_len().is_none() {
+                    //let this pass, next one will be blocked
+                    *found_undefined_len = true;
+                }
+                Some(block)
+            })
+            .map(BlockConstraint::new)
+            .collect();
         Self {
             total_len: pattern.len.unwrap().basic().unwrap(),
-            bits,
+            blocks,
         }
     }
+    pub fn bits_len(&self) -> usize {
+        self.blocks.iter().map(BlockConstraint::bits_len).sum()
+    }
+    //TODO ugly return type, do better
     pub fn bits<'a>(
         &'a self,
-        len_bits: usize,
-    ) -> impl Iterator<Item = BitConstraint> + 'a {
-        let len_extra = len_bits.saturating_sub(self.bits.len());
-        self.bits.iter().copied().chain(
-            (0..len_extra)
-                .into_iter()
-                .map(|_| BitConstraint::Unrestrained),
-        )
+        len: usize,
+    ) -> std::iter::Chain<
+        std::iter::Flatten<
+            std::iter::Map<
+                std::slice::Iter<'a, BlockConstraint>,
+                impl FnMut(&'a BlockConstraint) -> BlockConstraintIter<'a>,
+            >,
+        >,
+        BlockConstraintIter<'a>,
+    > {
+        let len = self.bits_len().max(len);
+        self.blocks
+            .iter()
+            .map(move |block| block.bits())
+            .flatten()
+            .chain(BlockConstraintIter::Single(len, &[]))
     }
     //7.8.1. Matching
     //one pattern contains the other if all the cases that match the contained,
@@ -91,41 +237,59 @@ impl PatternConstraint {
     //eg: `a` contains `b` if all cases that match `b` also match `a`. In other
     //words `a` is a special case of `b`.
     //NOTE the opose don't need to be true.
-    pub fn partial_cmp(
-        &self,
-        other: &Self,
-    ) -> Option<PatternConstraintOrdering> {
-        ////TODO: comparable if have the same len?
-        //(self.total_len != other.total_len).then_some(())?;
-
-        let len_bits = self.bits.len().max(other.bits.len());
+    pub fn ordering(&self, other: &Self) -> MultiplePatternOrdering {
+        let len_bits = self.bits_len().max(other.bits_len());
 
         use BitConstraint::*;
-        use PatternConstraintOrdering::*;
-        let bits_cmp = self.bits(len_bits).zip(other.bits(len_bits)).map(
-            |(self_bit, other_bit)| match (self_bit, other_bit) {
-                (Defined(_) | Restrained, Defined(_) | Restrained)
-                | (Unrestrained, Unrestrained) => Eq,
-                (Unrestrained, _) => Contained,
-                (_, Unrestrained) => Contains,
-            },
-        );
-
-        let mut acc_cmp = Eq;
-        for bit_cmp in bits_cmp {
-            match (bit_cmp, acc_cmp) {
-                (Conflict, _) | (_, Conflict) => unreachable!(),
-                //found a diference
-                (x, Eq) => acc_cmp = x,
-                //doesn't change the state
-                (Eq, _) | (Contains, Contains) | (Contained, Contained) => (),
-                //can't have a contain/contains, that is a conflict
-                (Contains, Contained) | (Contained, Contains) => {
-                    return Some(Conflict)
-                }
+        use SinglePatternOrdering::*;
+        let mut variant_ordering = MultiplePatternOrdering::default();
+        for self_variant in self.bits(len_bits) {
+            for other_variant in other.bits(len_bits) {
+                let cmp: SinglePatternOrdering = self_variant
+                    .clone()
+                    .zip(other_variant)
+                    .map(|(self_bit, other_bit)| match (self_bit, other_bit) {
+                        (Defined(_) | Restrained, Defined(_) | Restrained)
+                        | (Unrestrained, Unrestrained) => Eq,
+                        (Unrestrained, _) => Contained,
+                        (_, Unrestrained) => Contains,
+                    })
+                    .collect();
+                variant_ordering.add(cmp);
             }
         }
-        Some(acc_cmp)
+        variant_ordering
+    }
+}
+
+impl BlockConstraint {
+    pub fn new(block: &Block) -> Self {
+        let base_len = block.root_len();
+        let mut base = vec![BitConstraint::default(); base_len];
+        block.constraint_bits_base(&mut base);
+        Self {
+            len: block.len.unwrap().basic().unwrap(),
+            base,
+            variants: block.constraint_bits_variants(),
+        }
+    }
+    pub fn root_len(&self) -> usize {
+        self.base.len()
+    }
+    pub fn bits_len(&self) -> usize {
+        self.len.max().unwrap_or(self.len.min()).try_into().unwrap()
+    }
+    pub fn bits<'a>(&'a self) -> BlockConstraintIter<'a> {
+        let len = self.bits_len();
+        if self.variants.is_empty() {
+            BlockConstraintIter::Single(len, &self.base)
+        } else {
+            BlockConstraintIter::Multiple {
+                len,
+                base: &self.base,
+                vars: &self.variants,
+            }
+        }
     }
 }
 

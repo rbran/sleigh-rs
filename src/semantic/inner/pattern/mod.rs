@@ -313,7 +313,7 @@ impl Pattern {
     ) {
         let mut current = constraint;
         for block in self.blocks.iter() {
-            block.constraint_bits(current);
+            block.constraint_bits_base(current);
             let Some(next_offset) = block.len.unwrap().basic().unwrap().single_len() else {
                 break;
             };
@@ -1115,43 +1115,27 @@ impl Block {
             }
         }
     }
-    pub fn constraint_bits(&self, constraint: &mut [BitConstraint]) {
-        match self.op {
-            Op::Or => {
-                let mut verifications_iter = self.verifications.iter();
-                let first = verifications_iter
-                    .next()
-                    .expect("LOGIC_ERROR: Block with Or operator but no elements is invalid");
-                let mut or_pattern =
-                    vec![BitConstraint::default(); constraint.len()];
-                first.constraint_bits(&mut or_pattern);
-                let mut this_branch =
-                    vec![BitConstraint::default(); constraint.len()];
-                for verification in verifications_iter {
-                    this_branch
-                        .iter_mut()
-                        .for_each(|x| *x = BitConstraint::default());
-                    verification.constraint_bits(&mut this_branch);
-                    for (or_pattern, this_branch) in
-                        or_pattern.iter_mut().zip(this_branch.iter())
-                    {
-                        *or_pattern =
-                            or_pattern.least_restrictive(*this_branch);
-                    }
-                }
-                for (constraint, or_pattern) in
-                    constraint.iter_mut().zip(or_pattern.iter())
-                {
-                    //TODO create an error here
-                    *constraint =
-                        constraint.most_restrictive(*or_pattern).unwrap();
-                }
-            }
-            Op::And => self
-                .verifications
-                .iter()
-                .for_each(|ele| ele.constraint_bits(constraint)),
+    pub fn constraint_bits_base(&self, constraint: &mut [BitConstraint]) {
+        if self.op == Op::Or {
+            return;
         }
+        self.verifications
+            .iter()
+            .for_each(|ele| ele.constraint_bits(constraint))
+    }
+    pub fn constraint_bits_variants(&self) -> Vec<Vec<BitConstraint>> {
+        if self.op == Op::And {
+            return vec![];
+        }
+        let root_len = self.root_len();
+        self.verifications
+            .iter()
+            .map(|verification| {
+                let mut this_branch = vec![BitConstraint::default(); root_len];
+                verification.constraint_bits(&mut this_branch);
+                this_branch
+            })
+            .collect()
     }
 }
 impl From<Block> for FinalBlock {
@@ -1457,6 +1441,7 @@ impl Verification {
     }
     pub fn constraint_bits(&self, constraint: &mut [BitConstraint]) {
         match self {
+            //NOTE this combine any sub-pattern
             Self::SubPattern {
                 location: _,
                 pattern,
