@@ -16,6 +16,8 @@ pub struct BlockConstraint {
     pub variants_possible_prior: usize,
     //0 or 2 or more, never 1
     pub variants: Option<Vec<Vec<BitConstraint>>>,
+    //used on the creation, true if in use, so only modify on false
+    pub variants_lock: bool,
 }
 
 /// Represent how a bit is limited in a pattern
@@ -252,6 +254,7 @@ impl BlockConstraint {
             variants_possible_prior: variants_prior,
             base: vec![BitConstraint::default(); base_len],
             variants: None,
+            variants_lock: false,
         };
         block.constraint(&mut new, 0);
         new

@@ -1159,8 +1159,12 @@ impl Block {
             }
 
             //mark as being used, so we fail if we recurse
+            if constraint.variants_lock {
+                //TODO make this an error
+                panic!("Recursives Or pattern is not allowed")
+            }
+            constraint.variants_lock = true;
             let old_variants = constraint.variants.take();
-            constraint.variants = Some(vec![]);
 
             let new_variants: Vec<_> = self
                 .verifications
@@ -1195,6 +1199,7 @@ impl Block {
             } else {
                 constraint.variants = Some(new_variants);
             }
+            constraint.variants_lock = false;
             //TODO check and filter impossible variants
         }
     }
