@@ -1,17 +1,19 @@
-use crate::PatternLen;
-
 use super::{Block, Pattern};
+use crate::PatternLen;
 
 #[derive(Clone, Debug)]
 pub struct PatternConstraint {
     pub total_len: PatternLen,
     pub blocks: Vec<BlockConstraint>,
+    pub total_variants_possible: usize,
 }
 
 #[derive(Clone, Debug)]
 pub struct BlockConstraint {
     pub len: PatternLen,
     pub base: Vec<BitConstraint>,
+    //number of possible variants for blocks prior to this one
+    pub variants_possible_prior: usize,
     //0 or 2 or more, never 1
     pub variants: Vec<Vec<BitConstraint>>,
 }
@@ -39,101 +41,42 @@ pub enum SinglePatternOrdering {
 pub struct MultiplePatternOrdering {
     pub contained: usize,
     pub contains: usize,
-    pub conflict: usize,
+    pub conflicts: usize,
 }
 
-pub trait PatternBits<'a, I>: Clone + Iterator<Item = I> + Clone + 'a
-where
-    I: Iterator<Item = BitConstraint> + Clone + 'a,
-{
-}
 #[derive(Clone, Copy)]
-pub enum BlockConstraintIter<'a> {
-    Single(usize, &'a [BitConstraint]),
-    //Empty vars means end
-    Multiple {
-        len: usize,
-        base: &'a [BitConstraint],
-        vars: &'a [Vec<BitConstraint>],
-    },
-}
-#[derive(Clone, Copy)]
-pub struct BitConstraintIter<'a> {
-    len: usize,
+pub struct BlockConstraintIter<'a> {
+    extra_len: usize,
     base: &'a [BitConstraint],
-    variant: Option<&'a [BitConstraint]>,
+    var: Option<&'a [BitConstraint]>,
 }
 impl<'a> Iterator for BlockConstraintIter<'a> {
-    type Item = BitConstraintIter<'a>;
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            BlockConstraintIter::Multiple { vars: [], .. } => None,
-            BlockConstraintIter::Single(len, base) => {
-                let iter = BitConstraintIter {
-                    len: *len,
-                    base,
-                    variant: None,
-                };
-                *self = Self::Multiple {
-                    len: *len,
-                    base,
-                    vars: &[],
-                };
-                Some(iter)
-            }
-            BlockConstraintIter::Multiple {
-                len,
-                base,
-                vars: [first, rest @ ..],
-            } => {
-                let iter = BitConstraintIter {
-                    len: *len,
-                    base,
-                    variant: Some(first),
-                };
-                *self = Self::Multiple {
-                    len: *len,
-                    base,
-                    vars: rest,
-                };
-                Some(iter)
-            }
-        }
-    }
-}
-impl<'a> Iterator for BitConstraintIter<'a> {
     type Item = BitConstraint;
     fn next(&mut self) -> Option<Self::Item> {
-        let Some((first_base, rest_base)) = self.base.split_first() else {
-                    //concat the Unrestructed to fill the len.
-                    match self.len {
-                        0 => return None,
-                        _x => {
-                            self.len -= 1;
-                            return Some(BitConstraint::Unrestrained)
-                        },
-                    }
-                };
-        if let Some((first_var, rest_var)) =
-            self.variant.map(|var| var.split_first().unwrap())
-        {
-            *self = Self {
-                len: self.len,
-                base: rest_base,
-                variant: Some(rest_var),
-            };
-            Some(first_base.most_restrictive(*first_var).unwrap())
-        } else {
-            *self = Self {
-                len: self.len,
-                base: rest_base,
-                variant: None,
-            };
-            Some(*first_base)
+        match (self.extra_len, self.base.split_first()) {
+            //there are bits to produce, so some one
+            (_, Some((first, rest))) => {
+                self.base = rest;
+                //return the value, and apply the variant, if any
+                if let Some((first_var, rest_var)) =
+                    self.var.map(|var| var.split_first().unwrap())
+                {
+                    self.var = Some(rest_var);
+                    Some(first.most_restrictive(*first_var).unwrap())
+                } else {
+                    Some(*first)
+                }
+            }
+            //nothing else to produce
+            (0, None) => return None,
+            //no more bit to consume, but still extra bit to output
+            (_x, None) => {
+                self.extra_len -= 1;
+                return Some(BitConstraint::Unrestrained);
+            }
         }
     }
 }
-impl<'a> PatternBits<'a, BitConstraintIter<'a>> for BlockConstraintIter<'a> {}
 
 impl SinglePatternOrdering {
     pub fn is_eq(self) -> bool {
@@ -173,12 +116,25 @@ impl std::iter::FromIterator<SinglePatternOrdering> for SinglePatternOrdering {
         acc
     }
 }
+impl std::iter::FromIterator<SinglePatternOrdering>
+    for MultiplePatternOrdering
+{
+    fn from_iter<T: IntoIterator<Item = SinglePatternOrdering>>(
+        iter: T,
+    ) -> Self {
+        let mut acc = Self::default();
+        for i in iter {
+            acc.add(i);
+        }
+        acc
+    }
+}
 
 impl MultiplePatternOrdering {
     pub fn add(&mut self, ord: SinglePatternOrdering) {
         match ord {
             SinglePatternOrdering::Eq => (),
-            SinglePatternOrdering::Conflict => self.conflict += 1,
+            SinglePatternOrdering::Conflict => self.conflicts += 1,
             SinglePatternOrdering::Contains => self.contains += 1,
             SinglePatternOrdering::Contained => self.contained += 1,
         }
@@ -187,49 +143,66 @@ impl MultiplePatternOrdering {
 
 impl PatternConstraint {
     pub fn new(pattern: &Pattern) -> Self {
-        let blocks = pattern
-            .blocks
-            .iter()
-            .scan(false, |found_undefined_len, block| {
-                if *found_undefined_len {
-                    return None;
-                }
-                //parse until and including a block with multiple possible len.
-                if block.len.unwrap().basic().unwrap().single_len().is_none() {
-                    //let this pass, next one will be blocked
-                    *found_undefined_len = true;
-                }
-                Some(block)
-            })
-            .map(BlockConstraint::new)
-            .collect();
+        let mut variants_counter = 1;
+        let mut blocks = Vec::with_capacity(pattern.blocks.len());
+        for block in pattern.blocks.iter() {
+            //parse until and including a block with multiple possible len.
+            let is_undefined_len =
+                block.len.unwrap().basic().unwrap().single_len().is_none();
+
+            //create the block and update the variants_counter
+            let block = BlockConstraint::new(block, variants_counter);
+            if !block.variants.is_empty() {
+                variants_counter *= block.variants.len();
+            }
+            blocks.push(block);
+
+            //stop parsing if the len is not defined
+            if is_undefined_len {
+                break;
+            }
+        }
         Self {
             total_len: pattern.len.unwrap().basic().unwrap(),
             blocks,
+            total_variants_possible: variants_counter,
         }
     }
     pub fn bits_len(&self) -> usize {
-        self.blocks.iter().map(BlockConstraint::bits_len).sum()
+        self.blocks.iter().map(BlockConstraint::bits_produced).sum()
     }
-    //TODO ugly return type, do better
+    // Create a iterator that produces other iterator :-P
+    // First (Outer) iterator produce all the possible variants of this pattern.
+    // Second (Inner) iterator produce the bits for this variant of the pattern.
     pub fn bits<'a>(
         &'a self,
         len: usize,
-    ) -> std::iter::Chain<
-        std::iter::Flatten<
-            std::iter::Map<
-                std::slice::Iter<'a, BlockConstraint>,
-                impl FnMut(&'a BlockConstraint) -> BlockConstraintIter<'a>,
-            >,
-        >,
-        BlockConstraintIter<'a>,
-    > {
-        let len = self.bits_len().max(len);
-        self.blocks
-            .iter()
-            .map(move |block| block.bits())
-            .flatten()
-            .chain(BlockConstraintIter::Single(len, &[]))
+    ) -> impl Iterator<Item = impl Iterator<Item = BitConstraint> + Clone + 'a>
+           + Clone
+           + 'a {
+        let extra_len = len.saturating_sub(self.bits_len());
+        // a little helper to make this move easy
+        #[derive(Clone, Copy)]
+        struct ExtraBits(usize);
+        impl<'a> Iterator for ExtraBits {
+            type Item = BitConstraint;
+            fn next(&mut self) -> Option<Self::Item> {
+                (self.0 > 0).then(|| {
+                    self.0 -= 1;
+                    BitConstraint::Unrestrained
+                })
+            }
+        }
+        let extra_len_chain = ExtraBits(extra_len);
+        (0..self.total_variants_possible)
+            .into_iter()
+            .map(move |variant_id| {
+                self.blocks
+                    .iter()
+                    .map(move |block| block.bits(variant_id))
+                    .flatten()
+                    .chain(extra_len_chain)
+            })
     }
     //7.8.1. Matching
     //one pattern contains the other if all the cases that match the contained,
@@ -263,12 +236,13 @@ impl PatternConstraint {
 }
 
 impl BlockConstraint {
-    pub fn new(block: &Block) -> Self {
+    pub fn new(block: &Block, variants_prior: usize) -> Self {
         let base_len = block.root_len();
         let mut base = vec![BitConstraint::default(); base_len];
         block.constraint_bits_base(&mut base);
         Self {
             len: block.len.unwrap().basic().unwrap(),
+            variants_possible_prior: variants_prior,
             base,
             variants: block.constraint_bits_variants(),
         }
@@ -276,19 +250,20 @@ impl BlockConstraint {
     pub fn root_len(&self) -> usize {
         self.base.len()
     }
-    pub fn bits_len(&self) -> usize {
+    pub fn bits_produced(&self) -> usize {
         self.len.max().unwrap_or(self.len.min()).try_into().unwrap()
     }
-    pub fn bits<'a>(&'a self) -> BlockConstraintIter<'a> {
-        let len = self.bits_len();
-        if self.variants.is_empty() {
-            BlockConstraintIter::Single(len, &self.base)
-        } else {
-            BlockConstraintIter::Multiple {
-                len,
-                base: &self.base,
-                vars: &self.variants,
-            }
+    pub fn bits<'a>(&'a self, variant_id: usize) -> BlockConstraintIter<'a> {
+        let extra_len = self.bits_produced().saturating_sub(self.root_len());
+        let var = (!self.variants.is_empty()).then(|| {
+            let var_id = (variant_id % self.variants_possible_prior)
+                % self.variants.len();
+            self.variants[var_id].as_slice()
+        });
+        BlockConstraintIter {
+            extra_len,
+            base: &self.base,
+            var,
         }
     }
 }
