@@ -15,6 +15,8 @@ use crate::{NumberUnsigned, Span};
 
 use crate::syntax::block;
 
+use self::constraint::BlockConstraint;
+
 use super::disassembly::{
     Assertation, Expr, ExprBuilder, ExprElement, ReadScope, Variable,
 };
@@ -307,22 +309,41 @@ impl Pattern {
     pub fn len_mut(&mut self) -> &mut Option<ConstructorPatternLen> {
         &mut self.len
     }
-    pub fn sub_pattern_constraint_bits(
+    pub fn sub_pattern_constraint(
         &self,
-        constraint: &mut [BitConstraint],
+        constraint: &mut BlockConstraint,
+        offset: usize,
     ) {
-        let mut current = constraint;
+        let mut current = offset;
         for block in self.blocks.iter() {
-            block.constraint_bits_base(current);
+            block.constraint(constraint, current);
             let Some(next_offset) = block.len.unwrap().basic().unwrap().single_len() else {
                 break;
             };
             //the block have a len, but there is nothing to constraint, usually
             //is just table(s)
-            if current.len() < next_offset as usize * 8 {
+            current += next_offset as usize * 8;
+            if current >= constraint.base.len() {
                 break;
             }
-            current = &mut current[next_offset as usize * 8..];
+        }
+    }
+    pub fn sub_pattern_constraint_variant(
+        &self,
+        constraint: &mut [BitConstraint],
+    ) {
+        let mut current = constraint;
+        for block in self.blocks.iter() {
+            block.constraint_variant(current);
+            let Some(next_offset) = block.len.unwrap().basic().unwrap().single_len() else {
+                break;
+            };
+            //the block have a len, but there is nothing to constraint, usually
+            //is just table(s)
+            if current.len() < next_offset as usize {
+                break;
+            }
+            current = &mut current[next_offset as usize..];
         }
     }
     pub fn constraint(&self) -> PatternConstraint {
@@ -1115,27 +1136,110 @@ impl Block {
             }
         }
     }
-    pub fn constraint_bits_base(&self, constraint: &mut [BitConstraint]) {
-        if self.op == Op::Or {
-            return;
-        }
-        self.verifications
-            .iter()
-            .for_each(|ele| ele.constraint_bits(constraint))
-    }
-    pub fn constraint_bits_variants(&self) -> Vec<Vec<BitConstraint>> {
+    pub fn constraint(&self, constraint: &mut BlockConstraint, offset: usize) {
         if self.op == Op::And {
-            return vec![];
+            self.verifications
+                .iter()
+                .for_each(|ele| ele.constraint(constraint, offset))
+        } else {
+            //if all the verifications are using the same field, we can just
+            //OR it
+            {
+                let mut iter = self
+                    .verifications
+                    .iter()
+                    .map(Verification::token_field_check);
+                let Some(first) = iter.next() else {
+                return;
+            };
+                if iter.all(|this| first == this) {
+                    self.or_me(&mut constraint.base[offset..]);
+                    return;
+                }
+            }
+
+            //mark as being used, so we fail if we recurse
+            let old_variants = constraint.variants.take();
+            constraint.variants = Some(vec![]);
+
+            let new_variants: Vec<_> = self
+                .verifications
+                .iter()
+                .map(|verification| {
+                    let mut variant =
+                        vec![BitConstraint::default(); constraint.base.len()];
+                    verification.constraint_variant(&mut variant[offset..]);
+                    variant
+                })
+                .collect();
+            if let Some(old_variants) = old_variants {
+                // Limite the use of Or to a reasanable number, make this an
+                // error?
+                let combined_len = old_variants.len() * new_variants.len();
+                if combined_len > 1024 {
+                    todo!("Pattern is too big");
+                }
+                //combine all the old variants with the new ones
+                let mut combined_variants = Vec::with_capacity(combined_len);
+                for old_variant in old_variants.iter() {
+                    for new_variant in new_variants.iter() {
+                        let combine_variant = old_variant
+                            .iter()
+                            .zip(new_variant.iter())
+                            .map(|(old, new)| old.most_restrictive(*new))
+                            .collect();
+                        combined_variants.push(combine_variant);
+                    }
+                }
+                constraint.variants = Some(combined_variants);
+            } else {
+                constraint.variants = Some(new_variants);
+            }
+            //TODO check and filter impossible variants
         }
-        let root_len = self.root_len();
-        self.verifications
-            .iter()
-            .map(|verification| {
-                let mut this_branch = vec![BitConstraint::default(); root_len];
-                verification.constraint_bits(&mut this_branch);
-                this_branch
-            })
-            .collect()
+    }
+    //or all the branches into this pattern
+    fn or_me(&self, constraint: &mut [BitConstraint]) {
+        //get the first element
+        let mut verifications = self.verifications.iter();
+        let mut out_buf = if let Some(first) = verifications.next() {
+            let mut first_buf =
+                vec![BitConstraint::Unrestrained; constraint.len()];
+            first.constraint_variant(&mut first_buf);
+            first_buf
+        } else {
+            return;
+        };
+        //apply all other verification
+        let mut branch_buf =
+            vec![BitConstraint::Unrestrained; constraint.len()];
+        for verification in verifications {
+            branch_buf
+                .iter_mut()
+                .for_each(|bit| *bit = BitConstraint::Unrestrained);
+            verification.constraint_variant(&mut branch_buf);
+            out_buf.iter_mut().zip(branch_buf.iter()).for_each(
+                |(out, branch)| {
+                    *out = out.least_restrictive(*branch);
+                },
+            );
+        }
+        //or it all up
+        constraint.iter_mut().zip(out_buf.iter()).for_each(
+            |(constraint, out)| {
+                *constraint = constraint.most_restrictive(*out);
+            },
+        );
+    }
+    pub fn constraint_variant(&self, constraint: &mut [BitConstraint]) {
+        if self.op == Op::And {
+            self.verifications
+                .iter()
+                .for_each(|ele| ele.constraint_variant(constraint))
+        } else {
+            // Or all variants that don't colide with the base
+            self.or_me(constraint);
+        }
     }
 }
 impl From<Block> for FinalBlock {
@@ -1371,6 +1475,14 @@ impl Verification {
             }
         }
     }
+    fn token_field_check(&self) -> Option<&GlobalReference<TokenField>> {
+        match self {
+            Self::TokenFieldCheck { field, .. } => Some(field),
+            Self::ContextCheck { .. }
+            | Self::TableBuild { .. }
+            | Self::SubPattern { .. } => None,
+        }
+    }
     fn sub_pattern(&self) -> Option<&Pattern> {
         match self {
             Self::TokenFieldCheck { .. }
@@ -1439,45 +1551,72 @@ impl Verification {
             } => pattern.len(),
         }
     }
-    pub fn constraint_bits(&self, constraint: &mut [BitConstraint]) {
+    fn constraint_bits_field(
+        &self,
+        constraint: &mut [BitConstraint],
+        field: &GlobalReference<TokenField>,
+        op: &CmpOp,
+        value: &ConstraintValue,
+    ) {
+        let field_range: std::ops::Range<NumberUnsigned> =
+            (*field.element().range()).into();
+        let range = field_range.start as usize..field_range.end as usize;
+        let bits = constraint[range].iter_mut();
+
+        let ConstraintValue { expr: Expr { rpn } } = value;
+        match (op, rpn.first()) {
+            (
+                CmpOp::Eq,
+                Some(ExprElement::Value(ReadScope::Integer(value))),
+            ) => {
+                let value_bits = bits
+                    .enumerate()
+                    .map(|(i, b)| (b, value.signed_super() & (1 << i) != 0));
+                for (bit, value_bit) in value_bits {
+                    //TODO create error here for this
+                    *bit = bit.define(value_bit);
+                }
+            }
+            (CmpOp::Eq | CmpOp::Ne, _) => {
+                for bit in bits {
+                    //error never happen with `BitConstraint::Restrained`
+                    *bit = bit.most_restrictive(BitConstraint::Restrained)
+                }
+            }
+            (_, _) => (),
+        }
+    }
+    pub fn constraint(&self, constraint: &mut BlockConstraint, offset: usize) {
         match self {
             //NOTE this combine any sub-pattern
             Self::SubPattern {
                 location: _,
                 pattern,
-            } => pattern.sub_pattern_constraint_bits(constraint),
+            } => pattern.sub_pattern_constraint(constraint, offset),
 
             Self::TokenFieldCheck { field, op, value } => {
-                let field_range: std::ops::Range<NumberUnsigned> =
-                    (*field.element().range()).into();
-                let range =
-                    field_range.start as usize..field_range.end as usize;
-                let bits = constraint[range].iter_mut();
+                self.constraint_bits_field(
+                    &mut constraint.base[offset..],
+                    field,
+                    op,
+                    value,
+                );
+            }
+            Self::ContextCheck { .. } | Self::TableBuild { .. } => (),
+        }
+    }
+    pub fn constraint_variant(&self, constraint: &mut [BitConstraint]) {
+        match self {
+            //NOTE this combine any sub-pattern
+            Self::SubPattern {
+                location: _,
+                pattern,
+            } => {
+                pattern.sub_pattern_constraint_variant(constraint);
+            }
 
-                let ConstraintValue { expr: Expr { rpn } } = value;
-                match (op, rpn.first()) {
-                    (
-                        CmpOp::Eq,
-                        Some(ExprElement::Value(ReadScope::Integer(value))),
-                    ) => {
-                        let value_bits = bits.enumerate().map(|(i, b)| {
-                            (b, value.signed_super() & (1 << i) != 0)
-                        });
-                        for (bit, value_bit) in value_bits {
-                            //TODO create error here for this
-                            *bit = bit.define(value_bit).unwrap();
-                        }
-                    }
-                    (CmpOp::Eq | CmpOp::Ne, _) => {
-                        for bit in bits {
-                            //error never happen with `BitConstraint::Restrained`
-                            *bit = bit
-                                .most_restrictive(BitConstraint::Restrained)
-                                .unwrap()
-                        }
-                    }
-                    (_, _) => (),
-                }
+            Self::TokenFieldCheck { field, op, value } => {
+                self.constraint_bits_field(constraint, field, op, value);
             }
             Self::ContextCheck { .. } | Self::TableBuild { .. } => (),
         }

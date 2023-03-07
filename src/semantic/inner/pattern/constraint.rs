@@ -15,7 +15,7 @@ pub struct BlockConstraint {
     //number of possible variants for blocks prior to this one
     pub variants_possible_prior: usize,
     //0 or 2 or more, never 1
-    pub variants: Vec<Vec<BitConstraint>>,
+    pub variants: Option<Vec<Vec<BitConstraint>>>,
 }
 
 /// Represent how a bit is limited in a pattern
@@ -28,6 +28,8 @@ pub enum BitConstraint {
     Defined(bool),
     //the value is limited depending on other bits.
     Restrained,
+    //this is an impossible value, requiring it to be 0/1 at the same time
+    Impossible,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,16 +57,16 @@ impl<'a> Iterator for BlockConstraintIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         match (self.extra_len, self.base.split_first()) {
             //there are bits to produce, so some one
-            (_, Some((first, rest))) => {
-                self.base = rest;
+            (_, Some((first_base, rest_base))) => {
+                self.base = rest_base;
                 //return the value, and apply the variant, if any
                 if let Some((first_var, rest_var)) =
                     self.var.map(|var| var.split_first().unwrap())
                 {
                     self.var = Some(rest_var);
-                    Some(first.most_restrictive(*first_var).unwrap())
+                    Some(first_base.most_restrictive(*first_var))
                 } else {
-                    Some(*first)
+                    Some(*first_base)
                 }
             }
             //nothing else to produce
@@ -152,8 +154,8 @@ impl PatternConstraint {
 
             //create the block and update the variants_counter
             let block = BlockConstraint::new(block, variants_counter);
-            if !block.variants.is_empty() {
-                variants_counter *= block.variants.len();
+            if let Some(variants) = &block.variants {
+                variants_counter *= variants.len();
             }
             blocks.push(block);
 
@@ -217,11 +219,18 @@ impl PatternConstraint {
         use SinglePatternOrdering::*;
         let mut variant_ordering = MultiplePatternOrdering::default();
         for self_variant in self.bits(len_bits) {
+            if self_variant.clone().any(|bit| bit.is_impossible()) {
+                continue;
+            }
             for other_variant in other.bits(len_bits) {
+                if other_variant.clone().any(|bit| bit.is_impossible()) {
+                    continue;
+                }
                 let cmp: SinglePatternOrdering = self_variant
                     .clone()
                     .zip(other_variant)
                     .map(|(self_bit, other_bit)| match (self_bit, other_bit) {
+                        (Impossible, _) | (_, Impossible) => unreachable!(),
                         (Defined(_) | Restrained, Defined(_) | Restrained)
                         | (Unrestrained, Unrestrained) => Eq,
                         (Unrestrained, _) => Contained,
@@ -238,14 +247,14 @@ impl PatternConstraint {
 impl BlockConstraint {
     pub fn new(block: &Block, variants_prior: usize) -> Self {
         let base_len = block.root_len();
-        let mut base = vec![BitConstraint::default(); base_len];
-        block.constraint_bits_base(&mut base);
-        Self {
+        let mut new = Self {
             len: block.len.unwrap().basic().unwrap(),
             variants_possible_prior: variants_prior,
-            base,
-            variants: block.constraint_bits_variants(),
-        }
+            base: vec![BitConstraint::default(); base_len],
+            variants: None,
+        };
+        block.constraint(&mut new, 0);
+        new
     }
     pub fn root_len(&self) -> usize {
         self.base.len()
@@ -255,10 +264,10 @@ impl BlockConstraint {
     }
     pub fn bits<'a>(&'a self, variant_id: usize) -> BlockConstraintIter<'a> {
         let extra_len = self.bits_produced().saturating_sub(self.root_len());
-        let var = (!self.variants.is_empty()).then(|| {
-            let var_id = (variant_id % self.variants_possible_prior)
-                % self.variants.len();
-            self.variants[var_id].as_slice()
+        let var = self.variants.as_ref().map(|variants| {
+            let var_id =
+                (variant_id % self.variants_possible_prior) % variants.len();
+            variants[var_id].as_slice()
         });
         BlockConstraintIter {
             extra_len,
@@ -269,39 +278,43 @@ impl BlockConstraint {
 }
 
 impl BitConstraint {
-    pub fn define(self, bit: bool) -> Option<Self> {
+    fn is_impossible(&self) -> bool {
+        matches!(self, Self::Impossible)
+    }
+    pub fn define(self, bit: bool) -> Self {
         match self {
-            Self::Unrestrained => Some(Self::Defined(bit)),
-            Self::Defined(old_bit) if old_bit == bit => Some(self),
-            Self::Defined(_old_bit) => None,
+            Self::Impossible => Self::Impossible,
+            Self::Unrestrained => Self::Defined(bit),
+            Self::Defined(old_bit) if old_bit == bit => self,
+            Self::Defined(_old_bit) => Self::Impossible,
             // TODO this may not be possible, we are unable to verify that now
-            Self::Restrained => Some(Self::Defined(bit)),
+            Self::Restrained => Self::Defined(bit),
         }
     }
     /// select the most restrictive from both, None if they conflict
-    pub fn most_restrictive(self, other: Self) -> Option<Self> {
+    pub fn most_restrictive(self, other: Self) -> Self {
         match (self, other) {
+            (Self::Impossible, _) | (_, Self::Impossible) => Self::Impossible,
             //if one is unrestrained, just return the other
-            (Self::Unrestrained, other) | (other, Self::Unrestrained) => {
-                Some(other)
-            }
+            (Self::Unrestrained, other) | (other, Self::Unrestrained) => other,
             // both have the same value
-            (Self::Restrained, Self::Restrained) => Some(self),
+            (Self::Restrained, Self::Restrained) => self,
             (Self::Defined(self_value), Self::Defined(other_value))
                 if self_value == other_value =>
             {
-                Some(self)
+                self
             }
             // conflicting values
-            (Self::Defined(_), Self::Defined(_)) => None,
+            (Self::Defined(_), Self::Defined(_)) => Self::Impossible,
             // TODO this may not be possible, we are unable to verify that now
             (other @ Self::Defined(_), Self::Restrained)
-            | (Self::Restrained, other @ Self::Defined(_)) => Some(other),
+            | (Self::Restrained, other @ Self::Defined(_)) => other,
         }
     }
     /// select the least restrictive from both
     pub fn least_restrictive(self, other: Self) -> Self {
         match (self, other) {
+            (Self::Impossible, other) | (other, Self::Impossible) => other,
             (Self::Unrestrained, _other) | (_other, Self::Unrestrained) => {
                 Self::Unrestrained
             }
