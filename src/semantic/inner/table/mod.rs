@@ -328,16 +328,15 @@ impl GlobalConvert for Table {
         //put the constructors in the correct order
         let constructors: Vec<_> =
             std::mem::take(self.constructors.borrow_mut().as_mut());
-        let constructors: Vec<(Constructor, PatternConstraint)> = constructors
-            .into_iter()
-            .map(|constructor| {
-                let patt = constructor.pattern.constraint();
-                (constructor, patt)
-            })
+        let patterns: Vec<PatternConstraint> = constructors
+            .iter()
+            .map(|constructor| constructor.pattern.constraint())
             .collect();
         let mut new_constructors: Vec<(Constructor, PatternConstraint)> =
             vec![];
-        for (constructor, pattern) in constructors.into_iter() {
+        for (constructor, pattern) in
+            constructors.into_iter().zip(patterns.into_iter())
+        {
             //TODO detect conflicting instead of just looking for contains
             let pos = new_constructors.iter().enumerate().find_map(
                 |(i, (_con, pat))| {
@@ -346,7 +345,14 @@ impl GlobalConvert for Table {
                     //AND
                     //second variant of self contains the first variant of other
                     let ord = pattern.ordering(&pat);
-                    (ord.contains > 0).then_some(i)
+                    use super::pattern::constraint::MultiplePatternOrdering as Ord;
+                    match ord {
+                        //new pattern is contained at least once, just skip it
+                        Ord { contained: 1.., .. } => None,
+                        //new pattern contains at least once, insert it first
+                        Ord { contains: 1.., .. } => Some(i),
+                        Ord { .. } => None,
+                    }
                 },
             );
             //insert constructors in the correct order accordingly with the

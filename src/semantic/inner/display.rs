@@ -53,8 +53,8 @@ impl From<DisplayElement> for crate::semantic::display::DisplayScope {
 
 #[derive(Clone, Debug, Default)]
 pub struct Display {
-    mneumonic: Option<String>,
-    elements: Vec<DisplayElement>,
+    pub mneumonic: Option<String>,
+    pub elements: Vec<DisplayElement>,
 }
 
 impl From<Display> for crate::semantic::display::Display {

@@ -1148,13 +1148,13 @@ impl Block {
                 let mut iter = self
                     .verifications
                     .iter()
-                    .map(Verification::token_field_check);
-                let Some(first) = iter.next() else {
-                return;
-            };
-                if iter.all(|this| first == this) {
-                    self.or_me(&mut constraint.base[offset..]);
-                    return;
+                    .map(Verification::token_field_check)
+                    .flatten();
+                if let Some(first) = iter.next() {
+                    if iter.all(|this| first == this) {
+                        self.or_me(&mut constraint.base[offset..]);
+                        return;
+                    }
                 }
             }
 
@@ -1200,7 +1200,7 @@ impl Block {
                 constraint.variants = Some(new_variants);
             }
             constraint.variants_lock = false;
-            //TODO check and filter impossible variants
+            //TODO check and filter out impossible variants
         }
     }
     //or all the branches into this pattern
