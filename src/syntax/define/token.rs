@@ -3,11 +3,13 @@ use nom::multi::many0;
 use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
 
-use crate::preprocessor::token::Token as SleighToken;
+use crate::preprocessor::token::Token as ParserToken;
 
 use crate::syntax::define::Endian;
 use crate::syntax::parser::{ident, number, this_ident};
 use crate::{NumberUnsigned, SleighError, Span};
+
+use super::parse_endian;
 
 #[derive(Clone, Debug)]
 pub struct Token {
@@ -20,15 +22,15 @@ pub struct Token {
 
 impl Token {
     pub fn parse(
-        input: &[SleighToken],
-    ) -> IResult<&[SleighToken], Self, SleighError> {
+        input: &[ParserToken],
+    ) -> IResult<&[ParserToken], Self, SleighError> {
         map(
             preceded(
                 this_ident("token"),
                 cut(tuple((
                     ident,
                     delimited(tag!("("), number, tag!(")")),
-                    opt(Endian::parse),
+                    opt(parse_endian),
                     many0(TokenField::parse),
                 ))),
             ),
@@ -54,8 +56,8 @@ pub struct TokenField {
 
 impl TokenField {
     pub fn parse(
-        input: &[SleighToken],
-    ) -> IResult<&[SleighToken], Self, SleighError> {
+        input: &[ParserToken],
+    ) -> IResult<&[ParserToken], Self, SleighError> {
         map(
             tuple((
                 terminated(ident, tag!("=")),
@@ -96,8 +98,8 @@ impl TokenFieldAttribute {
         }
     }
     fn parse(
-        input_ori: &[SleighToken],
-    ) -> IResult<&[SleighToken], TokenFieldAttribute, SleighError> {
+        input_ori: &[ParserToken],
+    ) -> IResult<&[ParserToken], TokenFieldAttribute, SleighError> {
         let (input, (att, span)) = ident(input_ori)?;
         Self::from_str(&att)
             .map(|att| (input, att))

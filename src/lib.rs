@@ -8,24 +8,14 @@ pub(crate) mod semantic;
 pub(crate) mod syntax;
 
 use preprocessor::FilePreProcessor;
-pub use preprocessor::PreprocessorError;
+pub(crate) use preprocessor::PreprocessorError;
 
 use thiserror::Error;
 
-pub type FloatType = f64;
-pub type NumberUnsigned = u64;
-pub type NumberSigned = i64;
-pub type NumberSuperSigned = i128;
-pub type NumberSuperUnsigned = u128;
-pub type NumberNonZeroUnsigned = std::num::NonZeroU64;
-pub type NumberNonZeroSigned = std::num::NonZeroI64;
-pub type NumberNonZeroSuperSigned = std::num::NonZeroI128;
-
-//old naming convention
-pub type IntTypeU = NumberUnsigned;
-pub type IntTypeS = NumberSigned;
-pub type NonZeroTypeU = NumberNonZeroUnsigned;
-pub type NonZeroTypeS = NumberNonZeroSigned;
+pub(crate) use sleigh4rust::{
+    FloatType, NumberNonZeroUnsigned, NumberSigned, NumberSuperSigned,
+    NumberUnsigned,
+};
 
 pub use semantic::meaning::Meaning;
 pub use semantic::pattern::{Block, Pattern, PatternLen};
@@ -86,7 +76,7 @@ impl From<u64> for Number {
 impl From<i64> for Number {
     fn from(value: i64) -> Self {
         if value.is_negative() {
-            Self::Negative(value.abs() as u64)
+            Self::Negative(value.unsigned_abs())
         } else {
             Self::Positive(value as u64)
         }
@@ -247,21 +237,6 @@ pub enum SleighError {
     //TODO delete this
     #[error("SemanticError {0}")]
     SemanticError(#[from] SemanticError),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub enum Endian {
-    Little,
-    Big,
-}
-
-impl Endian {
-    pub fn is_little(&self) -> bool {
-        matches!(self, Self::Little)
-    }
-    pub fn is_big(&self) -> bool {
-        matches!(self, Self::Big)
-    }
 }
 
 #[derive(Debug, Clone)]

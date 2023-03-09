@@ -11,14 +11,15 @@ pub mod varnode;
 pub mod with_block;
 
 use indexmap::IndexMap;
+use sleigh4rust::Endian;
 use std::rc::Rc;
 
 use crate::syntax::define::TokenFieldAttribute;
+use crate::NumberUnsigned;
 use crate::Span;
 use crate::{
     syntax, IDENT_EPSILON, IDENT_INSTRUCTION, IDENT_INST_NEXT, IDENT_INST_START,
 };
-use crate::{Endian, NumberUnsigned};
 
 pub use self::execution::{FieldAuto, FieldRange, FieldSize, FieldSizeMut};
 pub use self::pattern::{Block, Pattern};

@@ -1,17 +1,18 @@
 mod alignment;
 mod bitrange;
 mod context;
-mod endian;
 mod space;
 mod token;
 mod user_function;
 mod varnode;
 
 use nom::branch::alt;
-use nom::combinator::{cut, eof, map};
+use nom::combinator::{cut, eof, map, value};
 use nom::sequence::{pair, preceded, terminated};
+use nom::IResult;
+use sleigh4rust::Endian;
 
-use crate::{Endian, SleighError};
+use crate::SleighError;
 
 use crate::preprocessor::token::Token as ParserToken;
 
@@ -37,13 +38,25 @@ pub enum Define {
     Space(Space),
 }
 
+pub fn parse_endian(
+    input: &[ParserToken],
+) -> IResult<&[ParserToken], Endian, SleighError> {
+    preceded(
+        pair(this_ident("endian"), tag!("=")),
+        cut(alt((
+            value(Endian::Little, this_ident("little")),
+            value(Endian::Big, this_ident("big")),
+        ))),
+    )(input)
+}
+
 impl Define {
     pub fn parse(input: &[ParserToken]) -> Result<Define, SleighError> {
         let (_eof, define) = preceded(
             this_ident("define"),
             cut(terminated(
                 alt((
-                    map(Endian::parse, Define::Endian),
+                    map(parse_endian, Define::Endian),
                     map(Alignment::parse, Define::Alignment),
                     map(UserFunction::parse, Define::UserFunction),
                     map(Space::parse, Define::Space),

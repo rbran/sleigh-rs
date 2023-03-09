@@ -15,6 +15,7 @@ pub mod varnode;
 mod inner;
 
 use indexmap::IndexMap;
+use sleigh4rust::Endian;
 use std::rc::Rc;
 use std::rc::Weak;
 
@@ -22,7 +23,6 @@ use thiserror::Error;
 
 use crate::semantic::inner::{SolvedLocation, SolverStatus};
 use crate::syntax;
-use crate::Endian;
 use crate::NumberNonZeroUnsigned;
 use crate::Span;
 
