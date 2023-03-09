@@ -129,7 +129,15 @@ impl Display {
             };
             match ele {
                 Concat => None,
-                Ident(_src, x) => Some(x),
+                Ident(_src, ident) => {
+                    //ident can include ".", but mneumonic can't
+                    if let Some((mneumonic, rest)) = ident.split_once('.') {
+                        str_acc.push_str(&rest);
+                        Some(mneumonic.to_string())
+                    } else {
+                        Some(ident)
+                    }
+                }
                 Literal(_src, x) => {
                     str_acc.push_str(&x);
                     None
