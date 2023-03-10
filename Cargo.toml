@@ -2,6 +2,10 @@
 edition = "2021"
 name = "sleigh-rs"
 version = "0.1.0"
+readme = "README.md"
+repository = "https://github.com/rbran/sleigh-rs"
+license = "MIT"
+description = "Ghidra Sleigh parser"
 
 [profile.release]
 debug = true
@@ -10,4 +14,4 @@ debug = true
 nom = "7"
 thiserror = "1"
 indexmap = "1.9"
-sleigh4rust = { "path"= "../sleigh4rust" }
+sleigh4rust = "0.1"
