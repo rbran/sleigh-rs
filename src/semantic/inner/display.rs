@@ -132,6 +132,7 @@ impl Display {
                 Ident(_src, ident) => {
                     //ident can include ".", but mneumonic can't
                     if let Some((mneumonic, rest)) = ident.split_once('.') {
+                        str_acc.push('.');
                         str_acc.push_str(&rest);
                         Some(mneumonic.to_string())
                     } else {
