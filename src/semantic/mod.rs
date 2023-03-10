@@ -564,7 +564,6 @@ impl Sleigh {
         //solve all pcodes macros inside the tables
         //solve all tables
         for i in 0.. {
-            println!("Solve Tables");
             let mut solved = Solved::default();
             for table in tables.iter() {
                 table.solve(&mut solved)?;
@@ -585,19 +584,12 @@ impl Sleigh {
                 for table in tables.iter() {
                     table.solve(&mut solved)?;
                 }
-                for (location, file, line) in solved.unfinished_locations() {
-                    println!(
-                        "Unable to solve at {}\n\tat {}:{}",
-                        location, file, line
-                    );
-                }
                 //TODO return an error, but for now force the conversion,
                 //so we can find where the error occour
                 //break;
                 panic!("Unable to solve the table")
             }
         }
-        println!("Solved Tables");
 
         global_scope.extend(tables.into_iter().map(|x| {
             (Rc::clone(&x.name), GlobalScope::Table(x.element_convert()))

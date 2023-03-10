@@ -502,7 +502,6 @@ mod test {
 
     fn parse_file(filename: &str) {
         let filename = Path::new(GHIDRA_HOME).join(filename);
-        println!("file: {}", filename.to_string_lossy());
         let mut pro = FilePreProcessor::new(&filename).unwrap();
         let mut buf = vec![];
         let syntax =
