@@ -306,12 +306,11 @@ pub fn number_signed(
 pub fn parse_range_inclusive(
     input: &[Token],
 ) -> IResult<&[Token], RangeBits, SleighError> {
-    let (rest, (_start, ((lsb_bit, _), (msb_bit, msb_bit_span)), _end)) =
-        tuple((
-            tag!("("),
-            separated_pair(number, tag!(","), number),
-            tag!(")"),
-        ))(input)?;
+    let (rest, ((lsb_bit, _), (msb_bit, msb_bit_span))) = delimited(
+        tag!("("),
+        separated_pair(number, tag!(","), number),
+        tag!(")"),
+    )(input)?;
     if msb_bit < lsb_bit {
         return Err(nom::Err::Error(SleighError::InvalidBitrange(
             msb_bit_span.clone(),
@@ -336,103 +335,6 @@ pub fn parse_lsb_len(
     let bitrange = RangeBits { lsb_bit, n_bits };
     Ok((rest, bitrange))
 }
-
-//pub fn context_attributes(
-//    input: &[Token],
-//) -> IResult<&[Token], (bool, PrintFlags), SleighError> {
-//    let mut rest = input;
-//    let mut noflow_set = false;
-//    let mut signed_set = false;
-//    let mut base = None;
-//    loop {
-//        let token = rest.get(0).ok_or(SleighError::UnexpectedEof)?;
-//        let att = match token {
-//            Token {
-//                location: _,
-//                token_type: TokenType::Ident(x),
-//            } => x,
-//            Token {
-//                location: _,
-//                token_type: TokenType::StatementEnd,
-//            } => break,
-//            Token { location, .. } => {
-//                return Err(nom::Err::Failure(SleighError::StatementInvalid(
-//                    location.clone(),
-//                )))
-//            }
-//        };
-//        match att.as_str() {
-//            "nowflow" if !noflow_set => noflow_set = true,
-//            "nowflow" if noflow_set => {
-//                return Err(nom::Err::Failure(SleighError::ContextAttDup(
-//                    token.location.clone(),
-//                )))
-//            }
-//            "signed" if !signed_set => signed_set = true,
-//            "signed" if signed_set => {
-//                return Err(nom::Err::Failure(SleighError::ContextAttDup(
-//                    token.location.clone(),
-//                )))
-//            }
-//            "hex" if base.is_none() => base = Some(PrintBase::Hex),
-//            "dec" if base.is_none() => base = Some(PrintBase::Dec),
-//            "hex" | "dec" if base.is_some() => {
-//                return Err(nom::Err::Failure(SleighError::ContextAttDup(
-//                    token.location.clone(),
-//                )))
-//            }
-//            //not a att, must be the next token to end of statement
-//            _ => break,
-//        }
-//        rest = &rest[1..];
-//    }
-//    Ok((rest, (noflow_set, PrintFlags { signed_set, base })))
-//}
-
-//pub fn token_field_attributes(
-//    input: &[Token],
-//) -> IResult<&[Token], PrintFlags, SleighError> {
-//    let mut rest = input;
-//    let mut signed_set = false;
-//    let mut base = None;
-//    loop {
-//        let token = rest.get(0).ok_or(SleighError::UnexpectedEof)?;
-//        let att = match token {
-//            Token {
-//                location: _,
-//                token_type: TokenType::Ident(x),
-//            } => x,
-//            Token {
-//                location: _,
-//                token_type: TokenType::StatementEnd,
-//            } => break,
-//            Token { location, .. } => {
-//                return Err(nom::Err::Failure(SleighError::StatementInvalid(
-//                    location.clone(),
-//                )))
-//            }
-//        };
-//        match att.as_str() {
-//            "signed" if !signed_set => signed_set = true,
-//            "signed" if signed_set => {
-//                return Err(nom::Err::Failure(SleighError::TokenFieldAttDup(
-//                    token.location.clone(),
-//                )))
-//            }
-//            "hex" if base.is_none() => base = Some(PrintBase::Hex),
-//            "dec" if base.is_none() => base = Some(PrintBase::Dec),
-//            "hex" | "dec" if base.is_some() => {
-//                return Err(nom::Err::Failure(SleighError::TokenFieldAttDup(
-//                    token.location.clone(),
-//                )))
-//            }
-//            //not a att, must be the next token to end of statement
-//            _ => break,
-//        }
-//        rest = &rest[1..];
-//    }
-//    Ok((rest, PrintFlags { signed_set, base }))
-//}
 
 //matches both X and "X"
 fn string_inline(

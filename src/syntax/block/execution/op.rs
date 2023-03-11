@@ -10,7 +10,7 @@ use crate::preprocessor::token::Token;
 use crate::semantic::execution::Binary;
 use crate::syntax::parser::{ident, number};
 use crate::syntax::BitRange;
-use crate::{NumberUnsigned, ParamNumber, SleighError, Span};
+use crate::{NumberUnsigned, SleighError, Span};
 
 #[derive(Clone, Debug)]
 pub struct ByteRangeMsb {
@@ -264,71 +264,6 @@ impl Binary {
             map(tag!("scarry"), |src| (Self::SCarry, src)),
             map(tag!("sborrow"), |src| (Self::SBorrow, src)),
         ))(input_ori)
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
-pub enum PrimitiveFunction {
-    New,
-    CPool,
-}
-
-impl PrimitiveFunction {
-    pub fn range_params(&self) -> ParamNumber {
-        match self {
-            //Self::Popcount
-            //| Self::Zext
-            //| Self::Sext
-            //| Self::FloatNan
-            //| Self::FloatAbs
-            //| Self::FloatSqrt
-            //| Self::Int2Float
-            //| Self::Float2Float
-            //| Self::SignTrunc
-            //| Self::FloatCeil
-            //| Self::FloatFloor
-            //| Self::FloatRound => ParamNumber::new(1, Some(1)),
-            //Self::Carry | Self::SCarry | Self::SBorrow => {
-            //    ParamNumber::new(2, Some(2))
-            //}
-            Self::New => ParamNumber::new(1, Some(2)),
-            Self::CPool => ParamNumber::new(3, None),
-        }
-    }
-}
-
-impl PrimitiveFunction {
-    pub fn find_call_name(name: &str) -> Option<Self> {
-        match name {
-            "newobject" => Some(Self::New),
-            "cpool" => Some(Self::CPool),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum Function {
-    Primitive(PrimitiveFunction),
-    // could be PCode/Macro
-    UserDefined(String),
-}
-impl Function {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
-        let (input, (ident, _)) = ident(input)?;
-        let function =
-            if let Some(function) = PrimitiveFunction::find_call_name(&ident) {
-                Self::Primitive(function)
-            } else {
-                Self::UserDefined(ident)
-            };
-        Ok((input, function))
-    }
-    pub fn range_params(&self) -> ParamNumber {
-        match self {
-            Function::Primitive(x) => x.range_params(),
-            Function::UserDefined(_) => ParamNumber::new(0, None),
-        }
     }
 }
 
