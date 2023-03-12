@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "sleigh-rs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "indexmap",
  "nom",
@@ -83,8 +83,6 @@ dependencies = [
 [[package]]
 name = "sleigh4rust"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ec3bfb702b453ed705eb4113d39caef5be0c21f3f15f033b08ea0f6268113da"
 dependencies = [
  "ethnum",
 ]

@@ -11,4 +11,4 @@ description = "Ghidra Sleigh parser"
 nom = "7"
 thiserror = "1"
 indexmap = "1.9"
-sleigh4rust = "0.1"
+sleigh4rust = { path = "../sleigh4rust", version = "0.1" }

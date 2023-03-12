@@ -138,9 +138,14 @@ impl BitRange {
         let len = self.0.end - self.0.start;
         NumberNonZeroUnsigned::new(len).unwrap()
     }
+    pub fn start(&self) -> NumberUnsigned {
+        self.0.start
+    }
+    pub fn end(&self) -> NumberNonZeroUnsigned {
+        NumberNonZeroUnsigned::new(self.0.end).unwrap_or_else(|| unreachable!())
+    }
     pub fn field_min_len(&self) -> NumberNonZeroUnsigned {
-        let len = self.0.end;
-        NumberNonZeroUnsigned::new(len).unwrap()
+        self.end()
     }
 }
 impl TryFrom<BitRangeLsbMsb> for BitRange {
