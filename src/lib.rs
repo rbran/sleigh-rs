@@ -129,7 +129,7 @@ impl BitRange {
         end: NumberUnsigned,
         span: Span,
     ) -> Result<Self, SleighError> {
-        if start <= end {
+        if start >= end {
             return Err(SleighError::InvalidBitrange(span));
         }
         Ok(Self(start..end))
