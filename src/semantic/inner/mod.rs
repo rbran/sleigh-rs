@@ -15,10 +15,9 @@ use sleigh4rust::Endian;
 use std::rc::Rc;
 
 use crate::syntax::define::TokenFieldAttribute;
-use crate::NumberUnsigned;
-use crate::Span;
 use crate::{
-    syntax, IDENT_EPSILON, IDENT_INSTRUCTION, IDENT_INST_NEXT, IDENT_INST_START,
+    syntax, NumberUnsigned, SleighError, Span, IDENT_EPSILON,
+    IDENT_INSTRUCTION, IDENT_INST_NEXT, IDENT_INST_START,
 };
 
 pub use self::execution::{FieldAuto, FieldRange, FieldSize, FieldSizeMut};
@@ -305,41 +304,26 @@ impl Sleigh {
     pub fn insert_global(
         &mut self,
         item: GlobalScope,
-    ) -> Result<(), SemanticError> {
-        self.idents
-            .insert(Rc::clone(&item.name_raw()), item)
-            .map(|_| Err(SemanticError::NameDuplicated))
-            .unwrap_or(Ok(()))
+        span: &Span,
+    ) -> Result<(), SleighError> {
+        match self.idents.insert(Rc::clone(&item.name_raw()), item) {
+            Some(_) => Err(SleighError::DuplicatedGlobal(span.clone())),
+            None => Ok(()),
+        }
     }
     pub fn exec_addr_size(&self) -> Option<&FieldSize> {
         self.exec_addr_size.as_ref()
     }
-    //pub fn exec_addr_size(&self) -> FieldSize {
-    //    self.exec_addr_size.get()
-    //}
-    //pub fn update_exec_addr_size<F>(&self, mut action: F) -> Option<bool>
-    //where
-    //    F: FnMut(FieldSize) -> Option<FieldSize>,
-    //{
-    //    //self.exec_addr_size.update(action);
-    //    let new_size = action(self.exec_addr_size.get())?;
-    //    if new_size != self.exec_addr_size.get() {
-    //        self.exec_addr_size.set(new_size);
-    //        Some(true)
-    //    } else {
-    //        Some(false)
-    //    }
-    //}
     pub fn default_space(&self) -> Option<&GlobalElement<Space>> {
         self.default_space.as_ref()
     }
     pub fn get_global<'b>(&'b self, name: &str) -> Option<&'b GlobalScope> {
         self.idents.get(name)
     }
-    pub fn set_endian(&mut self, endian: Endian) -> Result<(), SemanticError> {
+    pub fn set_endian(&mut self, endian: Endian) -> Result<(), SleighError> {
         self.endian
             .replace(endian)
-            .map(|_| Err(SemanticError::EndianMult))
+            .map(|_| Err(SleighError::EndianMult))
             .unwrap_or(Ok(()))
     }
     pub fn set_alignment(
@@ -355,7 +339,7 @@ impl Sleigh {
         &mut self,
         with_block_current: &mut WithBlockCurrent,
         syntax: syntax::Sleigh,
-    ) -> Result<(), SemanticError> {
+    ) -> Result<(), SleighError> {
         for assertation in syntax.assertations.into_iter() {
             use syntax::define::Define::*;
             use syntax::Assertation::*;
@@ -383,7 +367,7 @@ impl Sleigh {
         }
         Ok(())
     }
-    pub fn new(syntax: syntax::Sleigh) -> Result<Self, SemanticError> {
+    pub fn new(syntax: syntax::Sleigh) -> Result<Self, SleighError> {
         //TODO insert default global vars: such as `instruction`, `unique`, etc
         let mut sleigh = Sleigh {
             default_space: None,

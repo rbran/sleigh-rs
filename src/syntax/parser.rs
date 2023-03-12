@@ -1,14 +1,12 @@
 use nom::branch::alt;
 use nom::combinator::{map, opt};
 use nom::multi::many1;
-use nom::sequence::{delimited, pair, separated_pair, tuple};
+use nom::sequence::{delimited, pair};
 use nom::IResult;
 
 use crate::preprocessor::token::{Token, TokenType};
 use crate::preprocessor::FilePreProcessor;
-use crate::{
-    Number, NumberNonZeroUnsigned, NumberUnsigned, RangeBits, SleighError, Span,
-};
+use crate::{Number, NumberUnsigned, SleighError, Span};
 
 pub trait TokenHelper {
     fn location(&self) -> Span;
@@ -301,39 +299,6 @@ pub fn number_signed(
         Number::Positive(number)
     };
     Ok((rest, (number, location)))
-}
-
-pub fn parse_range_inclusive(
-    input: &[Token],
-) -> IResult<&[Token], RangeBits, SleighError> {
-    let (rest, ((lsb_bit, _), (msb_bit, msb_bit_span))) = delimited(
-        tag!("("),
-        separated_pair(number, tag!(","), number),
-        tag!(")"),
-    )(input)?;
-    if msb_bit < lsb_bit {
-        return Err(nom::Err::Error(SleighError::InvalidBitrange(
-            msb_bit_span.clone(),
-        )));
-    }
-    let n_bits = NumberNonZeroUnsigned::new((msb_bit + 1) - lsb_bit)
-        .ok_or_else(|| SleighError::InvalidBitrange(msb_bit_span.clone()))?;
-    let bitrange = RangeBits { lsb_bit, n_bits };
-    Ok((rest, bitrange))
-}
-pub fn parse_lsb_len(
-    input: &[Token],
-) -> IResult<&[Token], RangeBits, SleighError> {
-    let (rest, (_start, ((lsb_bit, _), (n_bits, n_bits_span)), _end)) =
-        tuple((
-            tag!("["),
-            separated_pair(number, tag!(","), number),
-            tag!("]"),
-        ))(input)?;
-    let n_bits = NumberNonZeroUnsigned::new(n_bits)
-        .ok_or_else(|| SleighError::InvalidBitrange(n_bits_span.clone()))?;
-    let bitrange = RangeBits { lsb_bit, n_bits };
-    Ok((rest, bitrange))
 }
 
 //matches both X and "X"

@@ -1,30 +1,23 @@
-use crate::semantic::inner::execution::FieldSizeIntersectIter;
-use crate::semantic::inner::execution::FieldSizeMutRef;
-use crate::semantic::inner::execution::FinalTruncate;
+use std::rc::Rc;
+
+use crate::semantic::inner::execution::{
+    FieldSizeIntersectIter, FieldSizeMutRef, FinalTruncate,
+};
 use crate::semantic::inner::token::TokenField;
 use crate::semantic::inner::varnode::Context;
 use crate::semantic::inner::Solved;
-use crate::semantic::varnode::Bitrange;
-use crate::semantic::varnode::Varnode;
-use crate::semantic::GlobalElement;
-use crate::semantic::GlobalReference;
-use crate::semantic::InstNext;
-use crate::semantic::InstStart;
-use crate::Number;
-use crate::NumberNonZeroUnsigned;
-use crate::NumberUnsigned;
-use crate::Span;
-use std::rc::Rc;
+use crate::semantic::varnode::{Bitrange, Varnode};
+use crate::semantic::{GlobalElement, GlobalReference, InstNext, InstStart};
+use crate::{Number, NumberNonZeroUnsigned, NumberUnsigned, Span};
 
 use crate::semantic;
 use crate::semantic::execution::{Binary, ExecutionError};
 use crate::semantic::inner::pcode_macro::Parameter;
 use crate::semantic::inner::{disassembly, FieldSize, SolverStatus, Table};
 
-use super::FieldSizeMutOwned;
 use super::{
-    AddrDereference, ExecutionExport, FieldSizeMut, Truncate, Unary, UserCall,
-    Variable, FIELD_SIZE_BOOL,
+    AddrDereference, ExecutionExport, FieldSizeMut, FieldSizeMutOwned,
+    Truncate, Unary, UserCall, Variable, FIELD_SIZE_BOOL,
 };
 
 pub type FinalExpr = semantic::execution::Expr;
@@ -806,7 +799,7 @@ impl ExprValue {
     pub fn new_bitrange(src: Span, value: &GlobalElement<Bitrange>) -> Self {
         let size = FieldSize::new_unsized()
             .set_possible_min()
-            .set_min(value.range.len_bits())
+            .set_min(value.range.len())
             .unwrap()
             .set_possible_min();
         Self::Bitrange(size, GlobalReference::from_element(value, src))

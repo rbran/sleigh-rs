@@ -1,13 +1,12 @@
-use crate::semantic::varnode::{Bitrange, Varnode};
-use crate::semantic::GlobalReference;
-use core::cell::Cell;
 use indexmap::IndexMap;
-use std::cell::RefCell;
+
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use crate::semantic::execution::{self, BranchCall, ExecutionError};
-use crate::{semantic, Number};
-use crate::{NumberUnsigned, Span};
+use crate::semantic::varnode::{Bitrange, Varnode};
+use crate::semantic::GlobalReference;
+use crate::{semantic, Number, NumberUnsigned, Span};
 
 use super::pcode_macro::{Parameter, PcodeMacroInstance};
 use super::table::Table;
@@ -407,7 +406,7 @@ impl WriteValue {
         match self {
             Self::Varnode(var) => FieldSize::new_bytes(var.element().len_bytes),
             Self::Bitrange(var) => {
-                FieldSize::new_bits(var.element().range.len_bits())
+                FieldSize::new_bits(var.element().range.len())
             }
             Self::Table(value) => *value
                 .element()
@@ -428,7 +427,7 @@ impl WriteValue {
                 FieldSize::new_bytes(var.element().len_bytes),
             )),
             Self::Bitrange(var) => Box::new(FieldSizeMutOwned::from(
-                FieldSize::new_bits(var.element().range.len_bits()),
+                FieldSize::new_bits(var.element().range.len()),
             )),
             Self::Table(value) => Box::new(value.element()),
             Self::ExeVar(_, var) => Box::new(var.len()),

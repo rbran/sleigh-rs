@@ -24,6 +24,7 @@ use thiserror::Error;
 use crate::semantic::inner::{SolvedLocation, SolverStatus};
 use crate::syntax;
 use crate::NumberNonZeroUnsigned;
+use crate::SleighError;
 use crate::Span;
 
 use self::disassembly::DisassemblyError;
@@ -488,7 +489,7 @@ impl Sleigh {
     pub fn addr_len_bytes(&self) -> NumberNonZeroUnsigned {
         self.addr_len_bytes
     }
-    pub(crate) fn new(value: syntax::Sleigh) -> Result<Self, SemanticError> {
+    pub(crate) fn new(value: syntax::Sleigh) -> Result<Self, SleighError> {
         let inner = inner::Sleigh::new(value)?;
         //HACK: verify that indirect recursion don't happen
         //NOTE we don't need to worry about direct (self) recursion.

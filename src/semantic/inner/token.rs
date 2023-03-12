@@ -5,7 +5,7 @@ use crate::semantic::meaning::Meaning;
 use crate::semantic::token::Token;
 use crate::semantic::{GlobalConvert, SemanticError};
 use crate::syntax::define;
-use crate::{NumberNonZeroUnsigned, NumberUnsigned, RangeBits, Span};
+use crate::{NumberNonZeroUnsigned, BitRange, Span, SleighError};
 
 use super::{
     Endian, FieldSize, GlobalElement, GlobalScope, PrintFlags, Sleigh,
@@ -22,7 +22,7 @@ use super::{
 type FinalTokenField = crate::semantic::token::TokenField;
 pub struct TokenField {
     pub src: Span,
-    pub range: RangeBits,
+    pub range: BitRange,
     pub token: GlobalElement<Token>,
     //start with false, if set to true, unable to modify
     pub attach_finish: Cell<bool>,
@@ -52,14 +52,13 @@ impl GlobalElement<TokenField> {
     pub fn new_token_field(
         name: &str,
         src: Span,
-        lsb_bit: NumberUnsigned,
-        n_bits: NumberNonZeroUnsigned,
+        range: BitRange,
         print_flags: PrintFlags,
         token: GlobalElement<Token>,
     ) -> Self {
         let token = TokenField {
             src,
-            range: RangeBits::new(lsb_bit, n_bits),
+            range,
             token,
             print_flags,
             attach_finish: Cell::new(false),
@@ -79,7 +78,7 @@ impl TokenField {
         assert!(!self.attach_finish.get());
         self.meaning.borrow_mut()
     }
-    pub fn range(&self) -> &RangeBits {
+    pub fn range(&self) -> &BitRange {
         &self.range
     }
     pub fn exec_value_len(&self) -> FieldSize {
@@ -88,7 +87,7 @@ impl TokenField {
             Some(Some(len)) => FieldSize::new_bytes(len),
             //don't have speacial meaning, or the meaning just use the raw value
             Some(None) | None => {
-                FieldSize::default().set_min(self.range().n_bits).unwrap()
+                FieldSize::default().set_min(self.range().len()).unwrap()
             }
         }
     }
@@ -109,7 +108,7 @@ impl GlobalConvert for TokenField {
                     .unwrap_or(Meaning::Literal(self.print_flags.into()));
                 let final_value = Self::FinalType::new(
                     self.src.clone(),
-                    self.range,
+                    self.range.clone(),
                     self.token.clone(),
                     meaning,
                 );
@@ -125,13 +124,12 @@ impl Sleigh {
     pub fn create_token(
         &mut self,
         input: define::Token,
-    ) -> Result<(), SemanticError> {
+    ) -> Result<(), SleighError> {
         let size = input
             .size
             .checked_div(8)
             .and_then(NumberNonZeroUnsigned::new)
             .ok_or(SemanticError::TokenInvalidSize)?;
-        let size_bits = input.size;
         let endian = input
             .endian
             .or(self.endian)
@@ -148,25 +146,16 @@ impl Sleigh {
             .unwrap_or(Ok(()))?;
 
         for field in input.token_fields.into_iter() {
-            if field.start > field.end || field.end >= size_bits {
-                return Err(SemanticError::TokenFieldInvalidSize);
-            }
+            let range: BitRange = field.range.try_into()?;
             let print_flags = PrintFlags::from_token_att(
                 &input.src,
                 field.attributes.iter(),
             )?;
             //default into print in hex format
-            let lsb_bit = field.start;
-            //TODO error not panic
-            assert!(field.end >= field.start);
-            let n_bits =
-                NumberNonZeroUnsigned::new(1 + field.end - field.start)
-                    .unwrap();
             let field_ele = GlobalElement::new_token_field(
                 &field.name,
                 input.src.clone(),
-                lsb_bit,
-                n_bits,
+                range,
                 print_flags,
                 token.clone(),
             );

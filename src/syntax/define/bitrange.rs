@@ -5,7 +5,7 @@ use nom::IResult;
 
 use crate::preprocessor::token::Token;
 use crate::syntax::parser::{ident, this_ident};
-use crate::syntax::BitRange;
+use crate::syntax::BitRangeLsbLen;
 use crate::{SleighError, Span};
 
 #[derive(Clone, Debug)]
@@ -17,7 +17,7 @@ impl BitRangeDef {
     pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
             preceded(this_ident("bitrange"), cut(many0(VarnodeField::parse))),
-            |bitranges| BitRangeDef { ranges: bitranges },
+            |ranges| BitRangeDef { ranges },
         )(input)
     }
 }
@@ -37,13 +37,13 @@ pub struct VarnodeField {
     pub name: String,
     pub varnode_name: String,
     pub varnode_name_span: Span,
-    pub range: BitRange,
+    pub range: BitRangeLsbLen,
 }
 
 impl VarnodeField {
     fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
-            tuple((terminated(ident, tag!("=")), ident, BitRange::parse)),
+            tuple((terminated(ident, tag!("=")), ident, BitRangeLsbLen::parse)),
             |((name, name_span), (varnode_name, varnode_name_span), range)| {
                 VarnodeField {
                     name,

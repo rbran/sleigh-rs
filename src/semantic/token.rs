@@ -1,6 +1,6 @@
 use sleigh4rust::Endian;
 
-use crate::{NumberNonZeroUnsigned, RangeBits, Span};
+use crate::{NumberNonZeroUnsigned, BitRange, Span};
 
 use super::meaning::Meaning;
 use super::GlobalElement;
@@ -38,14 +38,14 @@ impl Token {
 #[derive(Clone, Debug)]
 pub struct TokenField {
     pub location: Span,
-    pub range: RangeBits,
+    pub range: BitRange,
     pub token: GlobalElement<Token>,
     pub meaning: Meaning,
 }
 impl TokenField {
     pub(crate) fn new(
         src: Span,
-        range: RangeBits,
+        range: BitRange,
         token: GlobalElement<Token>,
         meaning: Meaning,
     ) -> Self {
@@ -59,7 +59,7 @@ impl TokenField {
     pub fn location(&self) -> &Span {
         &self.location
     }
-    pub fn range(&self) -> &RangeBits {
+    pub fn range(&self) -> &BitRange {
         &self.range
     }
     pub fn token(&self) -> &GlobalElement<Token> {

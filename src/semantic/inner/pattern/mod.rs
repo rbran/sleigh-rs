@@ -1,19 +1,18 @@
-use indexmap::IndexMap;
 use std::convert::TryFrom;
 use std::ops::ControlFlow;
 use std::rc::Rc;
 
+use indexmap::IndexMap;
+
 use crate::semantic::inner::table::Table;
 use crate::semantic::inner::GlobalScope;
-use crate::semantic::pattern::{CmpOp, Ellipsis};
-use crate::semantic::pattern::{PatternError, PatternLen};
+use crate::semantic::pattern::{CmpOp, Ellipsis, PatternError, PatternLen};
 use crate::semantic::table::DisassemblyError;
 use crate::semantic::token::Token;
 use crate::semantic::{GlobalAnonReference, GlobalElement, GlobalReference};
-use crate::syntax::block::pattern::Op;
-use crate::{NumberUnsigned, Span};
-
 use crate::syntax::block;
+use crate::syntax::block::pattern::Op;
+use crate::Span;
 
 use self::constraint::BlockConstraint;
 
@@ -1563,9 +1562,9 @@ impl Verification {
         op: &CmpOp,
         value: &ConstraintValue,
     ) {
-        let field_range: std::ops::Range<NumberUnsigned> =
-            (*field.element().range()).into();
-        let range = field_range.start as usize..field_range.end as usize;
+        let field = field.element();
+        let field_range = field.element().range();
+        let range = field_range.0.start as usize..field_range.0.end as usize;
         let bits = constraint[range].iter_mut();
 
         let ConstraintValue { expr: Expr { rpn } } = value;

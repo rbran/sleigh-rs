@@ -4,15 +4,15 @@ use std::rc::Rc;
 use crate::semantic::meaning::Meaning;
 use crate::semantic::varnode::Varnode;
 use crate::semantic::{GlobalConvert, GlobalElement, SemanticError};
-use crate::{syntax, NumberNonZeroUnsigned, NumberUnsigned};
-use crate::{RangeBits, Span};
+use crate::{syntax, NumberNonZeroUnsigned, NumberUnsigned, SleighError};
+use crate::{BitRange, Span};
 
 use super::{FieldSize, GlobalScope, PrintFlags, Sleigh};
 
 #[derive(Debug)]
 pub struct Context {
     pub src: Span,
-    pub range: RangeBits,
+    pub range: BitRange,
     pub varnode: GlobalElement<Varnode>,
     pub noflow_set: bool,
     pub attach_finish: Cell<bool>,
@@ -25,7 +25,7 @@ impl GlobalElement<Context> {
     pub(crate) fn new_context(
         name: &str,
         src: Span,
-        range: RangeBits,
+        range: BitRange,
         varnode: GlobalElement<Varnode>,
         noflow: bool,
         print_flags: PrintFlags,
@@ -62,7 +62,7 @@ impl Context {
             Some(Some(len)) => FieldSize::new_bytes(len),
             //don't have speacial meaning, or the meaning just use the raw value
             Some(None) | None => {
-                FieldSize::default().set_min(self.range.n_bits).unwrap()
+                FieldSize::default().set_min(self.range.len()).unwrap()
             }
         }
     }
@@ -85,7 +85,7 @@ impl GlobalConvert for Context {
                     .unwrap_or(Meaning::Literal(self.print_flags.into()));
                 let final_value = Self::FinalType {
                     location: self.src.clone(),
-                    range: self.range,
+                    range: self.range.clone(),
                     varnode: self.varnode.clone(),
                     noflow: self.noflow_set,
                     meaning,
@@ -102,15 +102,18 @@ impl<'a> Sleigh {
     pub fn create_memory(
         &mut self,
         varnode: syntax::define::Varnode,
-    ) -> Result<(), SemanticError> {
+    ) -> Result<(), SleighError> {
         let space_ele = self
             .get_global(&varnode.space_name)
-            .ok_or(SemanticError::SpaceMissing)?
-            .space_or(SemanticError::SpaceInvalid)?
+            .ok_or_else(|| {
+                SleighError::SpaceUndefined(varnode.space_span.clone())
+            })?
+            .space_or(SleighError::SpaceInvalid(varnode.space_span.clone()))?
             .clone();
-        //let offset_start = varnode.offset;
         let varnode_size = NumberNonZeroUnsigned::new(varnode.value_bytes)
-            .ok_or(SemanticError::VarnodeInvalidVarnodeSize)?;
+            .ok_or_else(|| {
+                SleighError::VarnodeInvalidSize(varnode.space_span.clone())
+            })?;
 
         if varnode.names.is_empty() {
             //TODO verify that on syntax parsing?
@@ -122,6 +125,7 @@ impl<'a> Sleigh {
             .enumerate()
             .filter_map(|(i, (v, s))| Some((i, v?, s)))
             .try_for_each(|(index, name, src)| {
+                let location = src.clone();
                 let varnode = GlobalElement::new_varnode(
                     &name,
                     src,
@@ -129,79 +133,71 @@ impl<'a> Sleigh {
                     varnode_size,
                     space_ele.clone(),
                 );
-                self.insert_global(GlobalScope::Varnode(varnode))
+                self.insert_global(GlobalScope::Varnode(varnode), &location)
             })
     }
     pub fn create_bitrange(
         &mut self,
         bitrange: syntax::define::BitRangeDef,
-    ) -> Result<(), SemanticError> {
+    ) -> Result<(), SleighError> {
         bitrange.into_iter().try_for_each(|field| {
             let varnode = self
                 .get_global(&field.varnode_name)
-                .ok_or(SemanticError::VarnodeMissing)?
-                .varnode_or(SemanticError::VarnodeInvalid)?;
-            let range = RangeBits::from_syntax(field.range)
-                .ok_or(SemanticError::BitrangeInvalidSize)?;
+                .ok_or_else(|| {
+                    SleighError::VarnodeUndefined(field.src.clone())
+                })?
+                .varnode_or(SleighError::VarnodeInvalid(field.src.clone()))?;
+            let range: BitRange = field.range.try_into()?;
 
             //bitrange need to point to a varnode, we allow anything that have a
             //value_size, but tecnicatly we need to verify if this point to a
             //varnode, but I'm not doing this right now...
             let varnode_size = varnode.len_bytes.get() * 8;
             //bitrange can't be bigger than the varnode
-            let last_bit = range
-                .lsb_bit
-                .checked_add(range.n_bits.get())
-                .ok_or(SemanticError::BitrangeInvalidSize)?;
-            if last_bit > varnode_size {
-                return Err(SemanticError::BitrangeInvalidVarnodeSize);
+            if range.field_min_len().get() > varnode_size {
+                return Err(SleighError::VarnodeInvalidSize(field.src.clone()));
             }
 
             let bitrange = GlobalElement::new_bitrange(
                 &field.name,
-                field.src,
+                field.src.clone(),
                 range,
                 varnode.clone(),
             );
 
-            self.insert_global(GlobalScope::Bitrange(bitrange))
+            self.insert_global(GlobalScope::Bitrange(bitrange), &field.src)
         })
     }
     pub fn create_user_function(
         &mut self,
         input: syntax::define::UserFunction,
-    ) -> Result<(), SemanticError> {
-        self.insert_global(GlobalScope::UserFunction(
-            GlobalElement::new_user_function(&input.name, input.src),
-        ))
+    ) -> Result<(), SleighError> {
+        let user = GlobalScope::UserFunction(GlobalElement::new_user_function(
+            &input.name,
+            input.src.clone(),
+        ));
+        self.insert_global(user, &input.src)
     }
     pub fn create_context(
         &mut self,
         input: syntax::define::Context,
-    ) -> Result<(), SemanticError> {
+    ) -> Result<(), SleighError> {
         let varnode = self
             .get_global(&input.varnode_name)
             .ok_or(SemanticError::VarnodeMissing)?
             .varnode_or(SemanticError::VarnodeInvalid)?
             .clone();
         input.fields.into_iter().try_for_each(|field| {
-            let src = field.src;
             //check for valid range
-            if field.start > field.end {
-                return Err(SemanticError::ContextInvalidSize);
-            }
-            let lsb_bit = field.start;
+            let range: BitRange = field.range.try_into()?;
             //don't need make checked add/sub, don't question it
-            let n_bits =
-                NumberNonZeroUnsigned::new((field.end - field.start) + 1)
-                    .ok_or(SemanticError::ContextInvalidSize)?;
             //range can't be bigger than the varnode
             let varnode_size = varnode.len_bytes.get() * 8;
-            if field.end > varnode_size {
-                return Err(SemanticError::ContextInvalidSize);
+            if range.field_min_len().get() > varnode_size {
+                return Err(SleighError::ContextInvalidSize(field.src.clone()));
             }
             let print_flags = PrintFlags::from_token_att(
-                &src,
+                &field.src,
                 field.attributes.iter().filter_map(|att| match att {
                     syntax::define::ContextFieldAttribute::Token(att) => {
                         Some(att)
@@ -220,18 +216,18 @@ impl<'a> Sleigh {
             let noflow_set = match noflow {
                 0 => false,
                 1 => true,
-                _ => return Err(SemanticError::ContextInvalidAtt),
+                _ => return Err(SleighError::ContextAttDup(field.src.clone())),
             };
             //default to hex print fmt
             let context = GlobalElement::new_context(
                 &field.name,
-                src,
-                RangeBits::new(lsb_bit, n_bits),
+                field.src.clone(),
+                range,
                 varnode.clone(),
                 noflow_set,
                 print_flags,
             );
-            self.insert_global(GlobalScope::Context(context))
+            self.insert_global(GlobalScope::Context(context), &field.src)
         })
     }
 }

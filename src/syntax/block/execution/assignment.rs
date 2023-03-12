@@ -9,7 +9,7 @@ use nom::IResult;
 
 use crate::preprocessor::token::Token;
 use crate::syntax::parser::ident;
-use crate::syntax::BitRange;
+use crate::syntax::BitRangeLsbLen;
 use crate::SleighError;
 use crate::Span;
 
@@ -102,7 +102,7 @@ impl Assignment {
 #[derive(Clone, Debug)]
 pub enum OpLeft {
     //assign to variable
-    BitRange(BitRange),
+    BitRange(BitRangeLsbLen),
     ByteRangeMsb(ByteRangeMsb),
     ByteRangeLsb(ByteRangeLsb),
 }
@@ -110,7 +110,7 @@ pub enum OpLeft {
 impl OpLeft {
     fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         alt((
-            map(BitRange::parse, Self::BitRange),
+            map(BitRangeLsbLen::parse, Self::BitRange),
             map(ByteRangeMsb::parse, |_x| {
                 todo!("MSB assignment is a thing?");
                 //Self::ByteRangeMsb(x)

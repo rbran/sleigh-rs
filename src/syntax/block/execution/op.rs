@@ -1,15 +1,14 @@
 use std::cmp::Ordering;
-use std::ops::Range;
 
 use nom::branch::alt;
 use nom::combinator::{map, opt};
-use nom::sequence::{delimited, preceded, separated_pair, tuple};
+use nom::sequence::{delimited, preceded, tuple};
 use nom::IResult;
 
 use crate::preprocessor::token::Token;
 use crate::semantic::execution::Binary;
 use crate::syntax::parser::{ident, number};
-use crate::syntax::BitRange;
+use crate::syntax::BitRangeLsbLen;
 use crate::{NumberUnsigned, SleighError, Span};
 
 #[derive(Clone, Debug)]
@@ -50,7 +49,7 @@ pub enum Unary {
     //NOTE: ByteRangeMsb is part of the expr::ExprElement::Ambiguous1
     ByteRangeMsb(ByteRangeMsb),
     ByteRangeLsb(ByteRangeLsb),
-    BitRange(BitRange),
+    BitRange(BitRangeLsbLen),
     Dereference(AddrDereference),
     //Reference(AddrReference),
     Negation,
@@ -111,23 +110,11 @@ impl Unary {
             FloatRound,
         )
     }
-    pub fn parse_range(
-        input: &[Token],
-    ) -> IResult<&[Token], Range<NumberUnsigned>, SleighError> {
-        map(
-            delimited(
-                tag!("["),
-                separated_pair(number, tag!(","), number),
-                tag!("]"),
-            ),
-            |((lsb, _), (n_bits, _))| lsb..lsb + n_bits,
-        )(input)
-    }
     pub fn parse_after(
         input: &[Token],
     ) -> IResult<&[Token], (Self, Span), SleighError> {
         alt((
-            map(BitRange::parse, |x| {
+            map(BitRangeLsbLen::parse, |x| {
                 let location = x.src.clone();
                 (Self::BitRange(x), location)
             }),

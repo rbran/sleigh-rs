@@ -125,9 +125,6 @@ impl DrainingMacro {
             position: 0,
         })
     }
-    fn data(&self) -> &str {
-        &self.data[self.position..]
-    }
     fn location(&self) -> &MacroLocation {
         &self.location
     }
@@ -207,7 +204,7 @@ enum DrainingFileBody {
 #[derive(Debug)]
 pub(crate) struct DrainingFile {
     location: FileLocation,
-    if_stack: Vec<IfStatus>,
+    if_stack: Vec<(FileSpan, IfStatus)>,
     data: String,
     position: usize,
 }
@@ -325,7 +322,7 @@ impl DrainingFile {
     ) -> Result<(), PreprocessorError> {
         //if this if is true, just to inside it
         if cond {
-            self.if_stack.push(IfStatus::If);
+            self.if_stack.push((src.clone(), IfStatus::If));
             return Ok(());
         }
         //othewise find the next block and check if we will enter it
@@ -334,7 +331,7 @@ impl DrainingFile {
             match self.nom_it(MacroLine::parse)? {
                 (MacroLine::ElIf(cond), src) => {
                     if self.check_cond(state, cond, &src)? {
-                        self.if_stack.push(IfStatus::IfElse);
+                        self.if_stack.push((src.clone(), IfStatus::IfElse));
                         break;
                     } else {
                         //not the block that we can enter, search the next
@@ -342,7 +339,7 @@ impl DrainingFile {
                     }
                 }
                 (MacroLine::Else, _) => {
-                    self.if_stack.push(IfStatus::Else);
+                    self.if_stack.push((src.clone(), IfStatus::Else));
                     break;
                 }
                 (MacroLine::EndIf, _) => {
@@ -455,8 +452,8 @@ impl DrainingFile {
             match (status, next_block) {
                 (None, End) => return Ok(DrainingFileProduct::End),
 
-                (Some(_), End) => {
-                    return Err(PreprocessorError::NotFoundEndIf(todo!()))
+                (Some((location, _)), End) => {
+                    return Err(PreprocessorError::NotFoundEndIf(location))
                 }
 
                 //found a token, just return it
@@ -488,9 +485,10 @@ impl DrainingFile {
                 (None, Macro(ElIf(_), location))
                 | (None, Macro(Else, location))
                 | (None, Macro(EndIf, location))
-                | (Some(IfStatus::Else), Macro(ElIf(_) | Else, location)) => {
-                    return Err(PreprocessorError::InvalidEndIf(location))
-                }
+                | (
+                    Some((_, IfStatus::Else)),
+                    Macro(ElIf(_) | Else, location),
+                ) => return Err(PreprocessorError::InvalidEndIf(location)),
 
                 //end of the current block, remove the status and continue parsing
                 (Some(_), Macro(EndIf, _)) => {
@@ -502,18 +500,10 @@ impl DrainingFile {
                     let cond = self.check_cond(state, cond, &src)?;
                     self.enter_if_block(cond, state, &src)?
                 }
-                (_, Macro(IfDef(value), src)) => {
-                    let cond = state.exists(&value);
-                    self.enter_if_block(cond, state, &src)?
-                }
-                (_, Macro(IfNDef(value), src)) => {
-                    let cond = !state.exists(&value);
-                    self.enter_if_block(cond, state, &src)?
-                }
 
                 //found the end of the currently executing if-block
                 (
-                    Some(IfStatus::If | IfStatus::IfElse),
+                    Some((_, IfStatus::If | IfStatus::IfElse)),
                     Macro(ElIf(_) | Else, src),
                 ) => {
                     let _next_block = self.next_if_block(&src, |x| {

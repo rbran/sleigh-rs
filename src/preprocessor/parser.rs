@@ -1,18 +1,15 @@
 use std::borrow::Borrow;
 
 use nom::branch::alt;
-use nom::bytes::complete::{is_a, tag, take_while, take_while1};
+use nom::bytes::complete::{tag, take_while, take_while1};
 use nom::character::complete::{
-    digit1, hex_digit1, line_ending, not_line_ending, space0,
+    digit1, hex_digit1, not_line_ending, space0,
 };
 use nom::combinator::{eof, map, map_res, opt, recognize, value};
-use nom::multi::{many0, many1};
 use nom::sequence::{delimited, pair, preceded, tuple};
 use nom::{AsChar, IResult, InputIter, InputTake};
 
-use crate::{Number, NumberUnsigned};
-
-use super::DisplayToken;
+use crate::NumberUnsigned;
 
 #[macro_export]
 macro_rules! parse_or_else {
@@ -45,9 +42,6 @@ pub(crate) fn ident(input: &str) -> IResult<&str, &str> {
         take_while1(is_ident_first),
         take_while(is_ident_middle),
     ))(input)
-}
-pub(crate) fn ident_option<'a>(input: &str) -> IResult<&str, Option<&str>> {
-    alt((value(None, tag("_")), map(ident, |x| Some(x))))(input)
 }
 //TODO octal, hex and unicode code escape
 fn in_quotes<'a>(buf: &str) -> IResult<&str, String> {
@@ -91,23 +85,9 @@ fn number_unsig_dec(input: &str) -> IResult<&str, NumberUnsigned> {
 pub fn number(input: &str) -> IResult<&str, NumberUnsigned> {
     alt((number_unsig_hex, number_unsig_bin, number_unsig_dec))(input)
 }
-//pub(crate) fn number_unsig_option(
-//    input: &str,
-//) -> IResult<&str, Option<IntTypeU>> {
-//    alt((map(number_unsig, |x| Some(x)), value(None, tag("_"))))(input)
-//}
 
 pub(crate) fn comment(input: &str) -> IResult<&str, &str> {
     recognize(pair(tag("#"), not_line_ending))(input)
-}
-
-pub(crate) const WS: &str = " \t\r\n\x0B";
-pub(crate) fn empty_line(input: &str) -> IResult<&str, &str> {
-    recognize(tuple((
-        opt(space0),
-        opt(pair(tag("#"), not_line_ending)),
-        alt((line_ending, eof)),
-    )))(input)
 }
 
 //TODO delete the others and rename this
@@ -146,35 +126,3 @@ pub fn display_token(input: &str) -> IResult<&str, Option<Display>> {
         value(None, eof),
     ))(input)
 }
-
-//pub(crate) fn until_space<'a, I, E>(input: I) -> IResult<I, I, E>
-//where
-//    I: InputTake
-//        + Compare<&'static str>
-//        + InputLength
-//        + FindToken<char>
-//        + InputIter<Item = char>
-//        + InputTakeAtPosition<Item = char>
-//        + Slice<Range<usize>>
-//        + Slice<RangeFrom<usize>>
-//        + Slice<RangeTo<usize>>
-//        + Clone,
-//    E: ParseError<I>,
-//{
-//    is_not(WS)(input)
-//}
-
-//fn list<'a, 'b, A, B, I, E, Output, T>(
-//    element: A,
-//) -> impl FnMut(I) -> IResult<I, Vec<Output>, E>
-//where
-//    I: InputHere<'a>,
-//    E: ErrorHere<'a, I>,
-//    A: Fn(I) -> IResult<I, Output, E>,
-//{
-//    delimited(
-//        pair(tag("["), empty_space0),
-//        separated_list1(empty_space1, element),
-//        pair(empty_space0, tag("]")),
-//    )
-//}

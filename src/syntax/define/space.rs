@@ -36,11 +36,11 @@ impl Attribute {
             ),
             map(
                 preceded(pair(this_ident("size"), tag!("=")), number),
-                |(x, span)| Attribute::Size(x),
+                |(x, _span)| Attribute::Size(x),
             ),
             map(
                 preceded(pair(this_ident("wordsize"), tag!("=")), number),
-                |(x, span)| Attribute::WordSize(x),
+                |(x, _span)| Attribute::WordSize(x),
             ),
         ))(input)
     }

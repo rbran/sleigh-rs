@@ -54,12 +54,34 @@ impl Value {
 
 //TODO move this
 #[derive(Clone, Debug)]
-pub struct BitRange {
+pub struct BitRangeLsbMsb {
+    pub src: Span,
+    pub lsb_bit: NumberUnsigned,
+    pub msb_bit: NumberUnsigned,
+}
+impl BitRangeLsbMsb {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+        map(
+            tuple((
+                tag!("("),
+                separated_pair(number, tag!(","), number),
+                tag!(")"),
+            )),
+            |(start, ((lsb_bit, _), (msb_bit, _)), end)| Self {
+                src: Span::combine(start.clone().start(), end.clone().end()),
+                lsb_bit,
+                msb_bit,
+            },
+        )(input)
+    }
+}
+#[derive(Clone, Debug)]
+pub struct BitRangeLsbLen {
     pub src: Span,
     pub lsb_bit: NumberUnsigned,
     pub n_bits: NumberUnsigned,
 }
-impl BitRange {
+impl BitRangeLsbLen {
     pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
             tuple((
@@ -67,9 +89,9 @@ impl BitRange {
                 separated_pair(number, tag!(","), number),
                 tag!("]"),
             )),
-            |(start, ((lsb, _), (n_bits, _)), end)| Self {
+            |(start, ((lsb_bit, _), (n_bits, _)), end)| Self {
                 src: Span::combine(start.clone().start(), end.clone().end()),
-                lsb_bit: lsb,
+                lsb_bit,
                 n_bits,
             },
         )(input)

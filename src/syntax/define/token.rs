@@ -1,12 +1,13 @@
 use nom::combinator::{cut, map, opt};
 use nom::multi::many0;
-use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
+use nom::sequence::{delimited, preceded, terminated, tuple};
 use nom::IResult;
 
 use crate::preprocessor::token::Token as ParserToken;
 
 use crate::syntax::define::Endian;
 use crate::syntax::parser::{ident, number, this_ident};
+use crate::syntax::BitRangeLsbMsb;
 use crate::{NumberUnsigned, SleighError, Span};
 
 use super::parse_endian;
@@ -49,8 +50,7 @@ impl Token {
 pub struct TokenField {
     pub name: String,
     pub name_span: Span,
-    pub start: NumberUnsigned,
-    pub end: NumberUnsigned,
+    pub range: BitRangeLsbMsb,
     pub attributes: Vec<TokenFieldAttribute>,
 }
 
@@ -61,21 +61,14 @@ impl TokenField {
         map(
             tuple((
                 terminated(ident, tag!("=")),
-                delimited(
-                    tag!("("),
-                    separated_pair(number, tag!(","), number),
-                    tag!(")"),
-                ),
+                BitRangeLsbMsb::parse,
                 many0(TokenFieldAttribute::parse),
             )),
-            |((name, name_span), ((start, _), (end, _)), attributes)| {
-                TokenField {
-                    name,
-                    name_span: name_span.clone(),
-                    start,
-                    end,
-                    attributes,
-                }
+            |((name, name_span), range, attributes)| TokenField {
+                name,
+                name_span: name_span.clone(),
+                range,
+                attributes,
             },
         )(input)
     }

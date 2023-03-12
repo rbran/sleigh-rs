@@ -10,6 +10,9 @@ pub(crate) mod syntax;
 use preprocessor::FilePreProcessor;
 pub(crate) use preprocessor::PreprocessorError;
 
+use semantic::pcode_macro::PcodeMacroError;
+use semantic::table::TableError;
+use syntax::{BitRangeLsbLen, BitRangeLsbMsb};
 use thiserror::Error;
 
 pub(crate) use sleigh4rust::{
@@ -118,35 +121,46 @@ impl RangeBounds<usize> for ParamNumber {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct RangeBits {
-    pub lsb_bit: NumberUnsigned,
-    pub n_bits: NumberNonZeroUnsigned,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BitRange(std::ops::Range<NumberUnsigned>);
+impl BitRange {
+    pub fn new(
+        start: NumberUnsigned,
+        end: NumberUnsigned,
+        span: Span,
+    ) -> Result<Self, SleighError> {
+        if start <= end {
+            return Err(SleighError::InvalidBitrange(span));
+        }
+        Ok(Self(start..end))
+    }
+    pub fn len(&self) -> NumberNonZeroUnsigned {
+        let len = self.0.end - self.0.start;
+        NumberNonZeroUnsigned::new(len).unwrap()
+    }
+    pub fn field_min_len(&self) -> NumberNonZeroUnsigned {
+        let len = self.0.end;
+        NumberNonZeroUnsigned::new(len).unwrap()
+    }
 }
-impl RangeBits {
-    pub fn new(lsb_bit: NumberUnsigned, n_bits: NumberNonZeroUnsigned) -> Self {
-        Self { lsb_bit, n_bits }
-    }
-    pub fn len_bits(&self) -> NumberNonZeroUnsigned {
-        self.n_bits
-    }
-    pub(crate) fn from_syntax(input: syntax::BitRange) -> Option<Self> {
-        let lsb_bit = input.lsb_bit;
-        let n_bits = NumberNonZeroUnsigned::new(input.n_bits)?;
-        Some(Self { lsb_bit, n_bits })
+impl TryFrom<BitRangeLsbMsb> for BitRange {
+    type Error = SleighError;
+    fn try_from(value: BitRangeLsbMsb) -> Result<Self, Self::Error> {
+        Self::new(value.lsb_bit, value.msb_bit + 1, value.src)
     }
 }
-impl From<RangeBits> for std::ops::Range<NumberUnsigned> {
-    fn from(input: RangeBits) -> Self {
-        input.lsb_bit..(input.lsb_bit + input.n_bits.get())
+impl TryFrom<BitRangeLsbLen> for BitRange {
+    type Error = SleighError;
+    fn try_from(value: BitRangeLsbLen) -> Result<Self, Self::Error> {
+        Self::new(value.lsb_bit, value.lsb_bit + value.n_bits, value.src)
     }
 }
-impl IntoIterator for RangeBits {
-    type Item = NumberUnsigned;
-    type IntoIter = <std::ops::Range<Self::Item> as IntoIterator>::IntoIter;
-    fn into_iter(self) -> Self::IntoIter {
-        let range: std::ops::Range<Self::Item> = self.into();
-        range.into_iter()
+impl RangeBounds<NumberUnsigned> for BitRange {
+    fn start_bound(&self) -> Bound<&NumberUnsigned> {
+        self.0.start_bound()
+    }
+    fn end_bound(&self) -> Bound<&NumberUnsigned> {
+        self.0.end_bound()
     }
 }
 
@@ -234,6 +248,11 @@ pub enum SleighError {
     #[error("Context size is invalid {0}")]
     ContextInvalidSize(Span),
 
+    //TODO doit better
+    #[error("Table Error: {0}")]
+    Table(#[from] TableError),
+    #[error("PcodeMacro Error {0}")]
+    PcodeMacro(#[from] PcodeMacroError),
     //TODO delete this
     #[error("SemanticError {0}")]
     SemanticError(#[from] SemanticError),
@@ -317,7 +336,7 @@ pub enum Location {
     File(FileLocation),
 }
 impl Location {
-    fn into_span(&self, end_line: u64, end_column: u64) -> Span {
+    pub fn into_span(&self, end_line: u64, end_column: u64) -> Span {
         match self {
             Location::Macro(x) => {
                 Span::Macro(x.into_span(end_line, end_column))
@@ -490,535 +509,4 @@ pub fn file_to_sleigh(filename: &Path) -> Result<Sleigh, SleighError> {
     let syntax = crate::syntax::Sleigh::parse(&mut pro, &mut buf, false)?;
     let sleigh = crate::semantic::Sleigh::new(syntax)?;
     Ok(sleigh)
-}
-
-#[cfg(test)]
-mod test {
-    use std::path::Path;
-
-    use crate::preprocessor::FilePreProcessor;
-
-    const GHIDRA_HOME: &str = "../ghidra/";
-
-    fn parse_file(filename: &str) {
-        let filename = Path::new(GHIDRA_HOME).join(filename);
-        let mut pro = FilePreProcessor::new(&filename).unwrap();
-        let mut buf = vec![];
-        let syntax =
-            crate::syntax::Sleigh::parse(&mut pro, &mut buf, false).unwrap();
-        let _sleigh = crate::semantic::Sleigh::new(syntax).unwrap();
-    }
-
-    macro_rules! test_file {
-        ($fun_name:ident, $filename:literal) => {
-            #[allow(non_snake_case)]
-            #[test]
-            fn $fun_name() {
-                parse_file($filename)
-            }
-        };
-    }
-
-    //TODO What is `export 0:0;`?
-    //test_file!(CPU_68000_68040, "Ghidra/Processors/68000/data/languages/68040.slaspec");
-    //test_file!(CPU_68000_68030, "Ghidra/Processors/68000/data/languages/68030.slaspec");
-    //test_file!(CPU_68000_coldfire, "Ghidra/Processors/68000/data/languages/coldfire.slaspec");
-    //test_file!(CPU_68000_68020, "Ghidra/Processors/68000/data/languages/68020.slaspec");
-
-    //TODO: https://github.com/NationalSecurityAgency/ghidra/pull/4016R
-    test_file!(
-        CPU_HCS12_HCS12,
-        "Ghidra/Processors/HCS12/data/languages/HCS12.slaspec"
-    );
-
-    //TODO Varnode used in disassembly
-    //test_file!(
-    //    CPU_Atmel_avr32a,
-    //    "Ghidra/Processors/Atmel/data/languages/avr32a.slaspec"
-    //);
-    //test_file!(
-    //    CPU_Atmel_avr8xmega,
-    //    "Ghidra/Processors/Atmel/data/languages/avr8xmega.slaspec"
-    //);
-    //test_file!(
-    //    CPU_Atmel_avr8eind,
-    //    "Ghidra/Processors/Atmel/data/languages/avr8eind.slaspec"
-    //);
-    //test_file!(
-    //    CPU_8048_8048,
-    //    "Ghidra/Processors/8048/data/languages/8048.slaspec"
-    //);
-
-    //TODO: sometimes the dst addr is 32, other time 64
-    test_file!(
-        CPU_PA_RISC_pa_risc32be,
-        "Ghidra/Processors/PA-RISC/data/languages/pa-risc32be.slaspec"
-    );
-
-    //TODO: try to assign a 32bits value into a 64bits varnode
-    test_file!(
-        CPU_RISCV_riscv_ilp32d,
-        "Ghidra/Processors/RISCV/data/languages/riscv.ilp32d.slaspec"
-    );
-    test_file!(
-        CPU_RISCV_riscv_lp64d,
-        "Ghidra/Processors/RISCV/data/languages/riscv.lp64d.slaspec"
-    );
-
-    //TODO: bitrange auto adapt to an arbitrary size
-    //TODO: Assign values with diferent sizes, eg 8bit value into 16bit variable
-    test_file!(
-        CPU_V850_V850,
-        "Ghidra/Processors/V850/data/languages/V850.slaspec"
-    );
-    test_file!(
-        CPU_6502_6502,
-        "Ghidra/Processors/6502/data/languages/6502.slaspec"
-    );
-    test_file!(
-        CPU_6502_65c02,
-        "Ghidra/Processors/6502/data/languages/65c02.slaspec"
-    );
-    test_file!(
-        CPU_CR16_CR16B,
-        "Ghidra/Processors/CR16/data/languages/CR16B.slaspec"
-    );
-    test_file!(
-        CPU_CR16_CR16C,
-        "Ghidra/Processors/CR16/data/languages/CR16C.slaspec"
-    );
-    test_file!(
-        CPU_Z80_z80,
-        "Ghidra/Processors/Z80/data/languages/z80.slaspec"
-    );
-    test_file!(
-        CPU_Z80_z180,
-        "Ghidra/Processors/Z80/data/languages/z180.slaspec"
-    );
-    test_file!(
-        CPU_HCS08_HC08,
-        "Ghidra/Processors/HCS08/data/languages/HC08.slaspec"
-    );
-    test_file!(
-        CPU_HCS08_HCS08,
-        "Ghidra/Processors/HCS08/data/languages/HCS08.slaspec"
-    );
-    test_file!(
-        CPU_HCS08_HC05,
-        "Ghidra/Processors/HCS08/data/languages/HC05.slaspec"
-    );
-    test_file!(
-        CPU_tricore_tricore,
-        "Ghidra/Processors/tricore/data/languages/tricore.slaspec"
-    );
-    test_file!(
-        CPU_MC6800_6809,
-        "Ghidra/Processors/MC6800/data/languages/6809.slaspec"
-    );
-    test_file!(
-        CPU_MC6800_6805,
-        "Ghidra/Processors/MC6800/data/languages/6805.slaspec"
-    );
-    test_file!(
-        CPU_MC6800_H6309,
-        "Ghidra/Processors/MC6800/data/languages/H6309.slaspec"
-    );
-    test_file!(
-        CPU_MCS96_MCS96,
-        "Ghidra/Processors/MCS96/data/languages/MCS96.slaspec"
-    );
-
-    //TODO Unrrestricted token_field in pattern or block, is (like in C)
-    //an implicit `!= 0`?
-    //test_file!(
-    //    CPU_TI_MSP430_TI_MSP430,
-    //    "Ghidra/Processors/TI_MSP430/data/languages/TI_MSP430.slaspec"
-    //);
-    //test_file!(
-    //    CPU_TI_MSP430_TI_MSP430X,
-    //    "Ghidra/Processors/TI_MSP430/data/languages/TI_MSP430X.slaspec"
-    //);
-    test_file!(
-        CPU_Atmel_avr8,
-        "Ghidra/Processors/Atmel/data/languages/avr8.slaspec"
-    );
-    test_file!(
-        CPU_Atmel_avr8e,
-        "Ghidra/Processors/Atmel/data/languages/avr8e.slaspec"
-    );
-    test_file!(
-        CPU_CP1600_CP1600,
-        "Ghidra/Processors/CP1600/data/languages/CP1600.slaspec"
-    );
-    test_file!(
-        CPU_SuperH_sh_1,
-        "Ghidra/Processors/SuperH/data/languages/sh-1.slaspec"
-    );
-    test_file!(
-        CPU_SuperH_sh_2,
-        "Ghidra/Processors/SuperH/data/languages/sh-2.slaspec"
-    );
-    test_file!(
-        CPU_SuperH_sh_2a,
-        "Ghidra/Processors/SuperH/data/languages/sh-2a.slaspec"
-    );
-    test_file!(
-        CPU_M8C_m8c,
-        "Ghidra/Processors/M8C/data/languages/m8c.slaspec"
-    );
-    test_file!(
-        CPU_8051_80251,
-        "Ghidra/Processors/8051/data/languages/80251.slaspec"
-    );
-    test_file!(
-        CPU_8051_80390,
-        "Ghidra/Processors/8051/data/languages/80390.slaspec"
-    );
-    test_file!(
-        CPU_8051_8051,
-        "Ghidra/Processors/8051/data/languages/8051.slaspec"
-    );
-    test_file!(
-        CPU_8051_mx51,
-        "Ghidra/Processors/8051/data/languages/mx51.slaspec"
-    );
-    test_file!(
-        CPU_PIC_pic16,
-        "Ghidra/Processors/PIC/data/languages/pic16.slaspec"
-    );
-    test_file!(
-        CPU_PIC_pic16f,
-        "Ghidra/Processors/PIC/data/languages/pic16f.slaspec"
-    );
-    test_file!(
-        CPU_PIC_pic17c7xx,
-        "Ghidra/Processors/PIC/data/languages/pic17c7xx.slaspec"
-    );
-    test_file!(
-        CPU_PIC_pic18,
-        "Ghidra/Processors/PIC/data/languages/pic18.slaspec"
-    );
-    test_file!(
-        CPU_PIC_PIC24E,
-        "Ghidra/Processors/PIC/data/languages/PIC24E.slaspec"
-    );
-    test_file!(
-        CPU_PIC_PIC24F,
-        "Ghidra/Processors/PIC/data/languages/PIC24F.slaspec"
-    );
-    test_file!(
-        CPU_PIC_PIC24H,
-        "Ghidra/Processors/PIC/data/languages/PIC24H.slaspec"
-    );
-    test_file!(
-        CPU_PIC_dsPIC30F,
-        "Ghidra/Processors/PIC/data/languages/dsPIC30F.slaspec"
-    );
-    test_file!(
-        CPU_PIC_dsPIC33C,
-        "Ghidra/Processors/PIC/data/languages/dsPIC33C.slaspec"
-    );
-    test_file!(
-        CPU_PIC_dsPIC33E,
-        "Ghidra/Processors/PIC/data/languages/dsPIC33E.slaspec"
-    );
-    test_file!(
-        CPU_PIC_dsPIC33F,
-        "Ghidra/Processors/PIC/data/languages/dsPIC33F.slaspec"
-    );
-
-    //TODO: use value from non export table
-    test_file!(
-        CPU_MIPS_mips32be,
-        "Ghidra/Processors/MIPS/data/languages/mips32be.slaspec"
-    );
-    test_file!(
-        CPU_MIPS_mips32le,
-        "Ghidra/Processors/MIPS/data/languages/mips32le.slaspec"
-    );
-    test_file!(
-        CPU_MIPS_mips32R6be,
-        "Ghidra/Processors/MIPS/data/languages/mips32R6be.slaspec"
-    );
-    test_file!(
-        CPU_MIPS_mips32R6le,
-        "Ghidra/Processors/MIPS/data/languages/mips32R6le.slaspec"
-    );
-    test_file!(
-        CPU_MIPS_mips64be,
-        "Ghidra/Processors/MIPS/data/languages/mips64be.slaspec"
-    );
-    test_file!(
-        CPU_MIPS_mips64le,
-        "Ghidra/Processors/MIPS/data/languages/mips64le.slaspec"
-    );
-
-    //TODO: re-export from a table that also export const
-    test_file!(
-        CPU_AARCH64_AARCH64,
-        "Ghidra/Processors/AARCH64/data/languages/AARCH64.slaspec"
-    );
-    test_file!(
-        CPU_AARCH64_AARCH64BE,
-        "Ghidra/Processors/AARCH64/data/languages/AARCH64BE.slaspec"
-    );
-    test_file!(
-        CPU_AARCH64_AARCH64_AppleSilicon,
-        "Ghidra/Processors/AARCH64/data/languages/AARCH64_AppleSilicon.slaspec"
-    );
-
-    //TODO: Cpool
-    test_file!(
-        CPU_JVM_JVM,
-        "Ghidra/Processors/JVM/data/languages/JVM.slaspec"
-    );
-    test_file!(
-        CPU_Dalvik_Dalvik_Base,
-        "Ghidra/Processors/Dalvik/data/languages/Dalvik_Base.slaspec"
-    );
-    test_file!(
-        CPU_Dalvik_Dalvik_ODEX_KitKat,
-        "Ghidra/Processors/Dalvik/data/languages/Dalvik_ODEX_KitKat.slaspec"
-    );
-    test_file!(
-        CPU_Dalvik_Dalvik_DEX_KitKat,
-        "Ghidra/Processors/Dalvik/data/languages/Dalvik_DEX_KitKat.slaspec"
-    );
-    test_file!(
-        CPU_Dalvik_Dalvik_DEX_Lollipop,
-        "Ghidra/Processors/Dalvik/data/languages/Dalvik_DEX_Lollipop.slaspec"
-    );
-    test_file!(CPU_Dalvik_Dalvik_DEX_Marshmallow, "Ghidra/Processors/Dalvik/data/languages/Dalvik_DEX_Marshmallow.slaspec");
-    test_file!(
-        CPU_Dalvik_Dalvik_DEX_Nougat,
-        "Ghidra/Processors/Dalvik/data/languages/Dalvik_DEX_Nougat.slaspec"
-    );
-    test_file!(
-        CPU_Dalvik_Dalvik_DEX_Oreo,
-        "Ghidra/Processors/Dalvik/data/languages/Dalvik_DEX_Oreo.slaspec"
-    );
-    test_file!(
-        CPU_Dalvik_Dalvik_DEX_Pie,
-        "Ghidra/Processors/Dalvik/data/languages/Dalvik_DEX_Pie.slaspec"
-    );
-    test_file!(
-        CPU_Dalvik_Dalvik_DEX_Android10,
-        "Ghidra/Processors/Dalvik/data/languages/Dalvik_DEX_Android10.slaspec"
-    );
-    test_file!(
-        CPU_Dalvik_Dalvik_DEX_Android11,
-        "Ghidra/Processors/Dalvik/data/languages/Dalvik_DEX_Android11.slaspec"
-    );
-    test_file!(
-        CPU_Dalvik_Dalvik_DEX_Android12,
-        "Ghidra/Processors/Dalvik/data/languages/Dalvik_DEX_Android12.slaspec"
-    );
-
-    //TODO: AND-OP a 64bit value with a 32bit variable, outputing a 32bit value
-    test_file!(
-        CPU_PowerPC_ppc_32_be,
-        "Ghidra/Processors/PowerPC/data/languages/ppc_32_be.slaspec"
-    );
-    test_file!(
-        CPU_PowerPC_ppc_32_le,
-        "Ghidra/Processors/PowerPC/data/languages/ppc_32_le.slaspec"
-    );
-    test_file!(
-        CPU_PowerPC_ppc_32_quicciii_be,
-        "Ghidra/Processors/PowerPC/data/languages/ppc_32_quicciii_be.slaspec"
-    );
-    test_file!(
-        CPU_PowerPC_ppc_32_quicciii_le,
-        "Ghidra/Processors/PowerPC/data/languages/ppc_32_quicciii_le.slaspec"
-    );
-    test_file!(
-        CPU_PowerPC_ppc_32_4xx_be,
-        "Ghidra/Processors/PowerPC/data/languages/ppc_32_4xx_be.slaspec"
-    );
-    test_file!(
-        CPU_PowerPC_ppc_32_4xx_le,
-        "Ghidra/Processors/PowerPC/data/languages/ppc_32_4xx_le.slaspec"
-    );
-    test_file!(
-        CPU_PowerPC_ppc_64_be,
-        "Ghidra/Processors/PowerPC/data/languages/ppc_64_be.slaspec"
-    );
-    test_file!(
-        CPU_PowerPC_ppc_64_le,
-        "Ghidra/Processors/PowerPC/data/languages/ppc_64_le.slaspec"
-    );
-    test_file!(
-        CPU_PowerPC_ppc_64_isa_be,
-        "Ghidra/Processors/PowerPC/data/languages/ppc_64_isa_be.slaspec"
-    );
-    test_file!(
-        CPU_PowerPC_ppc_64_isa_le,
-        "Ghidra/Processors/PowerPC/data/languages/ppc_64_isa_le.slaspec"
-    );
-    test_file!(CPU_PowerPC_ppc_64_isa_altivec_be, "Ghidra/Processors/PowerPC/data/languages/ppc_64_isa_altivec_be.slaspec");
-    test_file!(CPU_PowerPC_ppc_64_isa_altivec_le, "Ghidra/Processors/PowerPC/data/languages/ppc_64_isa_altivec_le.slaspec");
-    test_file!(CPU_PowerPC_ppc_64_isa_altivec_vle_be, "Ghidra/Processors/PowerPC/data/languages/ppc_64_isa_altivec_vle_be.slaspec");
-    test_file!(
-        CPU_PowerPC_ppc_64_isa_vle_be,
-        "Ghidra/Processors/PowerPC/data/languages/ppc_64_isa_vle_be.slaspec"
-    );
-
-    //TODO: Jmp into a 16bit address
-    test_file!(
-        CPU_x86_x86,
-        "Ghidra/Processors/x86/data/languages/x86.slaspec"
-    );
-    test_file!(
-        CPU_x86_x86_64,
-        "Ghidra/Processors/x86/data/languages/x86-64.slaspec"
-    );
-
-    //TODO: jmp into 16/8bit address
-    test_file!(
-        CPU_8085_8085,
-        "Ghidra/Processors/8085/data/languages/8085.slaspec"
-    );
-
-    //TODO: Op 32bits value with Int greater then 32bits
-    test_file!(
-        CPU_Sparc_SparcV9_32,
-        "Ghidra/Processors/Sparc/data/languages/SparcV9_32.slaspec"
-    );
-    test_file!(
-        CPU_Sparc_SparcV9_64,
-        "Ghidra/Processors/Sparc/data/languages/SparcV9_64.slaspec"
-    );
-
-    test_file!(
-        CPU_Toy_toy_builder_be_align2,
-        "Ghidra/Processors/Toy/data/languages/toy_builder_be_align2.slaspec"
-    );
-    test_file!(
-        CPU_Toy_toy_builder_le_align2,
-        "Ghidra/Processors/Toy/data/languages/toy_builder_le_align2.slaspec"
-    );
-    test_file!(
-        CPU_Toy_toy_builder_le,
-        "Ghidra/Processors/Toy/data/languages/toy_builder_le.slaspec"
-    );
-    test_file!(
-        CPU_Toy_toy_be_posStack,
-        "Ghidra/Processors/Toy/data/languages/toy_be_posStack.slaspec"
-    );
-    test_file!(
-        CPU_Toy_toy_builder_be,
-        "Ghidra/Processors/Toy/data/languages/toy_builder_be.slaspec"
-    );
-    test_file!(
-        CPU_Toy_toy_wsz_be,
-        "Ghidra/Processors/Toy/data/languages/toy_wsz_be.slaspec"
-    );
-    test_file!(
-        CPU_Toy_toy_wsz_le,
-        "Ghidra/Processors/Toy/data/languages/toy_wsz_le.slaspec"
-    );
-    test_file!(
-        CPU_Toy_toy_be,
-        "Ghidra/Processors/Toy/data/languages/toy_be.slaspec"
-    );
-    test_file!(
-        CPU_Toy_toy_le,
-        "Ghidra/Processors/Toy/data/languages/toy_le.slaspec"
-    );
-    test_file!(
-        CPU_Toy_toy64_be,
-        "Ghidra/Processors/Toy/data/languages/toy64_be.slaspec"
-    );
-    test_file!(
-        CPU_Toy_toy64_le,
-        "Ghidra/Processors/Toy/data/languages/toy64_le.slaspec"
-    );
-    test_file!(
-        CPU_Toy_toy64_be_harvard,
-        "Ghidra/Processors/Toy/data/languages/toy64_be_harvard.slaspec"
-    );
-
-    test_file!(
-        CPU_ARM_ARM4_be,
-        "Ghidra/Processors/ARM/data/languages/ARM4_be.slaspec"
-    );
-    test_file!(
-        CPU_ARM_ARM4_le,
-        "Ghidra/Processors/ARM/data/languages/ARM4_le.slaspec"
-    );
-    test_file!(
-        CPU_ARM_ARM4t_be,
-        "Ghidra/Processors/ARM/data/languages/ARM4t_be.slaspec"
-    );
-    test_file!(
-        CPU_ARM_ARM4t_le,
-        "Ghidra/Processors/ARM/data/languages/ARM4t_le.slaspec"
-    );
-    test_file!(
-        CPU_ARM_ARM5_be,
-        "Ghidra/Processors/ARM/data/languages/ARM5_be.slaspec"
-    );
-    test_file!(
-        CPU_ARM_ARM5_le,
-        "Ghidra/Processors/ARM/data/languages/ARM5_le.slaspec"
-    );
-    test_file!(
-        CPU_ARM_ARM5t_be,
-        "Ghidra/Processors/ARM/data/languages/ARM5t_be.slaspec"
-    );
-    test_file!(
-        CPU_ARM_ARM5t_le,
-        "Ghidra/Processors/ARM/data/languages/ARM5t_le.slaspec"
-    );
-    test_file!(
-        CPU_ARM_ARM6_be,
-        "Ghidra/Processors/ARM/data/languages/ARM6_be.slaspec"
-    );
-    test_file!(
-        CPU_ARM_ARM6_le,
-        "Ghidra/Processors/ARM/data/languages/ARM6_le.slaspec"
-    );
-    test_file!(
-        CPU_ARM_ARM7_be,
-        "Ghidra/Processors/ARM/data/languages/ARM7_be.slaspec"
-    );
-    test_file!(
-        CPU_ARM_ARM7_le,
-        "Ghidra/Processors/ARM/data/languages/ARM7_le.slaspec"
-    );
-    test_file!(
-        CPU_ARM_ARM8_be,
-        "Ghidra/Processors/ARM/data/languages/ARM8_be.slaspec"
-    );
-    test_file!(
-        CPU_ARM_ARM8_le,
-        "Ghidra/Processors/ARM/data/languages/ARM8_le.slaspec"
-    );
-
-    test_file!(
-        CPU_DATA_data_be_64,
-        "Ghidra/Processors/DATA/data/languages/data-be-64.slaspec"
-    );
-    test_file!(
-        CPU_DATA_data_le_64,
-        "Ghidra/Processors/DATA/data/languages/data-le-64.slaspec"
-    );
-
-    test_file!(
-        CPU_SuperH4_SuperH4_be,
-        "Ghidra/Processors/SuperH4/data/languages/SuperH4_be.slaspec"
-    );
-    test_file!(
-        CPU_SuperH4_SuperH4_le,
-        "Ghidra/Processors/SuperH4/data/languages/SuperH4_le.slaspec"
-    );
-
-    test_file!(
-        CPU_PIC_pic12c5xx,
-        "Ghidra/Processors/PIC/data/languages/pic12c5xx.slaspec"
-    );
-    test_file!(
-        CPU_PIC_pic16c5x,
-        "Ghidra/Processors/PIC/data/languages/pic16c5x.slaspec"
-    );
 }

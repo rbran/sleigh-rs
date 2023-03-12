@@ -465,10 +465,10 @@ impl Sleigh {
         let name = Rc::from(pcode.name);
         let pcode_macro = GlobalElement::new(
             name,
-            PcodeMacro::new(pcode.src, params, execution),
+            PcodeMacro::new(pcode.src.clone(), params, execution),
         );
         //TODO: Error here
-        self.insert_global(GlobalScope::PcodeMacro(pcode_macro))
+        self.insert_global(GlobalScope::PcodeMacro(pcode_macro), &pcode.src)
             .unwrap();
         Ok(())
     }

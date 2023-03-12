@@ -1,13 +1,12 @@
 use nom::combinator::{cut, map};
 use nom::multi::many0;
-use nom::sequence::{
-    delimited, pair, preceded, separated_pair, terminated, tuple,
-};
+use nom::sequence::{pair, preceded, terminated, tuple};
 use nom::IResult;
 
 use crate::preprocessor::token::Token;
-use crate::syntax::parser::{ident, number, this_ident};
-use crate::{NumberUnsigned, SleighError, Span};
+use crate::syntax::parser::{ident, this_ident};
+use crate::syntax::BitRangeLsbMsb;
+use crate::{SleighError, Span};
 
 use super::TokenFieldAttribute;
 
@@ -38,8 +37,7 @@ impl Context {
 pub struct ContextField {
     pub src: Span,
     pub name: String,
-    pub start: NumberUnsigned,
-    pub end: NumberUnsigned,
+    pub range: BitRangeLsbMsb,
     pub attributes: Vec<ContextFieldAttribute>,
 }
 
@@ -48,18 +46,13 @@ impl ContextField {
         map(
             tuple((
                 terminated(ident, tag!("=")),
-                delimited(
-                    tag!("("),
-                    separated_pair(number, tag!(","), number),
-                    tag!(")"),
-                ),
+                BitRangeLsbMsb::parse,
                 many0(ContextFieldAttribute::parse),
             )),
-            |((name, name_src), ((start, _), (end, _)), attributes)| Self {
+            |((name, name_src), range, attributes)| Self {
                 src: name_src.clone(),
                 name,
-                start,
-                end,
+                range,
                 attributes,
             },
         )(input)

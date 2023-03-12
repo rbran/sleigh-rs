@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::NumberNonZeroUnsigned;
 use crate::NumberUnsigned;
-use crate::RangeBits;
+use crate::BitRange;
 use crate::Span;
 
 use super::meaning::Meaning;
@@ -22,14 +22,14 @@ pub enum VarnodeError {
 #[derive(Clone, Debug)]
 pub struct Bitrange {
     pub location: Span,
-    pub range: RangeBits,
+    pub range: BitRange,
     pub varnode: GlobalElement<Varnode>,
 }
 impl Bitrange {
     pub fn location(&self) -> &Span {
         &self.location
     }
-    pub fn range(&self) -> &RangeBits {
+    pub fn range(&self) -> &BitRange {
         &self.range
     }
     pub fn varnode(&self) -> &GlobalElement<Varnode> {
@@ -40,7 +40,7 @@ impl GlobalElement<Bitrange> {
     pub(crate) fn new_bitrange(
         name: &str,
         src: Span,
-        range: RangeBits,
+        range: BitRange,
         varnode: GlobalElement<Varnode>,
     ) -> Self {
         Self::new_from(
@@ -56,7 +56,7 @@ impl GlobalElement<Bitrange> {
 #[derive(Clone, Debug)]
 pub struct Context {
     pub location: Span,
-    pub range: RangeBits,
+    pub range: BitRange,
     pub varnode: GlobalElement<Varnode>,
     pub noflow: bool,
     pub meaning: Meaning,
@@ -65,7 +65,7 @@ impl Context {
     pub fn location(&self) -> &Span {
         &self.location
     }
-    pub fn range(&self) -> &RangeBits {
+    pub fn range(&self) -> &BitRange {
         &self.range
     }
     pub fn varnode(&self) -> &GlobalElement<Varnode> {
