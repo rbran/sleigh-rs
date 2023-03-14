@@ -1135,6 +1135,49 @@ impl Block {
             }
         }
     }
+    fn constrait_same_field(&self, constraint: &mut [BitConstraint]) -> bool {
+        //if all the verifications are using the same field, we can just
+        //OR it
+        let mut iter = self
+            .verifications
+            .iter()
+            .map(Verification::token_field_check)
+            .flatten();
+        let Some(first) = iter.next() else {
+            return false;
+        };
+
+        if iter.any(|this| first != this) {
+            return false;
+        }
+        //or all the branches into this pattern, first element forms the base
+        let mut verifications = self.verifications.iter();
+        let first = verifications.next().unwrap();
+        let mut out_buf = vec![BitConstraint::Unrestrained; constraint.len()];
+        first.constraint_variant(&mut out_buf);
+
+        //apply all other verification
+        let mut branch_buf =
+            vec![BitConstraint::Unrestrained; constraint.len()];
+        for verification in verifications {
+            branch_buf
+                .iter_mut()
+                .for_each(|bit| *bit = BitConstraint::Unrestrained);
+            verification.constraint_variant(&mut branch_buf);
+            out_buf.iter_mut().zip(branch_buf.iter()).for_each(
+                |(out, branch)| {
+                    *out = out.least_restrictive(*branch);
+                },
+            );
+        }
+        //or it all up with the original constraint
+        constraint.iter_mut().zip(out_buf.iter()).for_each(
+            |(constraint, out)| {
+                *constraint = constraint.most_restrictive(*out);
+            },
+        );
+        true
+    }
     pub fn constraint(&self, constraint: &mut BlockConstraint, offset: usize) {
         if self.op == Op::And {
             self.verifications
@@ -1143,18 +1186,8 @@ impl Block {
         } else {
             //if all the verifications are using the same field, we can just
             //OR it
-            {
-                let mut iter = self
-                    .verifications
-                    .iter()
-                    .map(Verification::token_field_check)
-                    .flatten();
-                if let Some(first) = iter.next() {
-                    if iter.all(|this| first == this) {
-                        self.or_me(&mut constraint.base[offset..]);
-                        return;
-                    }
-                }
+            if self.constrait_same_field(&mut constraint.base[offset..]) {
+                return;
             }
 
             //mark as being used, so we fail if we recurse
@@ -1202,47 +1235,19 @@ impl Block {
             //TODO check and filter out impossible variants
         }
     }
-    //or all the branches into this pattern
-    fn or_me(&self, constraint: &mut [BitConstraint]) {
-        //get the first element
-        let mut verifications = self.verifications.iter();
-        let mut out_buf = if let Some(first) = verifications.next() {
-            let mut first_buf =
-                vec![BitConstraint::Unrestrained; constraint.len()];
-            first.constraint_variant(&mut first_buf);
-            first_buf
-        } else {
-            return;
-        };
-        //apply all other verification
-        let mut branch_buf =
-            vec![BitConstraint::Unrestrained; constraint.len()];
-        for verification in verifications {
-            branch_buf
-                .iter_mut()
-                .for_each(|bit| *bit = BitConstraint::Unrestrained);
-            verification.constraint_variant(&mut branch_buf);
-            out_buf.iter_mut().zip(branch_buf.iter()).for_each(
-                |(out, branch)| {
-                    *out = out.least_restrictive(*branch);
-                },
-            );
-        }
-        //or it all up
-        constraint.iter_mut().zip(out_buf.iter()).for_each(
-            |(constraint, out)| {
-                *constraint = constraint.most_restrictive(*out);
-            },
-        );
-    }
     pub fn constraint_variant(&self, constraint: &mut [BitConstraint]) {
         if self.op == Op::And {
             self.verifications
                 .iter()
                 .for_each(|ele| ele.constraint_variant(constraint))
         } else {
-            // Or all variants that don't colide with the base
-            self.or_me(constraint);
+            // this level of or is only allowed if we have multiple values for
+            // the save field
+            if !self.constrait_same_field(constraint) {
+                //TODO make this an error
+                dbg!(&self);
+                todo!("Or Inside Or")
+            }
         }
     }
 }
