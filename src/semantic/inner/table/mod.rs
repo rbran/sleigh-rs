@@ -12,10 +12,8 @@ use crate::Span;
 
 use super::disassembly;
 use super::display::Display;
-use super::execution::ExecutionExport;
-use super::execution::{Execution, ExecutionBuilder};
-use super::pattern::constraint::PatternConstraint;
-use super::pattern::Pattern;
+use super::execution::{Execution, ExecutionBuilder, ExecutionExport};
+use super::pattern::{Pattern, PatternConstraint};
 use super::{
     FieldSize, FieldSizeMut, GlobalConvert, GlobalScope, Sleigh, SolverStatus,
     WithBlockCurrent,
@@ -345,7 +343,7 @@ impl GlobalConvert for Table {
                     //AND
                     //second variant of self contains the first variant of other
                     let ord = pattern.ordering(&pat);
-                    use super::pattern::constraint::MultiplePatternOrdering as Ord;
+                    use super::pattern::MultiplePatternOrdering as Ord;
                     match ord {
                         //new pattern is contained at least once, just skip it
                         Ord { contained: 1.., .. } => None,
