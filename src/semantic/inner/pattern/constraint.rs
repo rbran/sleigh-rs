@@ -203,7 +203,12 @@ impl PatternConstraint {
             .map(move |variant_id| {
                 self.blocks
                     .iter()
-                    .map(move |block| block.bits(variant_id))
+                    .filter_map(move |block| {
+                        let bits = block.bits(variant_id);
+                        bits.clone()
+                            .all(|bit| !bit.is_impossible())
+                            .then_some(bits)
+                    })
                     .flatten()
                     .chain(extra_len_chain)
             })
