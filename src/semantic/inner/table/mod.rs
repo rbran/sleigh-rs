@@ -13,7 +13,7 @@ use crate::Span;
 use super::disassembly;
 use super::display::Display;
 use super::execution::{Execution, ExecutionBuilder, ExecutionExport};
-use super::pattern::{Pattern, PatternConstraint};
+use super::pattern::Pattern;
 use super::{
     FieldSize, FieldSizeMut, GlobalConvert, GlobalScope, Sleigh, SolverStatus,
     WithBlockCurrent,
@@ -326,23 +326,22 @@ impl GlobalConvert for Table {
         //put the constructors in the correct order
         let constructors: Vec<_> =
             std::mem::take(self.constructors.borrow_mut().as_mut());
-        let patterns: Vec<PatternConstraint> = constructors
-            .iter()
-            .map(|constructor| constructor.pattern.constraint())
-            .collect();
-        let mut new_constructors: Vec<(Constructor, PatternConstraint)> =
-            vec![];
-        for (constructor, pattern) in
-            constructors.into_iter().zip(patterns.into_iter())
-        {
+        let mut new_constructors: Vec<Constructor> =
+            Vec::with_capacity(constructors.len());
+        let constructor_iter =
+            constructors.into_iter().map(|mut constructor| {
+                constructor.pattern.calculated_flat_pattern();
+                constructor
+            });
+        for constructor in constructor_iter {
             //TODO detect conflicting instead of just looking for contains
-            let pos = new_constructors.iter().enumerate().find_map(
-                |(i, (_con, pat))| {
+            let pos =
+                new_constructors.iter().enumerate().find_map(|(i, con)| {
                     //TODO how to handle inter-intersections? such:
                     //first variant of self contains the second variant of other
                     //AND
                     //second variant of self contains the first variant of other
-                    let ord = pattern.ordering(&pat);
+                    let ord = constructor.pattern.ordering(&con.pattern);
                     use super::pattern::MultiplePatternOrdering as Ord;
                     match ord {
                         //new pattern is contained at least once, just skip it
@@ -351,14 +350,13 @@ impl GlobalConvert for Table {
                         Ord { contains: 1.., .. } => Some(i),
                         Ord { .. } => None,
                     }
-                },
-            );
+                });
             //insert constructors in the correct order accordingly with the
             //rules of `7.8.1. Matching`
             if let Some(pos) = pos {
-                new_constructors.insert(pos, (constructor, pattern));
+                new_constructors.insert(pos, constructor);
             } else {
-                new_constructors.push((constructor, pattern));
+                new_constructors.push(constructor);
             }
         }
 
@@ -367,7 +365,7 @@ impl GlobalConvert for Table {
             self.export.borrow().unwrap_or_default().convert().unwrap();
         let constructors = new_constructors
             .into_iter()
-            .map(|(x, _)| Rc::new(x.convert()))
+            .map(|x| Rc::new(x.convert()))
             .collect();
 
         //TODO is this really safe?

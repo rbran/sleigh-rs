@@ -5,8 +5,8 @@ use indexmap::IndexMap;
 use crate::semantic::inner::disassembly::Assertation;
 use crate::semantic::inner::pattern::ConstraintValue;
 use crate::semantic::inner::table::Table;
-use crate::semantic::inner::{GlobalScope, Sleigh, SolverStatus};
 use crate::semantic::inner::token::TokenField;
+use crate::semantic::inner::{GlobalScope, Sleigh, SolverStatus};
 use crate::semantic::pattern::{Ellipsis, PatternError, PatternLen};
 use crate::semantic::token::Token;
 use crate::semantic::{GlobalAnonReference, GlobalReference};
@@ -16,29 +16,40 @@ use crate::Span;
 
 use super::constraint::{BitConstraint, BlockConstraint};
 use super::{
-    is_len_finished, ConstructorPatternLen, ProducedTable,
-    ProducedTokenField, Verification, Pattern, FindValues,
+    is_len_finished, ConstructorPatternLen, FindValues, Pattern, ProducedTable,
+    ProducedTokenField, Verification,
 };
 pub type FinalBlock = crate::semantic::pattern::Block;
 #[derive(Clone, Debug)]
 pub struct Block {
+    /// Op And, Or
     pub op: Op,
-    pub location: Span,
-    pub len: Option<ConstructorPatternLen>,
-    //root_len: usize,
 
-    //block produces this token this number of times
+    //TODO remove this? Blocks could be a concat of pattern and with_block, so
+    //there is no single location
+    /// Location of the block in the source code
+    pub location: Span,
+
+    /// once solve is done, contains the pattern len
+    pub len: Option<ConstructorPatternLen>,
+
+    /// token that this block produces, and the number of times it produces
     pub tokens: IndexMap<*const Token, (usize, GlobalAnonReference<Token>)>,
-    //map to make sure token_fields are produced only once
-    //fields extracted, implicitly or explicity, localy or in sub_pattern
+    /// fields produced, implicitly or explicity, localy or in sub_pattern
     pub token_fields: IndexMap<*const TokenField, ProducedTokenField>,
-    //produced tables
+    /// produced tables
     pub tables: IndexMap<*const Table, ProducedTable>,
 
-    //verification in the order they are defined
+    /// verification in the order they are defined in code
     pub verifications: Vec<Verification>,
+
+    /// disassembly assertations before the block is match
     pub pre: Vec<Assertation>,
+    /// disassembly after the block is match
     pub pos: Vec<Assertation>,
+
+    /// flat pattern this block generates, calculated after solve is done
+    pub constraint: Option<BlockConstraint>,
 }
 
 impl Block {
@@ -356,6 +367,7 @@ impl Block {
             verifications: branches,
             pre: vec![],
             pos: vec![],
+            constraint: None,
         })
     }
     fn new_and<'a>(
@@ -528,6 +540,7 @@ impl Block {
             tables,
             pre: vec![],
             pos: vec![],
+            constraint: None,
         })
     }
     pub fn new(
@@ -897,6 +910,25 @@ impl Block {
                 todo!("Or Inside Or")
             }
         }
+    }
+    pub fn calculate_flat_pattern(&mut self, variants_prior: usize) {
+        assert!(self.constraint.is_none());
+        let base_len = self.root_len();
+        let block_len = self.len.unwrap().basic().unwrap();
+        let len = block_len
+            .max()
+            .unwrap_or(block_len.min())
+            .try_into()
+            .unwrap();
+        let mut new = BlockConstraint {
+            len,
+            variants_possible_prior: variants_prior,
+            base: vec![BitConstraint::default(); base_len],
+            variants: None,
+            variants_lock: false,
+        };
+        self.constraint(&mut new, 0);
+        self.constraint = Some(new);
     }
 }
 impl From<Block> for FinalBlock {

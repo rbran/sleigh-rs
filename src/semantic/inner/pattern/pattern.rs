@@ -3,6 +3,7 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::semantic::inner::disassembly::{Assertation, Variable};
+use crate::semantic::inner::pattern::SinglePatternOrdering;
 use crate::semantic::inner::table::Table;
 use crate::semantic::inner::token::TokenField;
 use crate::semantic::inner::{Sleigh, SolverStatus};
@@ -12,10 +13,10 @@ use crate::semantic::{GlobalAnonReference, GlobalReference};
 use crate::syntax::block;
 use crate::Span;
 
-use super::constraint::{BitConstraint, BlockConstraint, PatternConstraint};
+use super::constraint::{BitConstraint, BlockConstraint};
 use super::{
-    is_len_finished, Block, ConstructorPatternLen, ProducedTable,
-    ProducedTokenField,
+    is_len_finished, Block, ConstructorPatternLen, MultiplePatternOrdering,
+    ProducedTable, ProducedTokenField,
 };
 
 pub type FinalPattern = crate::semantic::pattern::Pattern;
@@ -25,16 +26,23 @@ pub struct Pattern {
     //start, thats because it could be mixed with the `with_block` pattern
     pub src: Span,
     pub len: Option<ConstructorPatternLen>,
+    /// all the blocks
+    pub blocks: Vec<Block>,
+    /// fields produced by all the blocks
     pub tables: IndexMap<*const Table, ProducedTable>,
     pub tokens: IndexMap<*const Token, (usize, GlobalAnonReference<Token>)>,
     pub token_fields: IndexMap<*const TokenField, ProducedTokenField>,
     //products: FieldProducts,
+    /// disassasembly variables that will be created by the disassembler
     pub disassembly_vars: IndexMap<Rc<str>, Rc<Variable>>,
-    pub blocks: Vec<Block>,
+    /// disassembly assertations that executed after all the blocks, because it
+    /// requires the `inst_next` to be calculated
     pub pos: Vec<Assertation>,
     ////token fields required by value checking, not produced locally, maybe
     //they could be produced in outer patterns (in case this is sub_pattern)
     //pub unresolved_token_fields: Vec<GlobalReference<TokenField>>,
+    ///number of flat patterns resulted from the combination of all blocks
+    pub total_variants_possible: Option<usize>,
 }
 
 impl Pattern {
@@ -106,6 +114,7 @@ impl Pattern {
             disassembly_vars: IndexMap::new(),
             pos: vec![],
             src: input.src,
+            total_variants_possible: None,
         })
     }
     //token fields required by value comparisons that this pattern can't produce
@@ -261,8 +270,108 @@ impl Pattern {
             current = &mut current[next_offset as usize..];
         }
     }
-    pub fn constraint(&self) -> PatternConstraint {
-        PatternConstraint::new(self)
+    pub fn calculated_flat_pattern(&mut self) {
+        assert!(self.total_variants_possible.is_none());
+        let mut variants_counter = 1;
+        for block in self.blocks.iter_mut() {
+            //parse until and including a block with multiple possible len.
+            let is_undefined_len =
+                block.len.unwrap().basic().unwrap().single_len().is_none();
+
+            //create the block and update the variants_counter
+            block.calculate_flat_pattern(variants_counter);
+            if let Some(variants) = &block.constraint.as_ref().unwrap().variants
+            {
+                variants_counter *= variants.len();
+            }
+
+            //stop parsing if the len is not defined
+            if is_undefined_len {
+                break;
+            }
+        }
+        self.total_variants_possible = Some(variants_counter);
+    }
+    pub fn flat_blocks(&self) -> impl Iterator<Item = &BlockConstraint> + Clone {
+        self.blocks
+            .iter()
+            .map_while(|block| block.constraint.as_ref())
+    }
+    pub fn bits_len(&self) -> usize {
+        self.flat_blocks().map(BlockConstraint::bits_produced).sum()
+    }
+    // Create a iterator that produces other iterator :-P
+    // First (Outer) iterator produce all the possible variants of this pattern.
+    // Second (Inner) iterator produce the bits for this variant of the pattern.
+    pub fn bits<'a>(
+        &'a self,
+        len: usize,
+    ) -> impl Iterator<Item = impl Iterator<Item = BitConstraint> + Clone + 'a>
+           + Clone
+           + 'a {
+        let extra_len = len.saturating_sub(self.bits_len());
+        // a little helper to make this move easy
+        #[derive(Clone, Copy)]
+        struct ExtraBits(usize);
+        impl<'a> Iterator for ExtraBits {
+            type Item = BitConstraint;
+            fn next(&mut self) -> Option<Self::Item> {
+                (self.0 > 0).then(|| {
+                    self.0 -= 1;
+                    BitConstraint::Unrestrained
+                })
+            }
+        }
+        let extra_len_chain = ExtraBits(extra_len);
+        (0..self.total_variants_possible.unwrap()).into_iter().map(
+            move |variant_id| {
+                self.flat_blocks()
+                    .filter_map(move |block| {
+                        let bits = block.bits(variant_id);
+                        bits.clone()
+                            .all(|bit| !bit.is_impossible())
+                            .then_some(bits)
+                    })
+                    .flatten()
+                    .chain(extra_len_chain)
+            },
+        )
+    }
+    //7.8.1. Matching
+    //one pattern contains the other if all the cases that match the contained,
+    //also match the pattern.
+    //eg: `a` contains `b` if all cases that match `b` also match `a`. In other
+    //words `a` is a special case of `b`.
+    //NOTE the opose don't need to be true.
+    pub fn ordering(&self, other: &Self) -> MultiplePatternOrdering {
+        let len_bits = self.bits_len().max(other.bits_len());
+
+        use BitConstraint::*;
+        use SinglePatternOrdering::*;
+        let mut variant_ordering = MultiplePatternOrdering::default();
+        for self_variant in self.bits(len_bits) {
+            if self_variant.clone().any(|bit| bit.is_impossible()) {
+                continue;
+            }
+            for other_variant in other.bits(len_bits) {
+                if other_variant.clone().any(|bit| bit.is_impossible()) {
+                    continue;
+                }
+                let cmp: SinglePatternOrdering = self_variant
+                    .clone()
+                    .zip(other_variant)
+                    .map(|(self_bit, other_bit)| match (self_bit, other_bit) {
+                        (Impossible, _) | (_, Impossible) => unreachable!(),
+                        (Defined(_) | Restrained, Defined(_) | Restrained)
+                        | (Unrestrained, Unrestrained) => Eq,
+                        (Unrestrained, _) => Contained,
+                        (_, Unrestrained) => Contains,
+                    })
+                    .collect();
+                variant_ordering.add(cmp);
+            }
+        }
+        variant_ordering
     }
     pub fn convert(self) -> FinalPattern {
         let Pattern {
@@ -274,6 +383,7 @@ impl Pattern {
             token_fields: _,
             pos,
             src: _,
+            total_variants_possible: _,
         } = self;
         let len = len.unwrap().basic().unwrap();
         let disassembly_vars = disassembly_vars
