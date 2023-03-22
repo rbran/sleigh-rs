@@ -12,9 +12,7 @@ use crate::Span;
 
 use super::disassembly;
 use super::display::Display;
-use super::execution::ExecutionExport;
-use super::execution::{Execution, ExecutionBuilder};
-use super::pattern::constraint::PatternConstraint;
+use super::execution::{Execution, ExecutionBuilder, ExecutionExport};
 use super::pattern::Pattern;
 use super::{
     FieldSize, FieldSizeMut, GlobalConvert, GlobalScope, Sleigh, SolverStatus,
@@ -158,10 +156,9 @@ impl Table {
         T: SolverStatus + Default,
     {
         //update all constructors
-        self.constructors
-            .borrow_mut()
-            .iter_mut()
-            .try_for_each(|constructor| constructor.solve_pattern(solved))?;
+        self.constructors.borrow_mut().iter_mut().try_for_each(
+            |constructor| constructor.solve_pattern(solved).map(|_| ()),
+        )?;
 
         //if already solved, do nothing
         if self.pattern_len.get().is_some() {
@@ -328,24 +325,27 @@ impl GlobalConvert for Table {
         //put the constructors in the correct order
         let constructors: Vec<_> =
             std::mem::take(self.constructors.borrow_mut().as_mut());
-        let patterns: Vec<PatternConstraint> = constructors
-            .iter()
-            .map(|constructor| constructor.pattern.constraint())
-            .collect();
-        let mut new_constructors: Vec<(Constructor, PatternConstraint)> =
-            vec![];
-        for (constructor, pattern) in
-            constructors.into_iter().zip(patterns.into_iter())
-        {
+        let mut new_constructors: Vec<Constructor> =
+            Vec::with_capacity(constructors.len());
+        let constructor_iter =
+            constructors.into_iter().map(|mut constructor| {
+                constructor.pattern.into_phase2(0);
+                constructor
+            });
+        for constructor in constructor_iter {
             //TODO detect conflicting instead of just looking for contains
-            let pos = new_constructors.iter().enumerate().find_map(
-                |(i, (_con, pat))| {
+            let pos =
+                new_constructors.iter().enumerate().find_map(|(i, con)| {
                     //TODO how to handle inter-intersections? such:
                     //first variant of self contains the second variant of other
                     //AND
                     //second variant of self contains the first variant of other
-                    let ord = pattern.ordering(&pat);
-                    use super::pattern::constraint::MultiplePatternOrdering as Ord;
+                    let ord = constructor
+                        .pattern
+                        .phase2()
+                        .unwrap()
+                        .ordering(con.pattern.phase2().unwrap());
+                    use super::pattern::MultiplePatternOrdering as Ord;
                     match ord {
                         //new pattern is contained at least once, just skip it
                         Ord { contained: 1.., .. } => None,
@@ -353,14 +353,13 @@ impl GlobalConvert for Table {
                         Ord { contains: 1.., .. } => Some(i),
                         Ord { .. } => None,
                     }
-                },
-            );
+                });
             //insert constructors in the correct order accordingly with the
             //rules of `7.8.1. Matching`
             if let Some(pos) = pos {
-                new_constructors.insert(pos, (constructor, pattern));
+                new_constructors.insert(pos, constructor);
             } else {
-                new_constructors.push((constructor, pattern));
+                new_constructors.push(constructor);
             }
         }
 
@@ -369,7 +368,7 @@ impl GlobalConvert for Table {
             self.export.borrow().unwrap_or_default().convert().unwrap();
         let constructors = new_constructors
             .into_iter()
-            .map(|(x, _)| Rc::new(x.convert()))
+            .map(|x| Rc::new(x.convert()))
             .collect();
 
         //TODO is this really safe?
@@ -436,7 +435,10 @@ impl Constructor {
     pub fn src(&self) -> &Span {
         &self.src
     }
-    pub fn solve_pattern<T>(&mut self, solved: &mut T) -> Result<(), TableError>
+    pub fn solve_pattern<T>(
+        &mut self,
+        solved: &mut T,
+    ) -> Result<bool, TableError>
     where
         T: SolverStatus + Default,
     {
@@ -494,9 +496,14 @@ impl Sleigh {
         let pattern = with_block_current.pattern(&constructor.pattern);
         let mut pattern = Pattern::new(self, pattern, table.element_ptr())
             .to_table(constructor.src.clone())?;
-        pattern.unresolved_token_fields().into_iter().try_for_each(
-            |(_key, token_field)| {
+        //TODO move this into the Pattern::new function
+        pattern
+            .base()
+            .unresolved_token_fields()
+            .into_iter()
+            .try_for_each(|(_key, token_field)| {
                 if pattern
+                    .base_mut()
                     .produce_token_field(&token_field)
                     .map(|block_num| block_num.is_none())
                     .to_table(constructor.src.clone())?
@@ -507,8 +514,7 @@ impl Sleigh {
                     .to_table(constructor.src.clone());
                 }
                 Ok(())
-            },
-        )?;
+            })?;
 
         let disassembly_raw =
             with_block_current.disassembly(constructor.disassembly);
