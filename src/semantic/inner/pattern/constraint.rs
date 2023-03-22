@@ -1,17 +1,3 @@
-use super::Block;
-
-#[derive(Clone, Debug)]
-pub struct BlockConstraint {
-    pub len: usize,
-    pub base: Vec<BitConstraint>,
-    //number of possible variants for blocks prior to this one
-    pub variants_possible_prior: usize,
-    //0 or 2 or more, never 1
-    pub variants: Option<Vec<Vec<BitConstraint>>>,
-    //used on the creation, true if in use, so only modify on false
-    pub variants_lock: bool,
-}
-
 /// Represent how a bit is limited in a pattern
 #[derive(Clone, Copy, Debug, Default)]
 pub enum BitConstraint {
@@ -133,46 +119,6 @@ impl MultiplePatternOrdering {
             SinglePatternOrdering::Conflict => self.conflicts += 1,
             SinglePatternOrdering::Contains => self.contains += 1,
             SinglePatternOrdering::Contained => self.contained += 1,
-        }
-    }
-}
-
-impl BlockConstraint {
-    pub fn new(block: &Block, variants_prior: usize) -> Self {
-        let base_len = block.root_len();
-        let block_len = block.len.unwrap().basic().unwrap();
-        let len = block_len
-            .max()
-            .unwrap_or(block_len.min())
-            .try_into()
-            .unwrap();
-        let mut new = Self {
-            len,
-            variants_possible_prior: variants_prior,
-            base: vec![BitConstraint::default(); base_len],
-            variants: None,
-            variants_lock: false,
-        };
-        block.constraint(&mut new, 0);
-        new
-    }
-    pub fn root_len(&self) -> usize {
-        self.base.len()
-    }
-    pub fn bits_produced(&self) -> usize {
-        self.len
-    }
-    pub fn bits<'a>(&'a self, variant_id: usize) -> BlockConstraintIter<'a> {
-        let extra_len = self.bits_produced().saturating_sub(self.root_len());
-        let var = self.variants.as_ref().map(|variants| {
-            let var_id =
-                (variant_id % self.variants_possible_prior) % variants.len();
-            variants[var_id].as_slice()
-        });
-        BlockConstraintIter {
-            extra_len,
-            base: &self.base,
-            var,
         }
     }
 }

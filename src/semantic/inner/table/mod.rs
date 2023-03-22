@@ -156,10 +156,9 @@ impl Table {
         T: SolverStatus + Default,
     {
         //update all constructors
-        self.constructors
-            .borrow_mut()
-            .iter_mut()
-            .try_for_each(|constructor| constructor.solve_pattern(solved))?;
+        self.constructors.borrow_mut().iter_mut().try_for_each(
+            |constructor| constructor.solve_pattern(solved).map(|_| ()),
+        )?;
 
         //if already solved, do nothing
         if self.pattern_len.get().is_some() {
@@ -330,7 +329,7 @@ impl GlobalConvert for Table {
             Vec::with_capacity(constructors.len());
         let constructor_iter =
             constructors.into_iter().map(|mut constructor| {
-                constructor.pattern.calculated_flat_pattern();
+                constructor.pattern.into_phase2(0);
                 constructor
             });
         for constructor in constructor_iter {
@@ -341,7 +340,11 @@ impl GlobalConvert for Table {
                     //first variant of self contains the second variant of other
                     //AND
                     //second variant of self contains the first variant of other
-                    let ord = constructor.pattern.ordering(&con.pattern);
+                    let ord = constructor
+                        .pattern
+                        .phase2()
+                        .unwrap()
+                        .ordering(con.pattern.phase2().unwrap());
                     use super::pattern::MultiplePatternOrdering as Ord;
                     match ord {
                         //new pattern is contained at least once, just skip it
@@ -432,7 +435,10 @@ impl Constructor {
     pub fn src(&self) -> &Span {
         &self.src
     }
-    pub fn solve_pattern<T>(&mut self, solved: &mut T) -> Result<(), TableError>
+    pub fn solve_pattern<T>(
+        &mut self,
+        solved: &mut T,
+    ) -> Result<bool, TableError>
     where
         T: SolverStatus + Default,
     {
@@ -490,9 +496,14 @@ impl Sleigh {
         let pattern = with_block_current.pattern(&constructor.pattern);
         let mut pattern = Pattern::new(self, pattern, table.element_ptr())
             .to_table(constructor.src.clone())?;
-        pattern.unresolved_token_fields().into_iter().try_for_each(
-            |(_key, token_field)| {
+        //TODO move this into the Pattern::new function
+        pattern
+            .base()
+            .unresolved_token_fields()
+            .into_iter()
+            .try_for_each(|(_key, token_field)| {
                 if pattern
+                    .base_mut()
                     .produce_token_field(&token_field)
                     .map(|block_num| block_num.is_none())
                     .to_table(constructor.src.clone())?
@@ -503,8 +514,7 @@ impl Sleigh {
                     .to_table(constructor.src.clone());
                 }
                 Ok(())
-            },
-        )?;
+            })?;
 
         let disassembly_raw =
             with_block_current.disassembly(constructor.disassembly);

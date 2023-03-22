@@ -14,14 +14,20 @@ use crate::syntax::block;
 use crate::syntax::block::pattern::Op;
 use crate::Span;
 
-use super::constraint::{BitConstraint, BlockConstraint};
+use super::constraint::BitConstraint;
 use super::{
-    is_len_finished, ConstructorPatternLen, FindValues, Pattern, ProducedTable,
+    ConstructorPatternLen, FindValues, Pattern, ProducedTable,
     ProducedTokenField, Verification,
 };
+
 pub type FinalBlock = crate::semantic::pattern::Block;
 #[derive(Clone, Debug)]
-pub struct Block {
+pub enum Block {
+    Phase1(BlockPhase1),
+    Phase2(BlockPhase2),
+}
+#[derive(Clone, Debug)]
+pub struct BlockBase {
     /// Op And, Or
     pub op: Op,
 
@@ -29,9 +35,6 @@ pub struct Block {
     //there is no single location
     /// Location of the block in the source code
     pub location: Span,
-
-    /// once solve is done, contains the pattern len
-    pub len: Option<ConstructorPatternLen>,
 
     /// token that this block produces, and the number of times it produces
     pub tokens: IndexMap<*const Token, (usize, GlobalAnonReference<Token>)>,
@@ -47,12 +50,154 @@ pub struct Block {
     pub pre: Vec<Assertation>,
     /// disassembly after the block is match
     pub pos: Vec<Assertation>,
+}
+#[derive(Clone, Debug)]
+pub struct BlockPhase1 {
+    pub base: BlockBase,
+    ///len that will be gradually be calculated
+    pub len: Option<ConstructorPatternLen>,
+}
+#[derive(Clone, Debug)]
+pub struct BlockPhase2 {
+    pub base: BlockBase,
+    /// len that was calculated
+    pub len: PatternLen,
 
-    /// flat pattern this block generates, calculated after solve is done
-    pub constraint: Option<BlockConstraint>,
+    /// number of possible variants for blocks prior to this one
+    pub variants_prior: usize,
+    /// number of variants this block produce
+    pub variants_number: usize,
+    //// base, not including sub_pattern with more then one variant
+    //pub base: Vec<BitConstraint>,
+    /// used on the creation, true if in use, so only modify on false
+    pub variants_lock: bool,
 }
 
 impl Block {
+    pub fn new(
+        sleigh: &Sleigh,
+        input: block::pattern::Block,
+        this_table: *const Table,
+    ) -> Result<Self, PatternError> {
+        let base = BlockBase::new(sleigh, input, this_table)?;
+        // no verification the block is len 0
+        let len = base
+            .verifications
+            .is_empty()
+            .then_some(ConstructorPatternLen::Basic(PatternLen::Defined(0)));
+        Ok(Self::Phase1(BlockPhase1 { base, len }))
+    }
+    pub fn base(&self) -> &BlockBase {
+        match self {
+            Block::Phase1(ph1) => &ph1.base,
+            Block::Phase2(ph2) => &ph2.base,
+        }
+    }
+    pub fn base_mut(&mut self) -> &mut BlockBase {
+        match self {
+            Block::Phase1(ph1) => &mut ph1.base,
+            Block::Phase2(ph2) => &mut ph2.base,
+        }
+    }
+    pub fn phase1(&self) -> Option<&BlockPhase1> {
+        match self {
+            Block::Phase1(ph1) => Some(ph1),
+            Block::Phase2(_) => None,
+        }
+    }
+    pub fn phase2(&self) -> Option<&BlockPhase2> {
+        match self {
+            Block::Phase1(_) => None,
+            Block::Phase2(ph2) => Some(ph2),
+        }
+    }
+    pub fn len(&self) -> Option<ConstructorPatternLen> {
+        match self {
+            Block::Phase1(ph1) => ph1.len,
+            Block::Phase2(ph2) => Some(ConstructorPatternLen::Basic(ph2.len)),
+        }
+    }
+    pub fn solve<T: SolverStatus>(
+        &mut self,
+        solved: &mut T,
+    ) -> Result<bool, PatternError> {
+        match self {
+            Block::Phase1(ph1) => ph1.solve(solved),
+            Block::Phase2(_) => Ok(true),
+        }
+    }
+    pub fn into_phase2(&mut self, variants_prior: usize) -> &mut BlockPhase2 {
+        if let Self::Phase2(ph2) = self {
+            return ph2;
+        };
+        // don't worry, the dummy value is always safe overwritten
+        // by the *self assignemnt bellow
+        unsafe {
+            use std::mem::{swap, ManuallyDrop, MaybeUninit};
+            //extract the value of self, and puth nothing there
+            let mut old: MaybeUninit<Self> = MaybeUninit::uninit();
+            swap(self, old.assume_init_mut());
+            //consume the old self
+            let Self::Phase1(ph1) = old.assume_init() else {
+                unreachable!()
+            };
+            let base = ph1.base;
+            let len = ph1.len.unwrap().basic().unwrap();
+
+            //create the new Self (phase2)
+            let mut new: ManuallyDrop<Self> = ManuallyDrop::new(Self::Phase2(
+                BlockPhase2::new(base, len, variants_prior),
+            ));
+
+            //overwrite self with the new phase2
+            swap(self, &mut new);
+            //NOTE new is not dropped, because at this point it have nothing
+        }
+        let Self::Phase2(ph2) = self else {
+           unreachable!()
+        };
+        ph2
+    }
+}
+
+impl BlockBase {
+    pub fn new(
+        sleigh: &Sleigh,
+        input: block::pattern::Block,
+        this_table: *const Table,
+    ) -> Result<Self, PatternError> {
+        let block::pattern::Block {
+            src,
+            first,
+            elements,
+        } = input;
+
+        //NOTE I'll not allow to mix `&` and `|` in the same level
+        let op = match &elements[..] {
+            //a single element don't care for operations, just default to and
+            [] => block::pattern::Op::And,
+            [(first_op, _), rest @ ..] => {
+                if rest.iter().all(|(op, _)| first_op == op) {
+                    *first_op
+                } else {
+                    return Err(PatternError::MixOperations(src.clone()));
+                }
+            }
+        };
+
+        let all_elements = [first]
+            .into_iter()
+            .chain(elements.into_iter().map(|(_op, element)| element));
+
+        match op {
+            block::pattern::Op::Or => {
+                Self::new_or(sleigh, src, all_elements, this_table)
+            }
+            block::pattern::Op::And => {
+                Self::new_and(sleigh, src, all_elements, this_table)
+            }
+        }
+    }
     fn new_or<'a>(
         sleigh: &Sleigh,
         location: Span,
@@ -164,23 +309,30 @@ impl Block {
                         match &mut tokens {
                             Some(tokens) => {
                                 tokens.retain(|this_token, (num, _token)| {
-                                    let found = pattern.tokens.get(this_token);
+                                    let found =
+                                        pattern.base().tokens.get(this_token);
                                     if let Some((found_num, _token)) = found {
                                         *num = (*num).max(*found_num);
                                     }
                                     found.is_some()
                                 })
                             }
-                            None => tokens = Some(pattern.tokens.clone()),
+                            None => {
+                                tokens = Some(pattern.base().tokens.clone())
+                            }
                         }
                         //remove all token this sub_pattern, don't produces
                         match &mut token_fields {
                             Some(fields) => fields.retain(|this_field, _| {
-                                pattern.token_fields.contains_key(this_field)
+                                pattern
+                                    .base()
+                                    .token_fields
+                                    .contains_key(this_field)
                             }),
                             None => {
                                 token_fields = Some(
                                     pattern
+                                        .base()
                                         .token_fields
                                         .iter()
                                         .map(|(k, v)| {
@@ -220,7 +372,7 @@ impl Block {
                 Verification::SubPattern {
                     location: _,
                     pattern,
-                } => pattern.tables.clone(),
+                } => pattern.base().tables.clone(),
             };
         tables_iter.for_each(|verification| {
             match verification {
@@ -255,19 +407,23 @@ impl Block {
                     location: _,
                     pattern,
                 } => {
-                    pattern.tables.iter().for_each(|(ptr, produced_table)| {
-                        //if this table don't exists, add it and mark it
-                        //not_always produce
-                        tables.entry(*ptr).or_insert_with(|| {
-                            let mut produced_table = produced_table.clone();
-                            produced_table.always = false;
-                            produced_table
-                        });
-                    });
+                    pattern.base().tables.iter().for_each(
+                        |(ptr, produced_table)| {
+                            //if this table don't exists, add it and mark it
+                            //not_always produce
+                            tables.entry(*ptr).or_insert_with(|| {
+                                let mut produced_table = produced_table.clone();
+                                produced_table.always = false;
+                                produced_table
+                            });
+                        },
+                    );
                     //mark all other tables as not always produce
                     tables
                         .iter_mut()
-                        .filter(|(k, _v)| !pattern.tables.contains_key(*k))
+                        .filter(|(k, _v)| {
+                            !pattern.base().tables.contains_key(*k)
+                        })
                         .for_each(|(_k, v)| v.always = false);
                 }
             }
@@ -347,7 +503,11 @@ impl Block {
                     location: _,
                     pattern,
                 } => fields.retain(|ptr, _token| {
-                    pattern.token_fields.keys().any(|sub_ptr| sub_ptr == ptr)
+                    pattern
+                        .base()
+                        .token_fields
+                        .keys()
+                        .any(|sub_ptr| sub_ptr == ptr)
                 }),
             }
             if fields.is_empty() {
@@ -360,14 +520,12 @@ impl Block {
         Ok(Self {
             op: Op::Or,
             location,
-            len: None,
             tokens,
             token_fields: token_fields.unwrap_or_default(),
             tables,
             verifications: branches,
             pre: vec![],
             pos: vec![],
-            constraint: None,
         })
     }
     fn new_and<'a>(
@@ -473,6 +631,7 @@ impl Block {
                         Pattern::new(sleigh, sub.clone(), this_table)?;
                     //add/verify all token fields
                     pattern
+                        .base()
                         .token_fields
                         .values()
                         .map(|prod| {
@@ -533,52 +692,13 @@ impl Block {
         Ok(Self {
             op: Op::And,
             location,
-            len: None,
             token_fields,
             tokens,
             verifications,
             tables,
             pre: vec![],
             pos: vec![],
-            constraint: None,
         })
-    }
-    pub fn new(
-        sleigh: &Sleigh,
-        input: block::pattern::Block,
-        this_table: *const Table,
-    ) -> Result<Self, PatternError> {
-        let block::pattern::Block {
-            src,
-            first,
-            elements,
-        } = input;
-
-        //NOTE I'll not allow to mix `&` and `|` in the same level
-        let op = match &elements[..] {
-            //a single element don't care for operations, just default to and
-            [] => block::pattern::Op::And,
-            [(first_op, _), rest @ ..] => {
-                if rest.iter().all(|(op, _)| first_op == op) {
-                    *first_op
-                } else {
-                    return Err(PatternError::MixOperations(src.clone()));
-                }
-            }
-        };
-
-        let all_elements = [first]
-            .into_iter()
-            .chain(elements.into_iter().map(|(_op, element)| element));
-
-        match op {
-            block::pattern::Op::Or => {
-                Self::new_or(sleigh, src, all_elements, this_table)
-            }
-            block::pattern::Op::And => {
-                Self::new_and(sleigh, src, all_elements, this_table)
-            }
-        }
     }
     //token fields required by value comparisons that this block can't produce
     //itself
@@ -598,7 +718,7 @@ impl Block {
                 .iter()
                 .map(Verification::sub_pattern)
                 .flatten()
-                .map(Pattern::unresolved_token_fields)
+                .map(|pattern| pattern.base().unresolved_token_fields())
                 .flatten(),
         );
         ////remove all token_fields that is produced locally
@@ -647,6 +767,103 @@ impl Block {
             false
         }
     }
+    /// len of the pattern block, except for tables
+    pub fn root_len(&self) -> usize {
+        match self.op {
+            Op::And => {
+                //get the biggest token, from all token_field verifications and
+                //explicit/implicit token_fields
+                let biggest_token_bytes = self
+                    .tokens
+                    .values()
+                    .map(|(_num, token)| token.element().len_bytes().get())
+                    .max()
+                    .unwrap_or(0);
+                let biggest_token =
+                    usize::try_from(biggest_token_bytes).unwrap() * 8;
+                //calc the len of the biggest sub_pattern
+                let biggest_sub_pattern = self
+                    .verifications
+                    .iter()
+                    .filter_map(Verification::sub_pattern)
+                    .map(|pattern| pattern.base().root_len())
+                    .max()
+                    .unwrap_or(0);
+                //return the biggest one
+                biggest_token.max(biggest_sub_pattern)
+            }
+            Op::Or => {
+                //get the biggest of all branches
+                self.verifications
+                    .iter()
+                    .map(Verification::root_len)
+                    .max()
+                    .unwrap_or(0)
+            }
+        }
+    }
+}
+impl From<Block> for FinalBlock {
+    fn from(value: Block) -> Self {
+        let (base, len) = match value {
+            Block::Phase1(ph1) => (ph1.base, ph1.len.unwrap().basic().unwrap()),
+            Block::Phase2(ph2) => (ph2.base, ph2.len),
+        };
+        let exported_token_fields =
+            base.token_fields.values().map(|prod| &prod.field);
+        let verified_token_fields =
+            base.verifications.iter().filter_map(|ver| match ver {
+                Verification::ContextCheck { .. }
+                | Verification::TableBuild { .. }
+                | Verification::SubPattern { .. } => None,
+                Verification::TokenFieldCheck {
+                    field,
+                    op: _,
+                    value: _,
+                } => Some(field),
+            });
+        let token_len = exported_token_fields
+            .chain(verified_token_fields)
+            .map(|token_field| token_field.element().token.len_bytes().get())
+            .max();
+        let token_fields = base
+            .token_fields
+            .into_iter()
+            .map(|(_, k)| k.into())
+            .collect();
+        let tables = base.tables.into_iter().map(|(_, k)| k.into()).collect();
+        let verifications = base
+            .verifications
+            .into_iter()
+            .map(|k| k.try_into().unwrap())
+            .collect();
+        match base.op {
+            Op::And => FinalBlock::And {
+                len,
+                token_len: token_len.unwrap_or(0),
+                token_fields,
+                tables,
+                verifications,
+                pre: base.pre.into_iter().map(|x| x.convert()).collect(),
+                pos: base.pos.into_iter().map(|x| x.convert()).collect(),
+            },
+            Op::Or => FinalBlock::Or {
+                len,
+                token_fields,
+                tables,
+                branches: verifications,
+                pos: base
+                    .pre
+                    .into_iter()
+                    .chain(base.pos.into_iter())
+                    .map(|x| x.convert())
+                    .collect(),
+            },
+        }
+    }
+}
+
+impl BlockPhase1 {
     pub fn solve_or<T: SolverStatus>(
         &mut self,
         solved: &mut T,
@@ -657,6 +874,7 @@ impl Block {
             Unknown,   //at least one branch len is not known
         }
         let mut branch_len_iter = self
+            .base
             .verifications
             .iter()
             .map(Verification::pattern_len)
@@ -683,14 +901,16 @@ impl Block {
             //run to solve it
             Err(OrLenPossible::Unknown) => {
                 solved.iam_not_finished_location(
-                    &self.location,
+                    &self.base.location,
                     file!(),
                     line!(),
                 );
             }
             //at least one len is recursive
             Err(OrLenPossible::Recursive) => {
-                return Err(PatternError::InvalidOrLen(self.location.clone()))
+                return Err(PatternError::InvalidOrLen(
+                    self.base.location.clone(),
+                ))
             }
         }
         Ok(())
@@ -702,6 +922,7 @@ impl Block {
         //the pattern len is the biggest of all tokens, all sub_patterns
         //and all tables in the pattern
         let tokens_len = self
+            .base
             .tokens
             .values()
             .map(|(_num, token)| token.element().len_bytes())
@@ -711,8 +932,11 @@ impl Block {
                     token_len.get(),
                 ))
             });
-        let mut verifications_len =
-            self.verifications.iter().map(Verification::pattern_len);
+        let mut verifications_len = self
+            .base
+            .verifications
+            .iter()
+            .map(Verification::pattern_len);
         let first = tokens_len.unwrap_or(PatternLen::Defined(0).into());
         let final_len =
             verifications_len.try_fold(first, |acc, x| acc.greater(x?));
@@ -722,7 +946,7 @@ impl Block {
             if !final_len.is_basic() {
                 //need to solve the recursive len of the pattern
                 solved.iam_not_finished_location(
-                    &self.location,
+                    &self.base.location,
                     file!(),
                     line!(),
                 );
@@ -733,256 +957,171 @@ impl Block {
             }
         } else {
             //if not fully finished yet, request another run
-            solved.iam_not_finished_location(&self.location, file!(), line!());
+            solved.iam_not_finished_location(
+                &self.base.location,
+                file!(),
+                line!(),
+            );
         }
         Ok(())
     }
     pub fn solve<T: SolverStatus>(
         &mut self,
         solved: &mut T,
-    ) -> Result<(), PatternError> {
+    ) -> Result<bool, PatternError> {
         //if len is already solved and no unresolved_token_field, there is
         //nothing todo
-        if is_len_finished(&self.len) {
-            return Ok(());
+        if matches!(&self.len, Some(ConstructorPatternLen::Basic(_))) {
+            return Ok(true);
         }
         //call solve in all sub_patterns
-        self.verifications
+        self.base
+            .verifications
             .iter_mut()
             .filter_map(Verification::sub_pattern_mut)
-            .map(|sub| sub.solve(solved))
+            .map(|sub| sub.solve(solved).map(|_| ()))
             .collect::<Result<_, _>>()?;
         //TODO check all table value verifications export a const value
-        match self.op {
+        match self.base.op {
             Op::And => self.solve_and(solved)?,
             Op::Or => self.solve_or(solved)?,
         }
-        if !is_len_finished(&self.len) {
-            solved.iam_not_finished_location(&self.location, file!(), line!());
-        }
-        Ok(())
-    }
-    pub fn root_len(&self) -> usize {
-        match self.op {
-            Op::And => {
-                //get the biggest token, from all token_field verifications and
-                //explicit/implicit token_fields
-                let biggest_token_bytes = self
-                    .tokens
-                    .values()
-                    .map(|(_num, token)| token.element().len_bytes().get())
-                    .max()
-                    .unwrap_or(0);
-                let biggest_token =
-                    usize::try_from(biggest_token_bytes).unwrap() * 8usize;
-                //calc the len of the biggest sub_pattern
-                let biggest_sub_pattern = self
-                    .verifications
-                    .iter()
-                    .filter_map(Verification::sub_pattern)
-                    .map(Pattern::root_len)
-                    .max()
-                    .unwrap_or(0);
-                //return the biggest one
-                biggest_token.max(biggest_sub_pattern)
-            }
-            Op::Or => {
-                //get the biggest of all branches
-                self.verifications
-                    .iter()
-                    .map(Verification::root_len)
-                    .max()
-                    .unwrap_or(0)
-            }
-        }
-    }
-    fn constrait_same_field(&self, constraint: &mut [BitConstraint]) -> bool {
-        //if all the verifications are using the same field, we can just
-        //OR it
-        let mut iter = self
-            .verifications
-            .iter()
-            .map(Verification::token_field_check)
-            .flatten();
-        let Some(first) = iter.next() else {
-            return false;
-        };
-
-        if iter.any(|this| first != this) {
-            return false;
-        }
-        //or all the branches into this pattern, first element forms the base
-        let mut verifications = self.verifications.iter();
-        let first = verifications.next().unwrap();
-        let mut out_buf = vec![BitConstraint::Unrestrained; constraint.len()];
-        first.constraint_variant(&mut out_buf);
-
-        //apply all other verification
-        let mut branch_buf =
-            vec![BitConstraint::Unrestrained; constraint.len()];
-        for verification in verifications {
-            branch_buf
-                .iter_mut()
-                .for_each(|bit| *bit = BitConstraint::Unrestrained);
-            verification.constraint_variant(&mut branch_buf);
-            out_buf.iter_mut().zip(branch_buf.iter()).for_each(
-                |(out, branch)| {
-                    *out = out.least_restrictive(*branch);
-                },
+        let finished =
+            matches!(&self.len, Some(ConstructorPatternLen::Basic(_)));
+        if !finished {
+            solved.iam_not_finished_location(
+                &self.base.location,
+                file!(),
+                line!(),
             );
         }
-        //or it all up with the original constraint
-        constraint.iter_mut().zip(out_buf.iter()).for_each(
-            |(constraint, out)| {
-                *constraint = constraint.most_restrictive(*out);
-            },
-        );
-        true
-    }
-    pub fn constraint(&self, constraint: &mut BlockConstraint, offset: usize) {
-        if self.op == Op::And {
-            self.verifications
-                .iter()
-                .for_each(|ele| ele.constraint(constraint, offset))
-        } else {
-            //if all the verifications are using the same field, we can just
-            //OR it
-            if self.constrait_same_field(&mut constraint.base[offset..]) {
-                return;
-            }
-
-            //mark as being used, so we fail if we recurse
-            if constraint.variants_lock {
-                //TODO make this an error
-                panic!("Recursives Or pattern is not allowed")
-            }
-            constraint.variants_lock = true;
-            let old_variants = constraint.variants.take();
-
-            let new_variants: Vec<_> = self
-                .verifications
-                .iter()
-                .map(|verification| {
-                    let mut variant =
-                        vec![BitConstraint::default(); constraint.base.len()];
-                    verification.constraint_variant(&mut variant[offset..]);
-                    variant
-                })
-                .collect();
-            if let Some(old_variants) = old_variants {
-                // Limite the use of Or to a reasanable number, make this an
-                // error?
-                let combined_len = old_variants.len() * new_variants.len();
-                if combined_len > 1024 {
-                    todo!("Pattern is too big");
-                }
-                //combine all the old variants with the new ones
-                let mut combined_variants = Vec::with_capacity(combined_len);
-                for old_variant in old_variants.iter() {
-                    for new_variant in new_variants.iter() {
-                        let combine_variant = old_variant
-                            .iter()
-                            .zip(new_variant.iter())
-                            .map(|(old, new)| old.most_restrictive(*new))
-                            .collect();
-                        combined_variants.push(combine_variant);
-                    }
-                }
-                constraint.variants = Some(combined_variants);
-            } else {
-                constraint.variants = Some(new_variants);
-            }
-            constraint.variants_lock = false;
-            //TODO check and filter out impossible variants
-        }
-    }
-    pub fn constraint_variant(&self, constraint: &mut [BitConstraint]) {
-        if self.op == Op::And {
-            self.verifications
-                .iter()
-                .for_each(|ele| ele.constraint_variant(constraint))
-        } else {
-            // this level of or is only allowed if we have multiple values for
-            // the save field
-            if !self.constrait_same_field(constraint) {
-                //TODO make this an error
-                dbg!(&self);
-                todo!("Or Inside Or")
-            }
-        }
-    }
-    pub fn calculate_flat_pattern(&mut self, variants_prior: usize) {
-        assert!(self.constraint.is_none());
-        let base_len = self.root_len();
-        let block_len = self.len.unwrap().basic().unwrap();
-        let len = block_len
-            .max()
-            .unwrap_or(block_len.min())
-            .try_into()
-            .unwrap();
-        let mut new = BlockConstraint {
-            len,
-            variants_possible_prior: variants_prior,
-            base: vec![BitConstraint::default(); base_len],
-            variants: None,
-            variants_lock: false,
-        };
-        self.constraint(&mut new, 0);
-        self.constraint = Some(new);
+        Ok(finished)
     }
 }
-impl From<Block> for FinalBlock {
-    fn from(value: Block) -> Self {
-        let exported_token_fields =
-            value.token_fields.values().map(|prod| &prod.field);
-        let verified_token_fields =
-            value.verifications.iter().filter_map(|ver| match ver {
-                Verification::ContextCheck { .. }
-                | Verification::TableBuild { .. }
-                | Verification::SubPattern { .. } => None,
-                Verification::TokenFieldCheck {
-                    field,
-                    op: _,
-                    value: _,
-                } => Some(field),
-            });
-        let token_len = exported_token_fields
-            .chain(verified_token_fields)
-            .map(|token_field| token_field.element().token.len_bytes().get())
-            .max();
-        let token_fields = value
-            .token_fields
-            .into_iter()
-            .map(|(_, k)| k.into())
-            .collect();
-        let tables = value.tables.into_iter().map(|(_, k)| k.into()).collect();
-        let verifications = value
-            .verifications
-            .into_iter()
-            .map(|k| k.try_into().unwrap())
-            .collect();
-        match value.op {
-            Op::And => FinalBlock::And {
-                len: value.len.unwrap().basic().unwrap(),
-                token_len: token_len.unwrap_or(0),
-                token_fields,
-                tables,
-                verifications,
-                pre: value.pre.into_iter().map(|x| x.convert()).collect(),
-                pos: value.pos.into_iter().map(|x| x.convert()).collect(),
-            },
-            Op::Or => FinalBlock::Or {
-                len: value.len.unwrap().basic().unwrap(),
-                token_fields,
-                tables,
-                branches: verifications,
-                pos: value
-                    .pre
-                    .into_iter()
-                    .chain(value.pos.into_iter())
-                    .map(|x| x.convert())
-                    .collect(),
-            },
+
+impl BlockPhase2 {
+    pub fn new(
+        base: BlockBase,
+        len: PatternLen,
+        variants_prior: usize,
+    ) -> Self {
+        match base.op {
+            Op::And => Self::new_and(base, len, variants_prior),
+            Op::Or => Self::new_or(base, len, variants_prior),
         }
+    }
+    fn new_and(
+        mut base: BlockBase,
+        len: PatternLen,
+        variants_prior: usize,
+    ) -> Self {
+        let mut variants_number = 1;
+        let mut variants_prior_counter = variants_prior;
+        base.verifications
+            .iter_mut()
+            .filter_map(Verification::sub_pattern_mut)
+            .for_each(|pattern| {
+                let phase2 = pattern.into_phase2(variants_prior_counter);
+                variants_number *= phase2.variants_number;
+                variants_prior_counter *= phase2.variants_number;
+            });
+        Self {
+            base,
+            len,
+            variants_prior,
+            variants_number,
+            variants_lock: false,
+        }
+    }
+    fn new_or(
+        mut base: BlockBase,
+        len: PatternLen,
+        variants_prior: usize,
+    ) -> Self {
+        let variants_number = base
+            .verifications
+            .iter_mut()
+            .map(|verification| {
+                verification
+                    .sub_pattern_mut()
+                    .map(|pattern| pattern.into_phase2(variants_prior));
+                verification
+            })
+            .map(|verification| verification.variants_number())
+            .sum();
+        Self {
+            base,
+            len,
+            variants_prior,
+            variants_number,
+            variants_lock: false,
+        }
+    }
+    pub fn bits_produced(&self) -> usize {
+        let len = self.len.single_len().unwrap_or_else(|| self.len.min());
+        usize::try_from(len).unwrap() * 8
+    }
+    pub fn constraint(
+        &self,
+        variant_id: usize,
+        constraint: &mut [BitConstraint],
+    ) {
+        match self.base.op {
+            Op::And => self.constraint_and(variant_id, constraint),
+            Op::Or => self.constraint_or(variant_id, constraint),
+        }
+    }
+    fn constraint_and(
+        &self,
+        variant_id: usize,
+        constraint: &mut [BitConstraint],
+    ) {
+        for verification in self.base.verifications.iter() {
+            match verification {
+                Verification::ContextCheck { .. }
+                | Verification::TableBuild { .. } => (),
+                Verification::TokenFieldCheck { field, op, value } => {
+                    Verification::constraint_bits_field(
+                        constraint, field, op, value,
+                    )
+                }
+                Verification::SubPattern {
+                    location: _,
+                    pattern,
+                } => {
+                    pattern.phase2().unwrap().constraint(variant_id, constraint)
+                }
+            }
+        }
+    }
+    fn constraint_or(
+        &self,
+        variant_id: usize,
+        constraint: &mut [BitConstraint],
+    ) {
+        //find the correct verification in the OR to constraint
+        let mut verification_id =
+            (variant_id / self.variants_prior) % self.variants_number;
+        for verification in self.base.verifications.iter() {
+            let verification_variants = verification.variants_number();
+            if verification_id < verification_variants {
+                match verification {
+                    Verification::ContextCheck { .. }
+                    | Verification::TableBuild { .. } => (),
+                    Verification::TokenFieldCheck { field, op, value } => {
+                        Verification::constraint_bits_field(
+                            constraint, field, op, value,
+                        )
+                    }
+                    Verification::SubPattern { pattern, .. } => pattern
+                        .phase2()
+                        .unwrap()
+                        .constraint(verification_id, constraint),
+                };
+                return;
+            }
+            verification_id -= verification_variants;
+        }
+        unreachable!()
     }
 }

@@ -3,23 +3,26 @@ use crate::{NumberUnsigned, PatternLen};
 //Describe a Block/Pattern possible len
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConstructorPatternLen {
-    //Cases with the pattern call it own table, NOTE: the table can only call
-    //itself once.
-    //self-Recursive, non-growing, basically unrestricted, but indicating
-    //to tables that this don't change the table.pattern_len directly.
-    //Value is the len that this constructor will generate, not including
-    //the recursive itself
+    /// Cases with the pattern call it own table, NOTE: the table can only call
+    /// itself once.
+    /// self-Recursive, non-growing, basically unrestricted, but indicating
+    /// to tables that this don't change the table.pattern_len directly.
+    /// Value is the len that this constructor will generate, not including
+    /// the recursive itself
     NonGrowingRecursive(PatternLen),
-    //self-Recrusive, growing, similat to NonGrowing, but is possible that this
-    //keep calling itself, in a infinite growing patter. It is the context job
-    //to limit the size of it.
-    //grow, is the len of the size that will be added to the len, and non_grow,
-    //is the value that was taken from NonGrowing Recursive
+    /// self-Recrusive, growing, similat to NonGrowing, but is possible that this
+    /// keep calling itself, in a infinite growing patter. It is the context job
+    /// to limit the size of it.
+    /// grow, is the len of the size that will be added to the len, and non_grow,
+    /// is the value that was taken from NonGrowing Recursive
     GrowingRecursive {
         grow: PatternLen,
         non_grow: PatternLen,
     },
 
+    /// the final state, this means the len have a possible final value,
+    /// although it could be restricted further, eg: len is 2-8bytes, but is
+    /// found that the len is never bigger then 6, so len is update to 2-6bytes.
     Basic(PatternLen),
 }
 impl ConstructorPatternLen {
@@ -112,11 +115,5 @@ impl ConstructorPatternLen {
 impl From<PatternLen> for ConstructorPatternLen {
     fn from(value: PatternLen) -> Self {
         Self::Basic(value)
-    }
-}
-pub fn is_len_finished(len: &Option<ConstructorPatternLen>) -> bool {
-    match len.as_ref() {
-        Some(len) => len.is_basic(),
-        None => false,
     }
 }

@@ -1,5 +1,4 @@
 use crate::pattern::CmpOp;
-use crate::semantic::inner::disassembly::{Expr, ExprElement, ReadScope};
 use crate::semantic::inner::table::Table;
 use crate::semantic::inner::token::TokenField;
 use crate::semantic::inner::varnode::Context;
@@ -9,7 +8,7 @@ use crate::semantic::GlobalReference;
 use crate::syntax;
 use crate::{GlobalElement, Span};
 
-use super::constraint::{BitConstraint, BlockConstraint};
+use super::constraint::BitConstraint;
 use super::{ConstraintValue, ConstructorPatternLen, Pattern, ProducedTable};
 
 pub type FinalVerification = crate::semantic::pattern::Verification;
@@ -133,7 +132,7 @@ impl Verification {
             Verification::SubPattern {
                 location: _,
                 pattern,
-            } => pattern.root_len(),
+            } => pattern.base().root_len(),
         }
     }
     pub fn tables<'a>(
@@ -155,9 +154,10 @@ impl Verification {
             } => {
                 let iter: Box<dyn Iterator<Item = &'a _>> = Box::new(
                     pattern
+                        .base()
                         .blocks
                         .iter()
-                        .map(|block| block.tables.values())
+                        .map(|block| block.base().tables.values())
                         .flatten(),
                 );
                 Some(iter)
@@ -240,8 +240,7 @@ impl Verification {
             } => pattern.len(),
         }
     }
-    fn constraint_bits_field(
-        &self,
+    pub fn constraint_bits_field(
         constraint: &mut [BitConstraint],
         field: &GlobalReference<TokenField>,
         op: &CmpOp,
@@ -252,6 +251,9 @@ impl Verification {
         let range = field_range.0.start as usize..field_range.0.end as usize;
         let bits = constraint[range].iter_mut();
 
+        use crate::semantic::inner::disassembly::{
+            Expr, ExprElement, ReadScope,
+        };
         let ConstraintValue { expr: Expr { rpn } } = value;
         match (op, rpn.first()) {
             (
@@ -275,39 +277,12 @@ impl Verification {
             (_, _) => (),
         }
     }
-    pub fn constraint(&self, constraint: &mut BlockConstraint, offset: usize) {
+    pub fn variants_number(&self) -> usize {
         match self {
-            //NOTE this combine any sub-pattern
-            Self::SubPattern {
-                location: _,
-                pattern,
-            } => pattern.sub_pattern_constraint(constraint, offset),
-
-            Self::TokenFieldCheck { field, op, value } => {
-                self.constraint_bits_field(
-                    &mut constraint.base[offset..],
-                    field,
-                    op,
-                    value,
-                );
+            Self::SubPattern { pattern, .. } => {
+                pattern.phase2().unwrap().variants_number
             }
-            Self::ContextCheck { .. } | Self::TableBuild { .. } => (),
-        }
-    }
-    pub fn constraint_variant(&self, constraint: &mut [BitConstraint]) {
-        match self {
-            //NOTE this combine any sub-pattern
-            Self::SubPattern {
-                location: _,
-                pattern,
-            } => {
-                pattern.sub_pattern_constraint_variant(constraint);
-            }
-
-            Self::TokenFieldCheck { field, op, value } => {
-                self.constraint_bits_field(constraint, field, op, value);
-            }
-            Self::ContextCheck { .. } | Self::TableBuild { .. } => (),
+            _ => 1,
         }
     }
 }
