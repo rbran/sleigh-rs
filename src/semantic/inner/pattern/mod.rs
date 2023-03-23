@@ -184,24 +184,24 @@ impl<'a> ExprBuilder for DisassemblyBuilder<'a> {
 pub trait PatternWalker<B = ()> {
     fn pattern(&mut self, pattern: &Pattern) -> ControlFlow<B, ()> {
         pattern
-            .base()
+            .base
             .blocks
             .iter()
             .try_for_each(|block| self.block(block))
     }
     fn block(&mut self, block: &Block) -> ControlFlow<B, ()> {
         block
-            .base()
+            .base
             .tokens
             .values()
             .try_for_each(|(_num, token)| self.token(token))?;
         block
-            .base()
+            .base
             .token_fields
             .values()
             .try_for_each(|field| self.token_field(&field.field))?;
         block
-            .base()
+            .base
             .verifications
             .iter()
             .try_for_each(|x| self.verification(x))

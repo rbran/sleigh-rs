@@ -1,8 +1,8 @@
 use thiserror::Error;
 
+use crate::BitRange;
 use crate::NumberNonZeroUnsigned;
 use crate::NumberUnsigned;
-use crate::BitRange;
 use crate::Span;
 
 use super::meaning::Meaning;

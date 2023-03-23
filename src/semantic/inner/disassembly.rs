@@ -98,7 +98,7 @@ impl<'a, 'b> ExprBuilder for Builder<'a, 'b> {
     ) -> Result<ReadScope, DisassemblyError> {
         use super::GlobalScope::*;
         self.pattern
-            .base()
+            .base
             .disassembly_vars
             .get(name)
             .map(|local| Ok(ReadScope::Local(Rc::clone(local))))
@@ -121,7 +121,7 @@ impl<'a, 'b> ExprBuilder for Builder<'a, 'b> {
                     )),
                     TokenField(x) => {
                         //check the pattern will produce this field
-                        let Ok(Some(block_num)) = self.pattern.base_mut().produce_token_field(
+                        let Ok(Some(block_num)) = self.pattern.base.produce_token_field(
                             &GlobalReference::from_element(x, src.clone()),
                         ) else {
                             return Err(DisassemblyError::InvalidRef(src.clone()))
@@ -150,15 +150,15 @@ impl<'a, 'b> Builder<'a, 'b> {
     }
     fn insert_assertation(&mut self, ass: Assertation) {
         let ass_pos = match self.block_counter.0 {
-            None => &mut self.pattern.base_mut().pos,
+            None => &mut self.pattern.base.pos,
             Some(block_counter) => {
                 let block_num = block_counter >> 1;
                 let block_pre = block_counter & 1 == 0;
-                let block = &mut self.pattern.base_mut().blocks[block_num];
+                let block = &mut self.pattern.base.blocks[block_num];
                 if block_pre {
-                    &mut block.base_mut().pre
+                    &mut block.base.pre
                 } else {
-                    &mut block.base_mut().pos
+                    &mut block.base.pos
                 }
             }
         };
@@ -172,7 +172,7 @@ impl<'a, 'b> Builder<'a, 'b> {
         use super::GlobalScope::*;
         //get from local, otherwise get from global
         self.pattern
-            .base()
+            .base
             .disassembly_vars
             .get(name)
             .map(|local| Ok(AddrScope::Local(Rc::clone(local))))
@@ -189,7 +189,7 @@ impl<'a, 'b> Builder<'a, 'b> {
                         //TODO error
                         let block_num = self
                             .pattern
-                            .base()
+                            .base
                             .is_table_produced(&table_ref)
                             .unwrap();
                         self.block_counter.pos_disassembly_at(block_num);
@@ -226,7 +226,7 @@ impl<'a, 'b> Builder<'a, 'b> {
         //if variable exists, return it
         let var = self
             .pattern
-            .base()
+            .base
             .disassembly_vars
             .get(name)
             .map(|var| WriteScope::Local(Rc::clone(var)))
@@ -244,7 +244,7 @@ impl<'a, 'b> Builder<'a, 'b> {
                 //otherwise create the variable
                 let var = Variable::new(name, src.clone());
                 self.pattern
-                    .base_mut()
+                    .base
                     .disassembly_vars
                     .insert(Rc::clone(var.name()), Rc::clone(&var));
                 WriteScope::Local(var)

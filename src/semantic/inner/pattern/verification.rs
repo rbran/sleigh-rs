@@ -132,7 +132,7 @@ impl Verification {
             Verification::SubPattern {
                 location: _,
                 pattern,
-            } => pattern.base().root_len(),
+            } => pattern.base.root_len(),
         }
     }
     pub fn tables<'a>(
@@ -154,10 +154,10 @@ impl Verification {
             } => {
                 let iter: Box<dyn Iterator<Item = &'a _>> = Box::new(
                     pattern
-                        .base()
+                        .base
                         .blocks
                         .iter()
-                        .map(|block| block.base().tables.values())
+                        .map(|block| block.base.tables.values())
                         .flatten(),
                 );
                 Some(iter)
@@ -279,9 +279,10 @@ impl Verification {
     }
     pub fn variants_number(&self) -> usize {
         match self {
-            Self::SubPattern { pattern, .. } => {
-                pattern.phase2().unwrap().variants_number
-            }
+            Self::SubPattern { pattern, .. } => match &pattern.phase {
+                super::PatternPhase::Phase2(ph2) => ph2.variants_number,
+                _ => unreachable!(),
+            },
             _ => 1,
         }
     }

@@ -5,7 +5,7 @@ use crate::semantic::meaning::Meaning;
 use crate::semantic::token::Token;
 use crate::semantic::{GlobalConvert, SemanticError};
 use crate::syntax::define;
-use crate::{NumberNonZeroUnsigned, BitRange, Span, SleighError};
+use crate::{BitRange, NumberNonZeroUnsigned, SleighError, Span};
 
 use super::{
     Endian, FieldSize, GlobalElement, GlobalScope, PrintFlags, Sleigh,

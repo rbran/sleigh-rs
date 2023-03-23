@@ -2,9 +2,7 @@ use std::borrow::Borrow;
 
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_while, take_while1};
-use nom::character::complete::{
-    digit1, hex_digit1, not_line_ending, space0,
-};
+use nom::character::complete::{digit1, hex_digit1, not_line_ending, space0};
 use nom::combinator::{eof, map, map_res, opt, recognize, value};
 use nom::sequence::{delimited, pair, preceded, tuple};
 use nom::{AsChar, IResult, InputIter, InputTake};

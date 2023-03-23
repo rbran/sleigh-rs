@@ -14,13 +14,19 @@ use crate::syntax::block;
 use crate::Span;
 
 use super::{
-    BitConstraint, Block, ConstructorPatternLen, MultiplePatternOrdering,
-    ProducedTable, ProducedTokenField,
+    BitConstraint, Block, BlockBase, BlockPhase, BlockPhase2,
+    ConstructorPatternLen, MultiplePatternOrdering, ProducedTable,
+    ProducedTokenField,
 };
 
 pub type FinalPattern = crate::semantic::pattern::Pattern;
 #[derive(Clone, Debug)]
-pub enum Pattern {
+pub struct Pattern {
+    pub base: PatternBase,
+    pub phase: PatternPhase,
+}
+#[derive(Clone, Debug)]
+pub enum PatternPhase {
     Phase1(PatternPhase1),
     Phase2(PatternPhase2),
 }
@@ -51,14 +57,12 @@ pub struct PatternBase {
 }
 #[derive(Clone, Debug)]
 pub struct PatternPhase1 {
-    pub base: PatternBase,
     ///len that will be gradually be calculated
     pub len: Option<ConstructorPatternLen>,
 }
 /// after all the blocks/sub_patterns/tables sizes have being calculated
 #[derive(Clone, Debug)]
 pub struct PatternPhase2 {
-    pub base: PatternBase,
     /// len that was calculated previously
     pub len: PatternLen,
     /// the flat pattern len
@@ -74,33 +78,18 @@ impl Pattern {
         input: block::pattern::Pattern,
         this_table: *const Table,
     ) -> Result<Self, PatternError> {
-        //phase is created directly from the syntax
-        let phase1 = PatternBase::new(sleigh, input, this_table)?;
-        //and we go into the phase2 and start calculating the len
-        Ok(Self::Phase1(PatternPhase1::new(phase1)))
-    }
-    pub fn base(&self) -> &PatternBase {
-        match self {
-            Pattern::Phase1(ph1) => &ph1.base,
-            Pattern::Phase2(ph2) => &ph2.base,
-        }
-    }
-    pub fn base_mut(&mut self) -> &mut PatternBase {
-        match self {
-            Pattern::Phase1(ph1) => &mut ph1.base,
-            Pattern::Phase2(ph2) => &mut ph2.base,
-        }
-    }
-    pub fn phase2(&self) -> Option<&PatternPhase2> {
-        match self {
-            Pattern::Phase1(_) => None,
-            Pattern::Phase2(ph2) => Some(ph2),
-        }
+        //base is created directly from the syntax
+        let base = PatternBase::new(sleigh, input, this_table)?;
+        //and we go into the phase1 and start calculating the len
+        let phase = PatternPhase::Phase1(PatternPhase1::new(&base));
+        Ok(Self { base, phase })
     }
     pub fn len(&self) -> Option<ConstructorPatternLen> {
-        match self {
-            Pattern::Phase1(ph1) => ph1.len,
-            Pattern::Phase2(ph2) => Some(ConstructorPatternLen::Basic(ph2.len)),
+        match &self.phase {
+            PatternPhase::Phase1(ph1) => ph1.len,
+            PatternPhase::Phase2(ph2) => {
+                Some(ConstructorPatternLen::Basic(ph2.len))
+            }
         }
     }
     /// return true if is fully solved
@@ -108,49 +97,42 @@ impl Pattern {
         &mut self,
         solved: &mut impl SolverStatus,
     ) -> Result<bool, PatternError> {
-        match self {
-            Pattern::Phase1(ph1) => ph1.solve(solved),
-            Pattern::Phase2(_) => unreachable!(),
+        match &mut self.phase {
+            PatternPhase::Phase1(ph1) => ph1.solve(solved, &mut self.base),
+            PatternPhase::Phase2(_) => Ok(true),
         }
     }
-    pub fn into_phase2(&mut self, variants_prior: usize) -> &mut PatternPhase2 {
+    pub fn ordering(&self, other: &Self) -> Option<MultiplePatternOrdering> {
+        let (PatternPhase::Phase2(self_ph2), PatternPhase::Phase2(other_ph2)) = (&self.phase, &other.phase) else {
+            return None;
+        };
+        let order = self_ph2.ordering(&self.base, other_ph2, &other.base);
+        Some(order)
+    }
+    pub fn into_phase2<'a>(
+        &'a mut self,
+        variants_prior: usize,
+    ) -> &'a mut PatternPhase2 {
         //convert all blocks into phase2
-        if let Pattern::Phase2(ph2) = self {
-            return ph2;
-        }
-        // don't worry, the dummy value is always safe overwritten
-        // by the *self assignemnt bellow
-        unsafe {
-            use std::mem::{swap, ManuallyDrop, MaybeUninit};
-            //extract the value of self, and puth nothing there
-            let mut old: MaybeUninit<Self> = MaybeUninit::uninit();
-            swap(self, old.assume_init_mut());
-            //consume the old self
-            let Self::Phase1(ph1) = old.assume_init() else {
-                unreachable!()
-            };
-            let base = ph1.base;
-            let len = ph1.len.unwrap().basic().unwrap();
-
-            //create the new Self (phase2)
-            let mut new: ManuallyDrop<Self> = ManuallyDrop::new(Self::Phase2(
-                PatternPhase2::new(base, len, variants_prior),
-            ));
-            //overwrite self with the new phase2
-            swap(self, &mut new);
-            //NOTE new is not dropped, because at this point it have nothing
-        }
-        let Pattern::Phase2(ph2) = self else {
+        let len: PatternLen = match &self.phase {
+            PatternPhase::Phase1(ph1) => ph1.len.unwrap().basic().unwrap(),
+            _ => unreachable!(),
+        };
+        let new_phase = PatternPhase::Phase2(PatternPhase2::new(
+            &mut self.base,
+            len,
+            variants_prior,
+        ));
+        self.phase = new_phase;
+        let PatternPhase::Phase2(ph2) = &mut self.phase else {
             unreachable!()
         };
         ph2
     }
     pub fn convert(self) -> FinalPattern {
-        let (base, len) = match self {
-            Pattern::Phase1(ph1) => {
-                (ph1.base, ph1.len.unwrap().basic().unwrap())
-            }
-            Pattern::Phase2(ph2) => (ph2.base, ph2.len),
+        let len = match &self.phase {
+            PatternPhase::Phase1(ph1) => ph1.len.unwrap().basic().unwrap(),
+            PatternPhase::Phase2(ph2) => ph2.len,
         };
         let PatternBase {
             blocks,
@@ -160,7 +142,7 @@ impl Pattern {
             tokens: _,
             disassembly_vars,
             pos,
-        } = base;
+        } = self.base;
         let disassembly_vars = disassembly_vars
             .into_iter()
             .map(|(_, v)| v.convert())
@@ -190,7 +172,7 @@ impl PatternBase {
         use indexmap::map::Entry::*;
         for (k, produced_field) in blocks
             .iter()
-            .map(|block| &block.base().token_fields)
+            .map(|block| &block.base.token_fields)
             .flatten()
         {
             match token_fields.entry(*k) {
@@ -208,7 +190,7 @@ impl PatternBase {
         //make sure the tables are not duplicated
         let mut tables: IndexMap<*const Table, ProducedTable> = IndexMap::new();
         for (k, produced_table) in
-            blocks.iter().map(|block| &block.base().tables).flatten()
+            blocks.iter().map(|block| &block.base.tables).flatten()
         {
             match tables.entry(*k) {
                 Occupied(entry) => {
@@ -225,7 +207,7 @@ impl PatternBase {
         let mut tokens = IndexMap::new();
         let tokens_iter = blocks
             .iter()
-            .map(|block| block.base().tokens.values())
+            .map(|block| block.base.tokens.values())
             .flatten();
         for (num, token) in tokens_iter {
             tokens
@@ -252,12 +234,12 @@ impl PatternBase {
     ) -> IndexMap<*const TokenField, GlobalReference<TokenField>> {
         let mut all_unresolved = IndexMap::new();
         for (index, block) in self.blocks.iter().enumerate() {
-            let mut block_unresolved = block.base().unresolved_token_fields();
+            let mut block_unresolved = block.base.unresolved_token_fields();
             //remove unresolveds already produced by previous blocks
             block_unresolved.retain(|_key, unresolved| {
                 self.blocks[..index].iter().any(|block| {
                     block
-                        .base()
+                        .base
                         .token_fields
                         .contains_key(&unresolved.element_ptr())
                 })
@@ -273,7 +255,7 @@ impl PatternBase {
         self.blocks
             .iter()
             .enumerate()
-            .find(|(_, block)| block.base().is_table_produced(table))
+            .find(|(_, block)| block.base.is_table_produced(table))
             .map(|(i, _)| i)
     }
     pub fn produce_token_field(
@@ -288,7 +270,7 @@ impl PatternBase {
                 .iter()
                 .enumerate()
                 .find(|(_, block)| {
-                    block.base().is_token_field_produced(token_field)
+                    block.base.is_token_field_produced(token_field)
                 })
                 .map(|(i, _)| i);
             return Ok(block_num);
@@ -296,7 +278,7 @@ impl PatternBase {
         //try all the blocks, find one that is able to produce it, but only one!
         let mut found = None;
         for (block_num, block) in self.blocks.iter_mut().enumerate() {
-            match (found, block.base_mut().produce_token_field(token_field)) {
+            match (found, block.base.produce_token_field(token_field)) {
                 //this block can't add this token_field
                 (_, false) => (),
                 //found the first block that is able to add the token_field
@@ -323,20 +305,28 @@ impl PatternBase {
         &self.src
     }
     pub fn root_len(&self) -> usize {
-        self.blocks
-            .iter()
-            .map(|block| block.base().root_len())
-            .sum()
+        self.blocks.iter().map(|block| block.base.root_len()).sum()
+    }
+    /// iterator of blocks used to generate the flat pattern
+    pub fn flat_pattern_blocks<'a>(
+        &'a self,
+    ) -> impl Iterator<Item = (&'a BlockBase, &'a BlockPhase2)> + 'a {
+        //NOTE map_while, if a block didn't get into phase2, it is unable to
+        //be constrainted
+        self.blocks.iter().map_while(|block| match &block.phase {
+            BlockPhase::Phase2(ph2) => Some((&block.base, ph2)),
+            _ => None,
+        })
     }
 }
 impl PatternPhase1 {
-    pub fn new(phase1: PatternBase) -> Self {
+    pub fn new(base: &PatternBase) -> Self {
         // if the pattern is empty, the final len, is known
-        let len = phase1
+        let len = base
             .blocks
             .is_empty()
             .then(|| PatternLen::Defined(0).into());
-        Self { base: phase1, len }
+        Self { len }
     }
     pub fn len_mut(&mut self) -> &mut Option<ConstructorPatternLen> {
         &mut self.len
@@ -347,13 +337,13 @@ impl PatternPhase1 {
     pub fn solve(
         &mut self,
         solved: &mut impl SolverStatus,
+        base: &mut PatternBase,
     ) -> Result<bool, PatternError> {
         //if fully solved, do nothing
         if let Some(ConstructorPatternLen::Basic(_)) = self.len {
             return Ok(true);
         }
-        let finished = self
-            .base
+        let finished = base
             .blocks
             .iter_mut()
             .map(|block| block.solve(solved))
@@ -361,7 +351,7 @@ impl PatternPhase1 {
                 Ok(acc & finished?)
             })?;
         //FUTURE replace with try_reduce
-        let mut lens = self.base.blocks.iter().map(|block| block.len());
+        let mut lens = base.blocks.iter().map(|block| block.len());
         let first = ConstructorPatternLen::Basic(PatternLen::Defined(0).into());
         let final_len = lens.try_fold(first, |acc, len| acc.add(len?));
 
@@ -372,7 +362,7 @@ impl PatternPhase1 {
 
         if !finished {
             //if not fully finished yet, request another run
-            solved.iam_not_finished_location(self.base.src(), file!(), line!());
+            solved.iam_not_finished_location(base.src(), file!(), line!());
         }
         //update self.len if found a more restricted value
         match final_len {
@@ -387,7 +377,7 @@ impl PatternPhase1 {
 }
 impl PatternPhase2 {
     pub fn new(
-        mut base: PatternBase,
+        base: &mut PatternBase,
         len: PatternLen,
         variants_before: usize,
     ) -> Self {
@@ -411,7 +401,6 @@ impl PatternPhase2 {
             }
         }
         Self {
-            base,
             len,
             flat_len,
             variants_before,
@@ -424,25 +413,25 @@ impl PatternPhase2 {
     }
     pub fn constraint(
         &self,
+        base: &PatternBase,
         variant_id: usize,
         constraint: &mut [BitConstraint],
     ) {
         let mut current = constraint;
-        //NOTE map_while, if a block didn't get into phase2, it is unable to
-        //be constrainted
-        for block in self.base.blocks.iter().map_while(|b| b.phase2()) {
-            block.constraint(variant_id, current);
-            let next_offset = block.bits_produced();
+        for (base, ph2) in base.flat_pattern_blocks() {
+            ph2.constraint(base, variant_id, current);
+            let next_offset = ph2.bits_produced();
             current = &mut current[next_offset..];
         }
     }
     pub fn flat_variant(
         &self,
+        base: &PatternBase,
         variant_id: usize,
         len_bits: usize,
     ) -> impl Iterator<Item = BitConstraint> + Clone {
         let mut flat = vec![BitConstraint::Unrestrained; self.flat_len];
-        self.constraint(variant_id, &mut flat);
+        self.constraint(base, variant_id, &mut flat);
         let extra_len = len_bits.max(self.bits_produced()) - self.flat_len;
         flat.into_iter().chain(
             (0..extra_len)
@@ -452,13 +441,16 @@ impl PatternPhase2 {
     }
     pub fn flat_variants<'a>(
         &'a self,
+        base: &'a PatternBase,
         len_bits: usize,
     ) -> impl Iterator<Item = impl Iterator<Item = BitConstraint> + Clone + 'a>
            + 'a
            + Clone {
         (0..self.variants_number)
             .into_iter()
-            .map(move |variant_id| self.flat_variant(variant_id, len_bits))
+            .map(move |variant_id| {
+                self.flat_variant(base, variant_id, len_bits)
+            })
     }
     ////7.8.1. Matching
     ////one pattern contains the other if all the cases that match the contained,
@@ -466,17 +458,22 @@ impl PatternPhase2 {
     ////eg: `a` contains `b` if all cases that match `b` also match `a`. In other
     ////words `a` is a special case of `b`.
     ////NOTE the opose don't need to be true.
-    pub fn ordering(&self, other: &Self) -> MultiplePatternOrdering {
+    pub fn ordering(
+        &self,
+        self_base: &PatternBase,
+        other: &Self,
+        other_base: &PatternBase,
+    ) -> MultiplePatternOrdering {
         let len_bits = self.bits_produced().max(other.bits_produced());
 
         use BitConstraint::*;
         use SinglePatternOrdering::*;
         let mut variant_ordering = MultiplePatternOrdering::default();
-        for self_variant in self.flat_variants(len_bits) {
+        for self_variant in self.flat_variants(self_base, len_bits) {
             if self_variant.clone().any(|bit| bit.is_impossible()) {
                 continue;
             }
-            for other_variant in other.flat_variants(len_bits) {
+            for other_variant in other.flat_variants(other_base, len_bits) {
                 if other_variant.clone().any(|bit| bit.is_impossible()) {
                     continue;
                 }

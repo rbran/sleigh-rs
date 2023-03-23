@@ -340,11 +340,8 @@ impl GlobalConvert for Table {
                     //first variant of self contains the second variant of other
                     //AND
                     //second variant of self contains the first variant of other
-                    let ord = constructor
-                        .pattern
-                        .phase2()
-                        .unwrap()
-                        .ordering(con.pattern.phase2().unwrap());
+                    let ord =
+                        constructor.pattern.ordering(&con.pattern).unwrap();
                     use super::pattern::MultiplePatternOrdering as Ord;
                     match ord {
                         //new pattern is contained at least once, just skip it
@@ -498,12 +495,12 @@ impl Sleigh {
             .to_table(constructor.src.clone())?;
         //TODO move this into the Pattern::new function
         pattern
-            .base()
+            .base
             .unresolved_token_fields()
             .into_iter()
             .try_for_each(|(_key, token_field)| {
                 if pattern
-                    .base_mut()
+                    .base
                     .produce_token_field(&token_field)
                     .map(|block_num| block_num.is_none())
                     .to_table(constructor.src.clone())?
