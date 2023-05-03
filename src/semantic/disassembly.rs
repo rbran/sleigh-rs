@@ -91,7 +91,7 @@ impl Variable {
 
 #[derive(Clone, Debug)]
 pub struct Expr {
-    rpn: Box<[ExprElement]>,
+    pub(crate) rpn: Box<[ExprElement]>,
 }
 
 impl Expr {

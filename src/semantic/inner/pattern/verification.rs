@@ -8,7 +8,6 @@ use crate::semantic::GlobalReference;
 use crate::syntax;
 use crate::{GlobalElement, Span};
 
-use super::constraint::BitConstraint;
 use super::{ConstraintValue, ConstructorPatternLen, Pattern, ProducedTable};
 
 pub type FinalVerification = crate::semantic::pattern::Verification;
@@ -132,7 +131,7 @@ impl Verification {
             Verification::SubPattern {
                 location: _,
                 pattern,
-            } => pattern.base.root_len(),
+            } => pattern.root_len(),
         }
     }
     pub fn tables<'a>(
@@ -154,7 +153,6 @@ impl Verification {
             } => {
                 let iter: Box<dyn Iterator<Item = &'a _>> = Box::new(
                     pattern
-                        .base
                         .blocks
                         .iter()
                         .map(|block| block.base.tables.values())
@@ -237,52 +235,12 @@ impl Verification {
             Self::SubPattern {
                 location: _,
                 pattern,
-            } => pattern.len(),
-        }
-    }
-    pub fn constraint_bits_field(
-        constraint: &mut [BitConstraint],
-        field: &GlobalReference<TokenField>,
-        op: &CmpOp,
-        value: &ConstraintValue,
-    ) {
-        let field = field.element();
-        let field_range = field.element().range();
-        let range = field_range.0.start as usize..field_range.0.end as usize;
-        let bits = constraint[range].iter_mut();
-
-        use crate::semantic::inner::disassembly::{
-            Expr, ExprElement, ReadScope,
-        };
-        let ConstraintValue { expr: Expr { rpn } } = value;
-        match (op, rpn.first()) {
-            (
-                CmpOp::Eq,
-                Some(ExprElement::Value(ReadScope::Integer(value))),
-            ) => {
-                let value_bits = bits
-                    .enumerate()
-                    .map(|(i, b)| (b, value.signed_super() & (1 << i) != 0));
-                for (bit, value_bit) in value_bits {
-                    //TODO create error here for this
-                    *bit = bit.define(value_bit);
-                }
-            }
-            (CmpOp::Eq | CmpOp::Ne, _) => {
-                for bit in bits {
-                    //error never happen with `BitConstraint::Restrained`
-                    *bit = bit.most_restrictive(BitConstraint::Restrained)
-                }
-            }
-            (_, _) => (),
+            } => pattern.len,
         }
     }
     pub fn variants_number(&self) -> usize {
         match self {
-            Self::SubPattern { pattern, .. } => match &pattern.phase {
-                super::PatternPhase::Phase2(ph2) => ph2.variants_number,
-                _ => unreachable!(),
-            },
+            Self::SubPattern { pattern, .. } => pattern.variants_num(),
             _ => 1,
         }
     }

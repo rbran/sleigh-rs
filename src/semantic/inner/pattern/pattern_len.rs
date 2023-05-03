@@ -98,11 +98,11 @@ impl ConstructorPatternLen {
                 Self::GrowingRecursive { .. } | Self::NonGrowingRecursive(_),
                 Self::GrowingRecursive { .. } | Self::NonGrowingRecursive(_),
             ) => return None,
-            (Self::Basic(x), Self::Basic(y)) => Some(Self::Basic(x.union(y))),
+            (Self::Basic(x), Self::Basic(y)) => Some(Self::Basic(x.greater(y))),
             (
                 Self::Basic(x) | Self::NonGrowingRecursive(x),
                 Self::Basic(y) | Self::NonGrowingRecursive(y),
-            ) => Some(Self::NonGrowingRecursive(x.union(y))),
+            ) => Some(Self::NonGrowingRecursive(x.greater(y))),
             (Self::Basic(_), Self::GrowingRecursive { .. })
             | (Self::GrowingRecursive { .. }, Self::Basic(_)) => {
                 //This only happen if recursive block is in a sub_pattern

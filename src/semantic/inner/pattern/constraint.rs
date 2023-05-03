@@ -26,53 +26,7 @@ pub struct MultiplePatternOrdering {
     pub conflicts: usize,
 }
 
-#[derive(Clone, Copy)]
-pub struct BlockConstraintIter<'a> {
-    extra_len: usize,
-    base: &'a [BitConstraint],
-    var: Option<&'a [BitConstraint]>,
-}
-impl<'a> Iterator for BlockConstraintIter<'a> {
-    type Item = BitConstraint;
-    fn next(&mut self) -> Option<Self::Item> {
-        match (self.extra_len, self.base.split_first()) {
-            //there are bits to produce, so some one
-            (_, Some((first_base, rest_base))) => {
-                self.base = rest_base;
-                //return the value, and apply the variant, if any
-                if let Some((first_var, rest_var)) =
-                    self.var.map(|var| var.split_first().unwrap())
-                {
-                    self.var = Some(rest_var);
-                    Some(first_base.most_restrictive(*first_var))
-                } else {
-                    Some(*first_base)
-                }
-            }
-            //nothing else to produce
-            (0, None) => return None,
-            //no more bit to consume, but still extra bit to output
-            (_x, None) => {
-                self.extra_len -= 1;
-                return Some(BitConstraint::Unrestrained);
-            }
-        }
-    }
-}
-
 impl SinglePatternOrdering {
-    pub fn is_eq(self) -> bool {
-        matches!(self, Self::Eq)
-    }
-    pub fn is_contains(self) -> bool {
-        matches!(self, Self::Contains)
-    }
-    pub fn is_contained(self) -> bool {
-        matches!(self, Self::Contained)
-    }
-    pub fn is_conflict(self) -> bool {
-        matches!(self, Self::Conflict)
-    }
     pub fn combine(self, other: Self) -> Self {
         use SinglePatternOrdering::*;
         match (self, other) {

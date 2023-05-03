@@ -10,12 +10,12 @@ use crate::semantic::{self, GlobalElement, GlobalReference, TableError};
 use crate::syntax::block;
 use crate::Span;
 
-use super::disassembly;
 use super::display::Display;
 use super::execution::{Execution, ExecutionBuilder, ExecutionExport};
 use super::pattern::Pattern;
+use super::{disassembly, GlobalConvert};
 use super::{
-    FieldSize, FieldSizeMut, GlobalConvert, GlobalScope, Sleigh, SolverStatus,
+    FieldSize, FieldSizeMut, GlobalScope, Sleigh, SolverStatus,
     WithBlockCurrent,
 };
 
@@ -44,7 +44,7 @@ pub struct Table {
 
     //used to differ empty tables and ones that got converted
     converted: RefCell<bool>,
-    result: Rc<semantic::table::Table>,
+    result: Rc<FinalTable>,
 }
 
 impl std::fmt::Debug for Table {
@@ -53,6 +53,7 @@ impl std::fmt::Debug for Table {
     }
 }
 
+type FinalTable = crate::semantic::Table;
 impl Table {
     pub fn new_empty(is_root: bool) -> Rc<Self> {
         Rc::new_cyclic(|me| Self {
@@ -174,11 +175,7 @@ impl Table {
             //in this case abort the whole len calculation
             //indexs are 1/1
             .map(|constructor| {
-                constructor
-                    .pattern
-                    .len()
-                    .clone()
-                    .ok_or_else(|| constructor.src())
+                constructor.pattern.len.ok_or_else(|| constructor.src())
             })
             .collect();
         let lens: Vec<_> = match lens {
@@ -313,24 +310,20 @@ impl Table {
         }
         Ok(())
     }
-}
-impl GlobalConvert for Table {
-    type FinalType = crate::semantic::Table;
-    fn convert(&self) -> Rc<Self::FinalType> {
+    pub fn convert(&self, context_len: usize) -> Rc<FinalTable> {
         let converted = *self.converted.borrow();
         if converted {
             return Rc::clone(&self.result);
         }
         //TODO better sorting method
-        //put the constructors in the correct order
         let constructors: Vec<_> =
             std::mem::take(self.constructors.borrow_mut().as_mut());
-        let mut new_constructors: Vec<Constructor> =
+        let mut new_constructors: Vec<Rc<FinalConstructor>> =
             Vec::with_capacity(constructors.len());
         let constructor_iter =
             constructors.into_iter().map(|mut constructor| {
-                constructor.pattern.into_phase2(0);
-                constructor
+                constructor.pattern.calculate_bits(0);
+                Rc::new(constructor.convert())
             });
         for constructor in constructor_iter {
             //TODO detect conflicting instead of just looking for contains
@@ -341,7 +334,7 @@ impl GlobalConvert for Table {
                     //AND
                     //second variant of self contains the first variant of other
                     let ord =
-                        constructor.pattern.ordering(&con.pattern).unwrap();
+                        constructor.pattern.ordering(&con.pattern, context_len);
                     use super::pattern::MultiplePatternOrdering as Ord;
                     match ord {
                         //new pattern is contained at least once, just skip it
@@ -363,10 +356,6 @@ impl GlobalConvert for Table {
         *self.converted.borrow_mut() = true;
         let export =
             self.export.borrow().unwrap_or_default().convert().unwrap();
-        let constructors = new_constructors
-            .into_iter()
-            .map(|x| Rc::new(x.convert()))
-            .collect();
 
         //TODO is this really safe?
         //There are strong pointers to table, but there are no references to the
@@ -375,7 +364,7 @@ impl GlobalConvert for Table {
         unsafe {
             let ptr = Rc::as_ptr(&self.result);
             let ptr: *mut semantic::table::Table = std::mem::transmute(ptr);
-            (*ptr).constructors = constructors;
+            (*ptr).constructors = new_constructors.into();
             (*ptr).export = export;
         }
 
@@ -439,7 +428,9 @@ impl Constructor {
     where
         T: SolverStatus + Default,
     {
-        self.pattern.solve(solved).to_table(self.src.clone())
+        self.pattern
+            .calculate_len(solved)
+            .to_table(self.src.clone())
     }
     pub fn solve_execution<T>(
         &mut self,
@@ -474,6 +465,14 @@ impl<'a> From<Constructor> for FinalConstructor {
     }
 }
 
+impl GlobalConvert for Table {
+    type FinalType = FinalTable;
+
+    fn convert(&self) -> Rc<Self::FinalType> {
+        Rc::clone(&self.result)
+    }
+}
+
 impl Sleigh {
     pub(crate) fn insert_table_constructor(
         &mut self,
@@ -494,13 +493,9 @@ impl Sleigh {
         let mut pattern = Pattern::new(self, pattern, table.element_ptr())
             .to_table(constructor.src.clone())?;
         //TODO move this into the Pattern::new function
-        pattern
-            .base
-            .unresolved_token_fields()
-            .into_iter()
-            .try_for_each(|(_key, token_field)| {
+        pattern.unresolved_token_fields().into_iter().try_for_each(
+            |(_key, token_field)| {
                 if pattern
-                    .base
                     .produce_token_field(&token_field)
                     .map(|block_num| block_num.is_none())
                     .to_table(constructor.src.clone())?
@@ -511,7 +506,8 @@ impl Sleigh {
                     .to_table(constructor.src.clone());
                 }
                 Ok(())
-            })?;
+            },
+        )?;
 
         let disassembly_raw =
             with_block_current.disassembly(constructor.disassembly);

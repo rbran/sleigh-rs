@@ -93,16 +93,16 @@ pub struct Varnode {
 }
 
 impl Varnode {
-    pub fn location(&self) -> &Span {
+    pub const fn location(&self) -> &Span {
         &self.location
     }
-    pub fn offset(&self) -> NumberUnsigned {
+    pub const fn offset(&self) -> NumberUnsigned {
         self.offset
     }
-    pub fn len_bytes(&self) -> NumberNonZeroUnsigned {
+    pub const fn len_bytes(&self) -> NumberNonZeroUnsigned {
         self.len_bytes
     }
-    pub fn space(&self) -> &GlobalElement<Space> {
+    pub const fn space(&self) -> &GlobalElement<Space> {
         &self.space
     }
 }

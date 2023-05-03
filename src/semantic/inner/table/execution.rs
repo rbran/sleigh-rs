@@ -56,7 +56,7 @@ impl<'b, 'c> ExecutionBuilder for Builder<'b, 'c> {
             .map(|var| ExprValue::ExeVar(src.clone(), Rc::clone(var)))
             .or_else(|| {
                 //check the disassembly scope
-                self.pattern.base.disassembly_vars.get(name).map(|var| {
+                self.pattern.disassembly_vars.get(name).map(|var| {
                     let size = FieldSize::new_unsized();
                     size.set_min(1.try_into().unwrap());
                     ExprValue::DisVar(

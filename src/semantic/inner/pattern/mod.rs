@@ -77,8 +77,8 @@ pub struct ProducedTable {
 }
 
 impl From<ProducedTable> for FinalProducedTable {
-    fn from(value: ProducedTable) -> Self {
-        Self::new(
+    fn from(value: ProducedTable) -> FinalProducedTable {
+        FinalProducedTable::new(
             value.table.convert_reference(),
             value.always,
             value.recursive,
@@ -184,7 +184,6 @@ impl<'a> ExprBuilder for DisassemblyBuilder<'a> {
 pub trait PatternWalker<B = ()> {
     fn pattern(&mut self, pattern: &Pattern) -> ControlFlow<B, ()> {
         pattern
-            .base
             .blocks
             .iter()
             .try_for_each(|block| self.block(block))

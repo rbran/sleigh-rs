@@ -14,7 +14,6 @@ use crate::syntax::block;
 use crate::syntax::block::pattern::Op;
 use crate::Span;
 
-use super::constraint::BitConstraint;
 use super::{
     ConstructorPatternLen, FindValues, Pattern, ProducedTable,
     ProducedTokenField, Verification,
@@ -121,6 +120,12 @@ impl Block {
             unreachable!()
         };
         ph2
+    }
+    pub fn phase2(&self) -> Option<&BlockPhase2> {
+        match &self.phase {
+            BlockPhase::Phase2(ph2) => Some(ph2),
+            BlockPhase::Phase1(_ph1) => None,
+        }
     }
 }
 
@@ -273,28 +278,23 @@ impl BlockBase {
                         match &mut tokens {
                             Some(tokens) => {
                                 tokens.retain(|this_token, (num, _token)| {
-                                    let found =
-                                        pattern.base.tokens.get(this_token);
+                                    let found = pattern.tokens.get(this_token);
                                     if let Some((found_num, _token)) = found {
                                         *num = (*num).max(*found_num);
                                     }
                                     found.is_some()
                                 })
                             }
-                            None => tokens = Some(pattern.base.tokens.clone()),
+                            None => tokens = Some(pattern.tokens.clone()),
                         }
                         //remove all token this sub_pattern, don't produces
                         match &mut token_fields {
                             Some(fields) => fields.retain(|this_field, _| {
-                                pattern
-                                    .base
-                                    .token_fields
-                                    .contains_key(this_field)
+                                pattern.token_fields.contains_key(this_field)
                             }),
                             None => {
                                 token_fields = Some(
                                     pattern
-                                        .base
                                         .token_fields
                                         .iter()
                                         .map(|(k, v)| {
@@ -334,7 +334,7 @@ impl BlockBase {
                 Verification::SubPattern {
                     location: _,
                     pattern,
-                } => pattern.base.tables.clone(),
+                } => pattern.tables.clone(),
             };
         tables_iter.for_each(|verification| {
             match verification {
@@ -369,21 +369,19 @@ impl BlockBase {
                     location: _,
                     pattern,
                 } => {
-                    pattern.base.tables.iter().for_each(
-                        |(ptr, produced_table)| {
-                            //if this table don't exists, add it and mark it
-                            //not_always produce
-                            tables.entry(*ptr).or_insert_with(|| {
-                                let mut produced_table = produced_table.clone();
-                                produced_table.always = false;
-                                produced_table
-                            });
-                        },
-                    );
+                    pattern.tables.iter().for_each(|(ptr, produced_table)| {
+                        //if this table don't exists, add it and mark it
+                        //not_always produce
+                        tables.entry(*ptr).or_insert_with(|| {
+                            let mut produced_table = produced_table.clone();
+                            produced_table.always = false;
+                            produced_table
+                        });
+                    });
                     //mark all other tables as not always produce
                     tables
                         .iter_mut()
-                        .filter(|(k, _v)| !pattern.base.tables.contains_key(*k))
+                        .filter(|(k, _v)| !pattern.tables.contains_key(*k))
                         .for_each(|(_k, v)| v.always = false);
                 }
             }
@@ -463,11 +461,7 @@ impl BlockBase {
                     location: _,
                     pattern,
                 } => fields.retain(|ptr, _token| {
-                    pattern
-                        .base
-                        .token_fields
-                        .keys()
-                        .any(|sub_ptr| sub_ptr == ptr)
+                    pattern.token_fields.keys().any(|sub_ptr| sub_ptr == ptr)
                 }),
             }
             if fields.is_empty() {
@@ -591,7 +585,6 @@ impl BlockBase {
                         Pattern::new(sleigh, sub.clone(), this_table)?;
                     //add/verify all token fields
                     pattern
-                        .base
                         .token_fields
                         .values()
                         .map(|prod| {
@@ -678,7 +671,7 @@ impl BlockBase {
                 .iter()
                 .map(Verification::sub_pattern)
                 .flatten()
-                .map(|pattern| pattern.base.unresolved_token_fields())
+                .map(|pattern| pattern.unresolved_token_fields())
                 .flatten(),
         );
         ////remove all token_fields that is produced locally
@@ -746,7 +739,7 @@ impl BlockBase {
                     .verifications
                     .iter()
                     .filter_map(Verification::sub_pattern)
-                    .map(|pattern| pattern.base.root_len())
+                    .map(|pattern| pattern.root_len())
                     .max()
                     .unwrap_or(0);
                 //return the biggest one
@@ -765,11 +758,9 @@ impl BlockBase {
 }
 impl From<Block> for FinalBlock {
     fn from(value: Block) -> Self {
-        let len = match value.phase {
-            BlockPhase::Phase1(ph1) => ph1.len.unwrap().basic().unwrap(),
-            BlockPhase::Phase2(ph2) => ph2.len,
+        let Block{base, phase: BlockPhase::Phase2(ph2)} = value else {
+            unreachable!()
         };
-        let base = value.base;
         let exported_token_fields =
             base.token_fields.values().map(|prod| &prod.field);
         let verified_token_fields =
@@ -800,16 +791,18 @@ impl From<Block> for FinalBlock {
             .collect();
         match base.op {
             Op::And => FinalBlock::And {
-                len,
+                len: ph2.len,
                 token_len: token_len.unwrap_or(0),
                 token_fields,
                 tables,
                 verifications,
                 pre: base.pre.into_iter().map(|x| x.convert()).collect(),
                 pos: base.pos.into_iter().map(|x| x.convert()).collect(),
+                variants_prior: ph2.variants_prior,
+                variants_number: ph2.variants_number,
             },
             Op::Or => FinalBlock::Or {
-                len,
+                len: ph2.len,
                 token_fields,
                 tables,
                 branches: verifications,
@@ -819,6 +812,8 @@ impl From<Block> for FinalBlock {
                     .chain(base.pos.into_iter())
                     .map(|x| x.convert())
                     .collect(),
+                variants_prior: ph2.variants_prior,
+                variants_number: ph2.variants_number,
             },
         }
     }
@@ -939,7 +934,7 @@ impl BlockPhase1 {
         base.verifications
             .iter_mut()
             .filter_map(Verification::sub_pattern_mut)
-            .map(|sub| sub.solve(solved).map(|_| ()))
+            .map(|sub| sub.calculate_len(solved).map(|_| ()))
             .collect::<Result<_, _>>()?;
         //TODO check all table value verifications export a const value
         match base.op {
@@ -971,15 +966,14 @@ impl BlockPhase2 {
         len: PatternLen,
         variants_prior: usize,
     ) -> Self {
-        let mut variants_number = 1;
-        let mut variants_prior_counter = variants_prior;
-        base.verifications
+        let variants_number = base
+            .verifications
             .iter_mut()
             .filter_map(Verification::sub_pattern_mut)
-            .for_each(|pattern| {
-                let phase2 = pattern.into_phase2(variants_prior_counter);
-                variants_number *= phase2.variants_number;
-                variants_prior_counter *= phase2.variants_number;
+            .fold(1, |variants_counter, pattern| {
+                pattern.calculate_bits(variants_counter);
+                let variants_number = pattern.variants_num();
+                variants_counter * variants_number
             });
         Self {
             len,
@@ -999,7 +993,7 @@ impl BlockPhase2 {
             .map(|verification| {
                 verification
                     .sub_pattern_mut()
-                    .map(|pattern| pattern.into_phase2(variants_prior));
+                    .map(|pattern| pattern.calculate_bits(variants_prior));
                 verification
             })
             .map(|verification| verification.variants_number())
@@ -1010,84 +1004,5 @@ impl BlockPhase2 {
             variants_number,
             variants_lock: false,
         }
-    }
-    pub fn bits_produced(&self) -> usize {
-        let len = self.len.single_len().unwrap_or_else(|| self.len.min());
-        usize::try_from(len).unwrap() * 8
-    }
-    pub fn constraint(
-        &self,
-        base: &BlockBase,
-        variant_id: usize,
-        constraint: &mut [BitConstraint],
-    ) {
-        match base.op {
-            Op::And => self.constraint_and(base, variant_id, constraint),
-            Op::Or => self.constraint_or(base, variant_id, constraint),
-        }
-    }
-    fn constraint_and(
-        &self,
-        base: &BlockBase,
-        variant_id: usize,
-        constraint: &mut [BitConstraint],
-    ) {
-        for verification in base.verifications.iter() {
-            match verification {
-                Verification::ContextCheck { .. }
-                | Verification::TableBuild { .. } => (),
-                Verification::TokenFieldCheck { field, op, value } => {
-                    Verification::constraint_bits_field(
-                        constraint, field, op, value,
-                    )
-                }
-                Verification::SubPattern {
-                    location: _,
-                    pattern,
-                } => match &pattern.phase {
-                    super::PatternPhase::Phase2(ph2) => {
-                        ph2.constraint(&pattern.base, variant_id, constraint)
-                    }
-                    _ => unreachable!(),
-                },
-            }
-        }
-    }
-    fn constraint_or(
-        &self,
-        base: &BlockBase,
-        variant_id: usize,
-        constraint: &mut [BitConstraint],
-    ) {
-        //find the correct verification in the OR to constraint
-        let mut verification_id =
-            (variant_id / self.variants_prior) % self.variants_number;
-        for verification in base.verifications.iter() {
-            let verification_variants = verification.variants_number();
-            if verification_id < verification_variants {
-                match verification {
-                    Verification::ContextCheck { .. }
-                    | Verification::TableBuild { .. } => (),
-                    Verification::TokenFieldCheck { field, op, value } => {
-                        Verification::constraint_bits_field(
-                            constraint, field, op, value,
-                        )
-                    }
-                    Verification::SubPattern { pattern, .. } => {
-                        match &pattern.phase {
-                            super::PatternPhase::Phase2(ph2) => ph2.constraint(
-                                &pattern.base,
-                                variant_id,
-                                constraint,
-                            ),
-                            _ => unreachable!(),
-                        }
-                    }
-                };
-                return;
-            }
-            verification_id -= verification_variants;
-        }
-        unreachable!()
     }
 }

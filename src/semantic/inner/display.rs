@@ -74,7 +74,6 @@ fn get_display_ref(
 ) -> Result<DisplayElement, DisplayError> {
     use crate::semantic::inner::GlobalScope::*;
     pattern
-        .base
         .disassembly_vars
         .get(name)
         .map(|var| Ok(DisplayElement::Dissasembly(Rc::clone(var))))
@@ -87,7 +86,6 @@ fn get_display_ref(
                     let token_field =
                         GlobalReference::from_element(x, src.clone());
                     if pattern
-                        .base
                         .produce_token_field(&token_field)
                         .map(|block_num| block_num.is_none())
                         .unwrap()

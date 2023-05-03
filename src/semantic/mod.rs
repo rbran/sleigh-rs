@@ -491,9 +491,10 @@ impl Sleigh {
     }
     pub(crate) fn new(value: syntax::Sleigh) -> Result<Self, SleighError> {
         let inner = inner::Sleigh::new(value)?;
+        let context_len: usize = inner.context_len().try_into().unwrap();
         //HACK: verify that indirect recursion don't happen
         //NOTE we don't need to worry about direct (self) recursion.
-        //AKA `TableA` calling itself
+        //AKA `Tablea` calling itself
         for table in inner
             .idents
             .values()
@@ -593,7 +594,9 @@ impl Sleigh {
         }
 
         global_scope.extend(tables.into_iter().map(|x| {
-            (Rc::clone(&x.name), GlobalScope::Table(x.element_convert()))
+            x.convert(context_len);
+            let x = x.element_convert();
+            (Rc::clone(&x.name), GlobalScope::Table(x))
         }));
         //only convert used macros, AKA the ones that was solved/used by tables
         global_scope.extend(

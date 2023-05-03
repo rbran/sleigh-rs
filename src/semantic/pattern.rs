@@ -3,9 +3,11 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
+use crate::semantic::inner::pattern::{BitConstraint, SinglePatternOrdering};
 use crate::{from_error, NumberUnsigned, Span};
 
 use super::disassembly::{Assertation, DisassemblyError, Expr, Variable};
+use super::inner::pattern::MultiplePatternOrdering;
 use super::table::Table;
 use super::token::TokenField;
 use super::varnode::Context;
@@ -107,8 +109,8 @@ impl PatternLen {
             ) => Self::Min(x + y),
         }
     }
-    /// creates a new range that includes the two original ranges
-    pub(crate) fn union(self, other: Self) -> Self {
+    /// creates a new range that is the greater of the two
+    pub(crate) fn greater(self, other: Self) -> Self {
         match (self, other) {
             (Self::Defined(x), Self::Defined(y)) => Self::Defined(x.max(y)),
             (
@@ -268,6 +270,92 @@ impl Pattern {
     pub fn len(&self) -> &PatternLen {
         &self.len
     }
+    pub fn flat_pattern_len(&self) -> usize {
+        let mut flat_len = 0;
+        for block in self.blocks.iter() {
+            //stop parsing if the len is not defined
+            if let Some(len) = block.len().single_len() {
+                flat_len += usize::try_from(len).unwrap() * 8;
+            } else {
+                flat_len += usize::try_from(block.len().min()).unwrap() * 8;
+                break;
+            }
+        }
+        flat_len
+    }
+    pub fn variants_num(&self) -> usize {
+        self.blocks
+            .iter()
+            .fold(1, |acc, block| acc * block.variants_number())
+    }
+    pub fn bits_produced(&self) -> usize {
+        let len = self.len.single_len().unwrap_or_else(|| self.len.min());
+        usize::try_from(len).unwrap() * 8
+    }
+
+    pub fn constraint(
+        &self,
+        variant_id: usize,
+        context: &mut [BitConstraint],
+        constraint: &mut [BitConstraint],
+    ) {
+        let mut current = constraint;
+        for block in self.blocks.iter() {
+            block.constraint(variant_id, context, current);
+            let next_offset = block.bits_produced();
+            current = &mut current[next_offset..];
+        }
+    }
+    ////7.8.1. Matching
+    ////one pattern contains the other if all the cases that match the contained,
+    ////also match the pattern.
+    ////eg: `a` contains `b` if all cases that match `b` also match `a`. In other
+    ////words `a` is a special case of `b`.
+    ////NOTE the opose don't need to be true.
+    pub(crate) fn ordering(
+        &self,
+        other: &Self,
+        context_len: usize,
+    ) -> MultiplePatternOrdering {
+        use BitConstraint::*;
+        use SinglePatternOrdering::*;
+        let self_variants_num = self.variants_num();
+        let other_variants_num = other.variants_num();
+        let self_pattern_len = self.bits_produced();
+        let other_pattern_len = other.bits_produced();
+        let max_pattern_len = self_pattern_len.max(other_pattern_len);
+        let mut self_buf =
+            vec![BitConstraint::Unrestrained; context_len + max_pattern_len];
+        let mut other_buf =
+            vec![BitConstraint::Unrestrained; context_len + max_pattern_len];
+        let mut variant_ordering = MultiplePatternOrdering::default();
+
+        for self_id in 0..self_variants_num {
+            self_buf.fill(BitConstraint::Unrestrained);
+            let (self_context, self_constraint) =
+                self_buf.split_at_mut(context_len);
+            self.constraint(self_id, self_context, self_constraint);
+            for other_id in 0..other_variants_num {
+                other_buf.fill(BitConstraint::Unrestrained);
+                let (other_context, other_constraint) =
+                    other_buf.split_at_mut(context_len);
+                other.constraint(other_id, other_context, other_constraint);
+                let cmp: SinglePatternOrdering = self_buf
+                    .iter()
+                    .zip(other_buf.iter())
+                    .map(|(self_bit, other_bit)| match (self_bit, other_bit) {
+                        (Impossible, _) | (_, Impossible) => unreachable!(),
+                        (Defined(_) | Restrained, Defined(_) | Restrained)
+                        | (Unrestrained, Unrestrained) => Eq,
+                        (Unrestrained, _) => Contained,
+                        (_, Unrestrained) => Contains,
+                    })
+                    .collect();
+                variant_ordering.add(cmp);
+            }
+        }
+        variant_ordering
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -280,6 +368,10 @@ pub enum Block {
         verifications: Box<[Verification]>,
         pre: Box<[Assertation]>,
         pos: Box<[Assertation]>,
+        /// zero means it's the first in the chain
+        variants_prior: usize,
+        /// number of variants this block produce
+        variants_number: usize,
     },
     //TODO `OR` block can produce token_fields?
     Or {
@@ -288,6 +380,10 @@ pub enum Block {
         tables: Box<[ProducedTable]>,
         branches: Box<[Verification]>,
         pos: Box<[Assertation]>,
+        /// zero means it's the first in the chain
+        variants_prior: usize,
+        /// number of variants this block produce
+        variants_number: usize,
     },
 }
 impl Block {
@@ -316,6 +412,82 @@ impl Block {
             } => verifications,
         }
     }
+
+    fn variants_number(&self) -> usize {
+        match self {
+            Block::And {
+                variants_number, ..
+            }
+            | Block::Or {
+                variants_number, ..
+            } => *variants_number,
+        }
+    }
+
+    fn bits_produced(&self) -> usize {
+        let len = self.len().single_len().unwrap_or_else(|| self.len().min());
+        usize::try_from(len).unwrap() * 8
+    }
+
+    fn constraint(
+        &self,
+        variant_id: usize,
+        context: &mut [BitConstraint],
+        constraint: &mut [BitConstraint],
+    ) {
+        match self {
+            Self::And { verifications, .. } => {
+                for verification in verifications.iter() {
+                    match verification {
+                        Verification::ContextCheck { .. }
+                        | Verification::TableBuild { .. } => (),
+                        Verification::TokenFieldCheck { field, op, value } => {
+                            Verification::constraint_bits_field(
+                                constraint, field, op, value,
+                            )
+                        }
+                        Verification::SubPattern {
+                            location: _,
+                            pattern,
+                        } => {
+                            pattern.constraint(variant_id, context, constraint)
+                        }
+                    }
+                }
+            }
+            Self::Or {
+                branches,
+                variants_prior,
+                variants_number,
+                ..
+            } => {
+                //find the correct verification in the OR to constraint
+                let mut verification_id =
+                    (variant_id / variants_prior) % variants_number;
+                for branch in branches.iter() {
+                    let verification_variants = branch.variants_number();
+                    if verification_id < verification_variants {
+                        match branch {
+                            Verification::ContextCheck { .. }
+                            | Verification::TableBuild { .. } => (),
+                            Verification::TokenFieldCheck {
+                                field,
+                                op,
+                                value,
+                            } => Verification::constraint_bits_field(
+                                constraint, field, op, value,
+                            ),
+                            Verification::SubPattern { pattern, .. } => pattern
+                                .constraint(variant_id, context, constraint),
+                        };
+                        return;
+                    }
+                    verification_id -= verification_variants;
+                }
+                unreachable!()
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -339,6 +511,49 @@ pub enum Verification {
         pattern: Pattern,
     },
 }
+impl Verification {
+    pub fn constraint_bits_field(
+        constraint: &mut [BitConstraint],
+        field: &GlobalReference<TokenField>,
+        op: &CmpOp,
+        value: &ConstraintValue,
+    ) {
+        let field = field.element();
+        let field_range = field.element().range();
+        let range = field_range.0.start as usize..field_range.0.end as usize;
+        let bits = constraint[range].iter_mut();
+
+        use crate::semantic::disassembly::{ExprElement, ReadScope};
+        let ConstraintValue { expr: Expr { rpn } } = value;
+        match (op, rpn.first()) {
+            (
+                CmpOp::Eq,
+                Some(ExprElement::Value(ReadScope::Integer(value))),
+            ) => {
+                let value_bits = bits
+                    .enumerate()
+                    .map(|(i, b)| (b, value.signed_super() & (1 << i) != 0));
+                for (bit, value_bit) in value_bits {
+                    //TODO create error here for this
+                    *bit = bit.define(value_bit);
+                }
+            }
+            (CmpOp::Eq | CmpOp::Ne, _) => {
+                for bit in bits {
+                    //error never happen with `BitConstraint::Restrained`
+                    *bit = bit.most_restrictive(BitConstraint::Restrained)
+                }
+            }
+            (_, _) => (),
+        }
+    }
+    pub fn variants_number(&self) -> usize {
+        match self {
+            Self::SubPattern { pattern, .. } => pattern.variants_num(),
+            _ => 1,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum ConstraintField {
@@ -357,9 +572,6 @@ impl ConstraintValue {
     pub(crate) fn new(expr: Expr) -> Self {
         Self { expr }
     }
-}
-
-impl ConstraintValue {
     pub fn expr(&self) -> &Expr {
         &self.expr
     }
