@@ -1,5 +1,5 @@
 /// Represent how a bit is limited in a pattern
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BitConstraint {
     //can have any value
     #[default]

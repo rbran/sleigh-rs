@@ -95,14 +95,30 @@ impl WithBlockCurrent {
                 //merge the first_block (final_pattern) with the last_block
                 //(new_pattern)
                 (Some(first_block), Some(last_block)) => {
-                    //last block will include all the elements from the first block of
-                    //the new pattern
-                    last_block
-                        .elements
-                        .extend([(Op::And, first_block.first.clone())]);
-                    last_block
-                        .elements
-                        .extend(first_block.elements.iter().cloned());
+                    //if the first and second blocks have diferent OPs, make the
+                    //second block a subpattern to avoid conflict.
+                    if first_block.op() != last_block.op() {
+                        last_block.elements.push((
+                            Op::And,
+                            syntax::block::pattern::Element {
+                                field:
+                                    syntax::block::pattern::Field::SubPattern(
+                                        pattern.clone(),
+                                    ),
+                                ellipsis: None,
+                            },
+                        ));
+                        continue;
+                    } else {
+                        //last block will include all the elements from the first block of
+                        //the new pattern
+                        last_block
+                            .elements
+                            .extend([(Op::And, first_block.first.clone())]);
+                        last_block
+                            .elements
+                            .extend(first_block.elements.iter().cloned());
+                    }
                 }
             }
             //add all the other blocks without merging

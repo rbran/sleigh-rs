@@ -136,6 +136,9 @@ pub struct Block {
 }
 
 impl Block {
+    pub fn op(&self) -> Op {
+        self.elements.first().map(|(op, _)| *op).unwrap_or(Op::And)
+    }
     pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
         map(
             tuple((Element::parse, many0(pair(Op::parse, Element::parse)))),

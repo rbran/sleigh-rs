@@ -335,11 +335,17 @@ impl Pattern {
             let (self_context, self_constraint) =
                 self_buf.split_at_mut(context_len);
             self.constraint(self_id, self_context, self_constraint);
+            if self_buf.contains(&Impossible) {
+                continue;
+            }
             for other_id in 0..other_variants_num {
                 other_buf.fill(BitConstraint::Unrestrained);
                 let (other_context, other_constraint) =
                     other_buf.split_at_mut(context_len);
                 other.constraint(other_id, other_context, other_constraint);
+                if other_buf.contains(&Impossible) {
+                    continue;
+                }
                 let cmp: SinglePatternOrdering = self_buf
                     .iter()
                     .zip(other_buf.iter())

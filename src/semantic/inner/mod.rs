@@ -412,11 +412,11 @@ impl Sleigh {
     pub fn context_len(&self) -> u64 {
         //for now only allow the context to point to a single varnode
         let (varnode, mut low_bit, mut high_bit) = {
-            let first_context = self
-                .idents
-                .values()
-                .find_map(GlobalScope::unwrap_context)
-                .unwrap();
+            let first_context =
+                self.idents.values().find_map(GlobalScope::unwrap_context);
+            let Some(first_context) = first_context else {
+                return 0;
+            };
             let varnode = first_context.varnode.clone();
             (
                 varnode,
