@@ -10,9 +10,8 @@ use nom::branch::alt;
 use nom::combinator::{cut, eof, map, value};
 use nom::sequence::{pair, preceded, terminated};
 use nom::IResult;
-use sleigh4rust::Endian;
 
-use crate::SleighError;
+use crate::{Endian, SleighError};
 
 use crate::preprocessor::token::Token as ParserToken;
 

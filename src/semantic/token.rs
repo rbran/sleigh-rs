@@ -1,6 +1,4 @@
-use sleigh4rust::Endian;
-
-use crate::{BitRange, NumberNonZeroUnsigned, Span};
+use crate::{BitRange, NumberNonZeroUnsigned, Span, Endian};
 
 use super::meaning::Meaning;
 use super::GlobalElement;

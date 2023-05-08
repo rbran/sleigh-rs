@@ -11,12 +11,11 @@ pub mod varnode;
 pub mod with_block;
 
 use indexmap::IndexMap;
-use sleigh4rust::Endian;
 use std::rc::Rc;
 
 use crate::syntax::define::TokenFieldAttribute;
 use crate::{
-    syntax, NumberUnsigned, SleighError, Span, IDENT_EPSILON,
+    syntax, Endian, NumberUnsigned, SleighError, Span, IDENT_EPSILON,
     IDENT_INSTRUCTION, IDENT_INST_NEXT, IDENT_INST_START,
 };
 
@@ -408,34 +407,5 @@ impl Sleigh {
         sleigh.process(&mut WithBlockCurrent::default(), syntax)?;
 
         Ok(sleigh)
-    }
-    pub fn context_len(&self) -> u64 {
-        //for now only allow the context to point to a single varnode
-        let (varnode, mut low_bit, mut high_bit) = {
-            let first_context =
-                self.idents.values().find_map(GlobalScope::unwrap_context);
-            let Some(first_context) = first_context else {
-                return 0;
-            };
-            let varnode = first_context.varnode.clone();
-            (
-                varnode,
-                first_context.range.start(),
-                first_context.range.end().get(),
-            )
-        };
-        for context in
-            self.idents.values().filter_map(GlobalScope::unwrap_context)
-        {
-            if context.varnode != varnode {
-                //TODO error
-                panic!("Context pointing to multiple varnodes");
-            }
-            low_bit = low_bit.min(context.range.start());
-            high_bit = high_bit.max(context.range.end().get());
-        }
-        low_bit = (low_bit + 7) / 8;
-        high_bit = (high_bit + 7) / 8;
-        high_bit - low_bit
     }
 }

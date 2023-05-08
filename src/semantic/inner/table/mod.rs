@@ -310,7 +310,7 @@ impl Table {
         }
         Ok(())
     }
-    pub fn convert(&self, context_len: usize) -> Rc<FinalTable> {
+    pub fn convert(&self, context_bytes: usize) -> Rc<FinalTable> {
         let converted = *self.converted.borrow();
         if converted {
             return Rc::clone(&self.result);
@@ -334,7 +334,7 @@ impl Table {
                     //AND
                     //second variant of self contains the first variant of other
                     let ord =
-                        constructor.pattern.ordering(&con.pattern, context_len);
+                        constructor.pattern.ordering(&con.pattern, context_bytes);
                     use super::pattern::MultiplePatternOrdering as Ord;
                     match ord {
                         //new pattern is contained at least once, just skip it

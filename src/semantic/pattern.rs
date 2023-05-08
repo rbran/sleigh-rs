@@ -4,7 +4,7 @@ use std::rc::Rc;
 use thiserror::Error;
 
 use crate::semantic::inner::pattern::{BitConstraint, SinglePatternOrdering};
-use crate::{from_error, NumberUnsigned, Span};
+use crate::{from_error, BitRange, NumberUnsigned, Span};
 
 use super::disassembly::{Assertation, DisassemblyError, Expr, Variable};
 use super::inner::pattern::MultiplePatternOrdering;
@@ -293,6 +293,38 @@ impl Pattern {
         usize::try_from(len).unwrap() * 8
     }
 
+    pub fn variants<'a>(
+        &'a self,
+        context_bytes: usize,
+    ) -> impl Iterator<Item = (Vec<(u8, u8)>, Vec<(u8, u8)>)> + 'a {
+        let context_bits = context_bytes * 8;
+        let len_bits = context_bits + self.bits_produced();
+        let mut buf = vec![BitConstraint::default(); len_bits];
+        let mut result = vec![(0u8, 0u8); len_bits / 8];
+        (0..self.variants_num()).into_iter().filter_map(move |i| {
+            buf.fill(BitConstraint::default());
+            result.fill((0, 0));
+            let (context, constraint) = buf.split_at_mut(context_bits);
+            self.constraint(i, context, constraint);
+            (!buf.contains(&BitConstraint::Impossible)).then_some(())?;
+            for (i, bit) in buf.iter().enumerate() {
+                match bit {
+                    BitConstraint::Unrestrained | BitConstraint::Restrained => {
+                    }
+                    BitConstraint::Impossible => unreachable!(),
+                    BitConstraint::Defined(value) => {
+                        //value
+                        result[i / 8].0 |= (*value as u8) << (i % 8);
+                        //mask
+                        result[i / 8].1 |= 1 << (i % 8);
+                    }
+                }
+            }
+            let (context, constraint) = result.split_at(context_bytes);
+            Some((context.to_vec(), constraint.to_vec()))
+        })
+    }
+
     pub fn constraint(
         &self,
         variant_id: usize,
@@ -315,8 +347,9 @@ impl Pattern {
     pub(crate) fn ordering(
         &self,
         other: &Self,
-        context_len: usize,
+        context_bytes: usize,
     ) -> MultiplePatternOrdering {
+        let context_bits = context_bytes * 8;
         use BitConstraint::*;
         use SinglePatternOrdering::*;
         let self_variants_num = self.variants_num();
@@ -325,15 +358,15 @@ impl Pattern {
         let other_pattern_len = other.bits_produced();
         let max_pattern_len = self_pattern_len.max(other_pattern_len);
         let mut self_buf =
-            vec![BitConstraint::Unrestrained; context_len + max_pattern_len];
+            vec![BitConstraint::Unrestrained; context_bits + max_pattern_len];
         let mut other_buf =
-            vec![BitConstraint::Unrestrained; context_len + max_pattern_len];
+            vec![BitConstraint::Unrestrained; context_bits + max_pattern_len];
         let mut variant_ordering = MultiplePatternOrdering::default();
 
         for self_id in 0..self_variants_num {
             self_buf.fill(BitConstraint::Unrestrained);
             let (self_context, self_constraint) =
-                self_buf.split_at_mut(context_len);
+                self_buf.split_at_mut(context_bits);
             self.constraint(self_id, self_context, self_constraint);
             if self_buf.contains(&Impossible) {
                 continue;
@@ -341,7 +374,7 @@ impl Pattern {
             for other_id in 0..other_variants_num {
                 other_buf.fill(BitConstraint::Unrestrained);
                 let (other_context, other_constraint) =
-                    other_buf.split_at_mut(context_len);
+                    other_buf.split_at_mut(context_bits);
                 other.constraint(other_id, other_context, other_constraint);
                 if other_buf.contains(&Impossible) {
                     continue;
@@ -438,26 +471,38 @@ impl Block {
     fn constraint(
         &self,
         variant_id: usize,
-        context: &mut [BitConstraint],
-        constraint: &mut [BitConstraint],
+        context_bits: &mut [BitConstraint],
+        constraint_bits: &mut [BitConstraint],
     ) {
         match self {
             Self::And { verifications, .. } => {
                 for verification in verifications.iter() {
                     match verification {
-                        Verification::ContextCheck { .. }
-                        | Verification::TableBuild { .. } => (),
+                        Verification::TableBuild { .. } => (),
+                        Verification::ContextCheck { context, op, value } => {
+                            Verification::constraint_bits_field(
+                                context_bits,
+                                &context.element().range,
+                                op,
+                                value,
+                            )
+                        }
                         Verification::TokenFieldCheck { field, op, value } => {
                             Verification::constraint_bits_field(
-                                constraint, field, op, value,
+                                constraint_bits,
+                                &field.element().range,
+                                op,
+                                value,
                             )
                         }
                         Verification::SubPattern {
                             location: _,
                             pattern,
-                        } => {
-                            pattern.constraint(variant_id, context, constraint)
-                        }
+                        } => pattern.constraint(
+                            variant_id,
+                            context_bits,
+                            constraint_bits,
+                        ),
                     }
                 }
             }
@@ -474,17 +519,33 @@ impl Block {
                     let verification_variants = branch.variants_number();
                     if verification_id < verification_variants {
                         match branch {
-                            Verification::ContextCheck { .. }
-                            | Verification::TableBuild { .. } => (),
+                            Verification::TableBuild { .. } => (),
+                            Verification::ContextCheck {
+                                context,
+                                op,
+                                value,
+                            } => Verification::constraint_bits_field(
+                                context_bits,
+                                &context.element().range,
+                                op,
+                                value,
+                            ),
                             Verification::TokenFieldCheck {
                                 field,
                                 op,
                                 value,
                             } => Verification::constraint_bits_field(
-                                constraint, field, op, value,
+                                constraint_bits,
+                                &field.element().range,
+                                op,
+                                value,
                             ),
                             Verification::SubPattern { pattern, .. } => pattern
-                                .constraint(variant_id, context, constraint),
+                                .constraint(
+                                    variant_id,
+                                    context_bits,
+                                    constraint_bits,
+                                ),
                         };
                         return;
                     }
@@ -520,12 +581,10 @@ pub enum Verification {
 impl Verification {
     pub fn constraint_bits_field(
         constraint: &mut [BitConstraint],
-        field: &GlobalReference<TokenField>,
+        field_range: &BitRange,
         op: &CmpOp,
         value: &ConstraintValue,
     ) {
-        let field = field.element();
-        let field_range = field.element().range();
         let range = field_range.0.start as usize..field_range.0.end as usize;
         let bits = constraint[range].iter_mut();
 

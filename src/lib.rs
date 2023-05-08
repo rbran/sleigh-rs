@@ -15,11 +15,6 @@ use semantic::table::TableError;
 use syntax::{BitRangeLsbLen, BitRangeLsbMsb};
 use thiserror::Error;
 
-pub(crate) use sleigh4rust::{
-    FloatType, NumberNonZeroUnsigned, NumberSigned, NumberSuperSigned,
-    NumberUnsigned,
-};
-
 pub use semantic::meaning::Meaning;
 pub use semantic::pattern::{Block, Pattern, PatternLen};
 pub use semantic::pcode_macro::PcodeMacro;
@@ -29,6 +24,38 @@ pub use semantic::token::{Token, TokenField};
 pub use semantic::user_function::UserFunction;
 pub use semantic::varnode::{Bitrange, Context, Varnode};
 pub use semantic::*;
+
+
+pub type FloatType = f64;
+pub type NumberUnsigned = u64;
+pub type NumberSigned = i64;
+pub type NumberSuperSigned = i128;
+pub type NumberSuperUnsigned = u128;
+pub type NumberNonZeroUnsigned = core::num::NonZeroU64;
+pub type NumberNonZeroSigned = core::num::NonZeroI64;
+pub type NumberNonZeroSuperSigned = core::num::NonZeroI128;
+pub type DisassemblyType = NumberSuperSigned;
+
+//old naming convention
+pub type IntTypeU = NumberUnsigned;
+pub type IntTypeS = NumberSigned;
+pub type NonZeroTypeU = NumberNonZeroUnsigned;
+pub type NonZeroTypeS = NumberNonZeroSigned;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum Endian {
+    Little,
+    Big,
+}
+
+impl Endian {
+    pub fn is_little(&self) -> bool {
+        matches!(self, Self::Little)
+    }
+    pub fn is_big(&self) -> bool {
+        matches!(self, Self::Big)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Number {

@@ -15,32 +15,24 @@ pub mod varnode;
 mod inner;
 
 use indexmap::IndexMap;
-use sleigh4rust::Endian;
 use std::rc::Rc;
 use std::rc::Weak;
 
 use thiserror::Error;
 
 use crate::semantic::inner::{SolvedLocation, SolverStatus};
-use crate::syntax;
-use crate::NumberNonZeroUnsigned;
-use crate::SleighError;
-use crate::Span;
+use crate::NonZeroTypeU;
+use crate::{syntax, Endian, NumberNonZeroUnsigned, SleighError, Span};
 
 use self::disassembly::DisassemblyError;
-use self::inner::GlobalConvert;
-use self::inner::Solved;
+use self::inner::{GlobalConvert, Solved};
 use self::pattern::PatternError;
-use self::pcode_macro::PcodeMacro;
-use self::pcode_macro::PcodeMacroError;
+use self::pcode_macro::{PcodeMacro, PcodeMacroError};
 use self::space::Space;
-use self::table::Table;
-use self::table::TableError;
+use self::table::{Table, TableError};
 use self::token::*;
 use self::user_function::UserFunction;
-use self::varnode::Bitrange;
-use self::varnode::Context;
-use self::varnode::Varnode;
+use self::varnode::{Bitrange, Context, Varnode};
 
 #[macro_export]
 macro_rules! from_error {
@@ -491,7 +483,6 @@ impl Sleigh {
     }
     pub(crate) fn new(value: syntax::Sleigh) -> Result<Self, SleighError> {
         let inner = inner::Sleigh::new(value)?;
-        let context_len: usize = inner.context_len().try_into().unwrap();
         //HACK: verify that indirect recursion don't happen
         //NOTE we don't need to worry about direct (self) recursion.
         //AKA `Tablea` calling itself
@@ -593,8 +584,13 @@ impl Sleigh {
             }
         }
 
+        let context_bytes: usize = Self::context_len(
+            global_scope.values().filter_map(GlobalScope::context),
+        )
+        .map(|x| x.get().try_into().unwrap())
+        .unwrap_or(0);
         global_scope.extend(tables.into_iter().map(|x| {
-            x.convert(context_len);
+            x.convert(context_bytes);
             let x = x.element_convert();
             (Rc::clone(&x.name), GlobalScope::Table(x))
         }));
@@ -621,6 +617,22 @@ impl Sleigh {
             addr_len_bytes: inst_len_bytes,
         })
     }
+    pub fn context_len<'a>(
+        mut contexts: impl Iterator<Item = &'a GlobalElement<Context>> + 'a,
+    ) -> Option<NonZeroTypeU> {
+        //for now only allow the context to point to a single varnode
+        let first_context = contexts.next();
+        let first_context = first_context?;
+        let varnode = &first_context.varnode;
+        for context in contexts {
+            if &context.varnode != varnode {
+                //TODO allow multiple varnodes
+                panic!("Context pointing to multiple varnodes");
+            }
+        }
+        Some(varnode.len_bytes())
+    }
+
     pub fn spaces<'a>(
         &'a self,
     ) -> impl Iterator<Item = &'a GlobalElement<Space>> + 'a {

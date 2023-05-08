@@ -5,11 +5,9 @@ use crate::semantic::meaning::Meaning;
 use crate::semantic::token::Token;
 use crate::semantic::{GlobalConvert, SemanticError};
 use crate::syntax::define;
-use crate::{BitRange, NumberNonZeroUnsigned, SleighError, Span};
+use crate::{BitRange, Endian, NumberNonZeroUnsigned, SleighError, Span};
 
-use super::{
-    Endian, FieldSize, GlobalElement, GlobalScope, PrintFlags, Sleigh,
-};
+use super::{FieldSize, GlobalElement, GlobalScope, PrintFlags, Sleigh};
 
 //#[derive(Clone, Debug, Error)]
 //pub enum TokenFieldError {
