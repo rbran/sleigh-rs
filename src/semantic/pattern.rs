@@ -7,7 +7,6 @@ use crate::semantic::inner::pattern::{BitConstraint, SinglePatternOrdering};
 use crate::{from_error, BitRange, NumberUnsigned, Span};
 
 use super::disassembly::{Assertation, DisassemblyError, Expr, Variable};
-use super::inner::pattern::MultiplePatternOrdering;
 use super::table::Table;
 use super::token::TokenField;
 use super::varnode::Context;
@@ -338,6 +337,46 @@ impl Pattern {
             current = &mut current[next_offset..];
         }
     }
+
+    pub fn constraint_single(
+        &self,
+        context_bytes: usize,
+    ) -> Vec<BitConstraint> {
+        let context_bits = context_bytes * 8;
+        let mut final_buf = vec![
+            BitConstraint::Unrestrained;
+            context_bits + self.bits_produced()
+        ];
+        let self_buf = std::cell::RefCell::new(vec![
+            BitConstraint::Unrestrained;
+            context_bits + self.bits_produced()
+        ]);
+
+        let mut variant_gen =
+            (0..self.variants_num()).into_iter().filter_map(|var| {
+                let mut self_buf = self_buf.borrow_mut();
+                self_buf.fill(BitConstraint::Unrestrained);
+                let (self_context, self_constraint) =
+                    self_buf.split_at_mut(context_bits);
+                self.constraint(var, self_context, self_constraint);
+                //ignore impossible variants
+                (!self_buf.contains(&BitConstraint::Impossible)).then_some(())
+            });
+
+        let Some(_first) = variant_gen.next() else {
+            return final_buf;
+        };
+        final_buf.copy_from_slice(&self_buf.borrow());
+
+        for _ in variant_gen {
+            final_buf
+                .iter_mut()
+                .zip(self_buf.borrow().iter())
+                .for_each(|(x, y)| *x = x.least_restrictive(*y));
+        }
+        final_buf
+    }
+
     ////7.8.1. Matching
     ////one pattern contains the other if all the cases that match the contained,
     ////also match the pattern.
@@ -348,52 +387,40 @@ impl Pattern {
         &self,
         other: &Self,
         context_bytes: usize,
-    ) -> MultiplePatternOrdering {
-        let context_bits = context_bytes * 8;
+    ) -> SinglePatternOrdering {
         use BitConstraint::*;
         use SinglePatternOrdering::*;
-        let self_variants_num = self.variants_num();
-        let other_variants_num = other.variants_num();
         let self_pattern_len = self.bits_produced();
         let other_pattern_len = other.bits_produced();
         let max_pattern_len = self_pattern_len.max(other_pattern_len);
-        let mut self_buf =
-            vec![BitConstraint::Unrestrained; context_bits + max_pattern_len];
-        let mut other_buf =
-            vec![BitConstraint::Unrestrained; context_bits + max_pattern_len];
-        let mut variant_ordering = MultiplePatternOrdering::default();
+        let self_buf = self.constraint_single(context_bytes);
+        let other_buf = other.constraint_single(context_bytes);
 
-        for self_id in 0..self_variants_num {
-            self_buf.fill(BitConstraint::Unrestrained);
-            let (self_context, self_constraint) =
-                self_buf.split_at_mut(context_bits);
-            self.constraint(self_id, self_context, self_constraint);
-            if self_buf.contains(&Impossible) {
-                continue;
-            }
-            for other_id in 0..other_variants_num {
-                other_buf.fill(BitConstraint::Unrestrained);
-                let (other_context, other_constraint) =
-                    other_buf.split_at_mut(context_bits);
-                other.constraint(other_id, other_context, other_constraint);
-                if other_buf.contains(&Impossible) {
-                    continue;
-                }
-                let cmp: SinglePatternOrdering = self_buf
-                    .iter()
-                    .zip(other_buf.iter())
-                    .map(|(self_bit, other_bit)| match (self_bit, other_bit) {
-                        (Impossible, _) | (_, Impossible) => unreachable!(),
-                        (Defined(_) | Restrained, Defined(_) | Restrained)
-                        | (Unrestrained, Unrestrained) => Eq,
-                        (Unrestrained, _) => Contained,
-                        (_, Unrestrained) => Contains,
-                    })
-                    .collect();
-                variant_ordering.add(cmp);
-            }
-        }
-        variant_ordering
+        let self_extend = max_pattern_len - self_pattern_len;
+        let other_extend = max_pattern_len - other_pattern_len;
+
+        self_buf
+            .into_iter()
+            .chain(
+                (0..self_extend)
+                    .into_iter()
+                    .map(|_| BitConstraint::Unrestrained),
+            )
+            .zip(
+                other_buf.into_iter().chain(
+                    (0..other_extend)
+                        .into_iter()
+                        .map(|_| BitConstraint::Unrestrained),
+                ),
+            )
+            .map(|(self_bit, other_bit)| match (self_bit, other_bit) {
+                (Impossible, _) | (_, Impossible) => unreachable!(),
+                (Defined(_) | Restrained, Defined(_) | Restrained)
+                | (Unrestrained, Unrestrained) => Eq,
+                (Unrestrained, _) => Contained,
+                (_, Unrestrained) => Contains,
+            })
+            .collect()
     }
 }
 

@@ -333,15 +333,19 @@ impl Table {
                     //first variant of self contains the second variant of other
                     //AND
                     //second variant of self contains the first variant of other
-                    let ord =
-                        constructor.pattern.ordering(&con.pattern, context_bytes);
-                    use super::pattern::MultiplePatternOrdering as Ord;
+                    let ord = constructor
+                        .pattern
+                        .ordering(&con.pattern, context_bytes);
+                    use super::pattern::SinglePatternOrdering as Ord;
                     match ord {
                         //new pattern is contained at least once, just skip it
-                        Ord { contained: 1.., .. } => None,
+                        Ord::Contained => None,
                         //new pattern contains at least once, insert it first
-                        Ord { contains: 1.., .. } => Some(i),
-                        Ord { .. } => None,
+                        Ord::Contains => Some(i),
+                        Ord::Eq => None,
+                        //TODO verify if a pattern solve this conflict, like is
+                        //decribed by the documentation
+                        Ord::Conflict => None,
                     }
                 });
             //insert constructors in the correct order accordingly with the

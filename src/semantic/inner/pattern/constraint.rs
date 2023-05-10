@@ -121,7 +121,7 @@ impl BitConstraint {
             (Self::Defined(self_value), Self::Defined(other_value))
                 if self_value != other_value =>
             {
-                Self::Unrestrained
+                Self::Restrained
             }
             //both have the same value
             (Self::Defined(_), Self::Defined(_)) => self,
