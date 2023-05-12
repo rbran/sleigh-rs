@@ -25,7 +25,6 @@ pub use semantic::user_function::UserFunction;
 pub use semantic::varnode::{Bitrange, Context, Varnode};
 pub use semantic::*;
 
-
 pub type FloatType = f64;
 pub type NumberUnsigned = u64;
 pub type NumberSigned = i64;
@@ -532,6 +531,21 @@ impl std::fmt::Display for FileLocation {
             self.line + 1,
             self.column + 1,
         )
+    }
+}
+
+// convert the bit number for this endian.
+// NOTE the bit order inside a byte is bit0=lsb .. bit7=msb
+fn bit_in_field(value_bit: u32, endian: Endian, field_bits: u32) -> u32 {
+    assert!(value_bit < field_bits);
+    match endian {
+        Endian::Little => value_bit,
+        Endian::Big => {
+            let field_bytes = field_bits / 8;
+            let value_byte = value_bit / 8;
+            let bit_in_byte = value_bit % 8;
+            (((field_bytes - 1) * 8) - (value_byte * 8)) + bit_in_byte
+        }
     }
 }
 

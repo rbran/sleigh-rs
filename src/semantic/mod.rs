@@ -21,11 +21,14 @@ use std::rc::Weak;
 use thiserror::Error;
 
 use crate::semantic::inner::{SolvedLocation, SolverStatus};
+use crate::Constructor;
 use crate::NonZeroTypeU;
 use crate::{syntax, Endian, NumberNonZeroUnsigned, SleighError, Span};
 
 use self::disassembly::DisassemblyError;
+use self::inner::pattern::BitConstraint;
 use self::inner::{GlobalConvert, Solved};
+use self::pattern::PatternByte;
 use self::pattern::PatternError;
 use self::pcode_macro::{PcodeMacro, PcodeMacroError};
 use self::space::Space;
@@ -631,6 +634,84 @@ impl Sleigh {
             }
         }
         Some(varnode.len_bytes())
+    }
+
+    /// produces the context and patterns bytes for this pattern, generate by
+    /// combining all the possible variations of it.
+    pub fn pattern_bytes(
+        &self,
+        constructor: &Constructor,
+    ) -> Option<(Vec<PatternByte>, Vec<PatternByte>)> {
+        let context_bytes: usize = Self::context_len(self.contexts())
+            .map(|x| x.get())
+            .unwrap_or(0)
+            .try_into()
+            .unwrap();
+        let endian = self.endian;
+        let constraint = constructor
+            .pattern
+            .constraint_single(endian, context_bytes)?;
+        let mut variant = vec![
+            PatternByte::default();
+            context_bytes
+                + constructor.pattern.bits_produced() / 8
+        ];
+        for (bit, bit_constraint) in constraint.into_iter().enumerate() {
+            match bit_constraint {
+                BitConstraint::Unrestrained => {}
+                BitConstraint::Restrained => {
+                    variant[bit / 8].value |= 1 << (bit % 8);
+                }
+                BitConstraint::Defined(value) => {
+                    variant[bit / 8].value |= (value as u8) << (bit % 8);
+                    variant[bit / 8].mask |= 1 << (bit % 8);
+                }
+            }
+        }
+        let pattern = variant.split_off(context_bytes);
+        let context = variant;
+        Some((context, pattern))
+    }
+
+    /// all the possible variants of this pattern
+    pub fn pattern_bytes_variants<'a>(
+        &self,
+        constructor: &'a Constructor,
+    ) -> impl Iterator<Item = (Vec<PatternByte>, Vec<PatternByte>)> + 'a {
+        let context_bytes: usize = Self::context_len(self.contexts())
+            .map(|x| x.get())
+            .unwrap_or(0)
+            .try_into()
+            .unwrap();
+        let endian = self.endian;
+        let len_bits = context_bytes * 8 + constructor.pattern.bits_produced();
+        let mut buf = vec![BitConstraint::default(); len_bits];
+        let mut result = vec![PatternByte::default(); len_bits / 8];
+        (0..constructor.pattern.variants_num())
+            .into_iter()
+            .filter_map(move |i| {
+                buf.fill(BitConstraint::default());
+                result.fill(PatternByte::default());
+                let (context, constraint) = buf.split_at_mut(context_bytes * 8);
+                constructor
+                    .pattern
+                    .constraint(endian, i, context, constraint);
+                for (bit, restriction) in buf.iter().enumerate() {
+                    match restriction {
+                        BitConstraint::Unrestrained => (),
+                        BitConstraint::Restrained => {
+                            result[bit / 8].value |= 1 << (bit % 8);
+                        }
+                        BitConstraint::Defined(value) => {
+                            result[bit / 8].value |=
+                                (*value as u8) << (bit % 8);
+                            result[bit / 8].mask |= 1 << (bit % 8);
+                        }
+                    }
+                }
+                let (context, constraint) = result.split_at(context_bytes);
+                Some((context.to_vec(), constraint.to_vec()))
+            })
     }
 
     pub fn spaces<'a>(
