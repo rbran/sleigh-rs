@@ -69,7 +69,7 @@ impl ContextFieldAttribute {
     pub(crate) fn from_str(name: &str) -> Option<Self> {
         TokenFieldAttribute::from_str(name)
             .map(Self::Token)
-            .or_else(|| match name {
+            .or(match name {
                 "noflow" => Some(Self::Noflow),
                 _ => None,
             })

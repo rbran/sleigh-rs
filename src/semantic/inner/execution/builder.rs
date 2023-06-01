@@ -1,14 +1,18 @@
-use std::rc::Rc;
-
-use crate::semantic::inner::execution::{
-    AddrDereference, BranchCall, ExecutionError, Unary,
+use crate::semantic::execution::{
+    BlockId, Build, ExprExeVar, ExprTable, ReferencedValue, Unary, VariableId,
+    WriteValue,
 };
-use crate::semantic::inner::{GlobalScope, Table};
-use crate::semantic::GlobalElement;
-use crate::syntax::{block, Value};
-use crate::{Number, NumberNonZeroUnsigned};
+use crate::semantic::inner::execution::ExprNumber;
+use crate::semantic::inner::Sleigh;
+use crate::semantic::{GlobalScope, SpaceId, TableId};
+use crate::{syntax, Number, NumberNonZeroUnsigned, NumberUnsigned, Span};
 
-use super::*;
+use super::{
+    Assignment, BranchCall, CpuBranch, Execution, ExecutionError, Export,
+    ExportConst, ExportLen, Expr, ExprCPool, ExprDisVar, ExprElement, ExprNew,
+    FieldSize, LocalGoto, MacroCall, MemWrite, MemoryLocation, ReadValue,
+    Reference, Statement, Truncate, UserCall,
+};
 
 pub trait ExecutionBuilder {
     fn sleigh(&self) -> &Sleigh;
@@ -18,80 +22,73 @@ pub trait ExecutionBuilder {
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<ExprValue, ExecutionError>;
+    ) -> Result<ReadValue, ExecutionError>;
     fn write_scope(
         &mut self,
         name: &str,
         src: &Span,
     ) -> Result<WriteValue, ExecutionError>;
-    fn table<'b>(
-        &'b self,
-        name: &str,
-        src: &Span,
-    ) -> Result<&'b GlobalElement<Table>, ExecutionError> {
+    fn table(&self, name: &str, src: &Span) -> Result<TableId, ExecutionError> {
         self.sleigh()
             .get_global(name)
-            .ok_or(ExecutionError::MissingRef(src.clone()))?
-            .unwrap_table()
-            .ok_or(ExecutionError::InvalidRef(src.clone()))
+            .ok_or_else(|| ExecutionError::MissingRef(src.clone()))?
+            .table()
+            .ok_or_else(|| ExecutionError::InvalidRef(src.clone()))
     }
-    fn space<'b>(
-        &'b self,
-        name: &str,
-        src: &Span,
-    ) -> Result<&'b GlobalElement<Space>, ExecutionError> {
+    fn space(&self, name: &str, src: &Span) -> Result<SpaceId, ExecutionError> {
         self.sleigh()
             .get_global(name)
-            .ok_or(ExecutionError::MissingRef(src.clone()))?
-            .unwrap_space()
-            .ok_or(ExecutionError::InvalidRef(src.clone()))
+            .ok_or_else(|| ExecutionError::MissingRef(src.clone()))?
+            .space()
+            .ok_or_else(|| ExecutionError::InvalidRef(src.clone()))
     }
-    fn current_block(&self) -> Rc<Block>;
-    fn current_block_mut(&mut self) -> &mut Rc<Block>;
-    fn block(&self, name: &str) -> Option<Rc<Block>> {
-        self.execution().block(name)
-    }
-    fn create_block(&mut self, name: &str) -> Option<Rc<Block>> {
-        self.execution_mut().new_block(name)
-    }
-    fn set_current_block(&mut self, block: Rc<Block>) {
+    fn current_block(&self) -> BlockId;
+    //TODO rename this
+    fn inner_set_curent_block(&mut self, block: BlockId);
+    fn set_current_block(&mut self, block: BlockId) {
+        let current_id = self.current_block();
         {
-            let current = self.current_block();
-            let mut next = current.next.borrow_mut();
-            next.replace(Rc::clone(&block))
+            let mut current = self.execution().block_mut(current_id);
+            current
+                .next
+                .replace(block)
                 .map_or((), |_| panic!("multiple next"));
         }
-        let current_block = self.current_block_mut();
-        *current_block = block
-    }
-    fn variable(&self, name: &str) -> Option<&Rc<Variable>> {
-        self.execution().variable(name)
+        self.inner_set_curent_block(block)
     }
     fn create_variable(
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<Rc<Variable>, ExecutionError> {
-        let var = self.execution_mut().create_variable(name, src.clone())?;
-        self.insert_statement(Statement::Declare(Rc::clone(&var)));
+        explicit: bool,
+    ) -> Result<VariableId, ExecutionError> {
+        let var = self.execution_mut().create_variable(
+            name.to_owned(),
+            src.clone(),
+            explicit,
+        )?;
+        self.insert_statement(Statement::Declare(var));
         Ok(var)
     }
     fn insert_statement(&mut self, statement: Statement) {
-        let current_block = self.current_block();
-        let mut statements = current_block.statements.borrow_mut();
-        statements.push(statement);
+        let current_block_id = self.current_block();
+        let current_block =
+            &mut self.execution_mut().block_mut(current_block_id);
+        current_block.statements.push(statement);
     }
     fn extend(
         &mut self,
-        input: block::execution::Execution,
+        input: syntax::block::execution::Execution,
     ) -> Result<(), ExecutionError> {
         //start by creating all the blocks
         for statement in input.statements.iter() {
             match statement {
-                block::execution::Statement::Label(label) => {
-                    self.create_block(&label.name).ok_or_else(|| {
-                        ExecutionError::DuplicatedLabel(label.src.clone())
-                    })?;
+                syntax::block::execution::Statement::Label(label) => {
+                    self.execution_mut()
+                        .new_block(label.name.to_owned())
+                        .ok_or_else(|| {
+                            ExecutionError::DuplicatedLabel(label.src.clone())
+                        })?;
                 }
                 _ => (),
             }
@@ -100,26 +97,27 @@ pub trait ExecutionBuilder {
         //convert all the other statements
         for statement in input.statements.into_iter() {
             match statement {
-                block::execution::Statement::Label(x) => {
+                syntax::block::execution::Statement::Label(x) => {
                     //finding label means changing block
-                    let new_current_block = self.block(&x.name).unwrap();
+                    let new_current_block =
+                        self.execution().block_by_name(&x.name).unwrap();
                     self.set_current_block(new_current_block);
                 }
-                block::execution::Statement::Delayslot(x) => {
+                syntax::block::execution::Statement::Delayslot(x) => {
                     self.insert_statement(Statement::Delayslot(x.0));
                 }
-                block::execution::Statement::Export(x) => {
+                syntax::block::execution::Statement::Export(x) => {
                     let export = self.new_export(x)?;
                     self.insert_statement(Statement::Export(export));
                 }
-                block::execution::Statement::Build(x) => {
+                syntax::block::execution::Statement::Build(x) => {
                     let build = self.new_build(x)?;
                     self.insert_statement(Statement::Build(build));
                 }
-                block::execution::Statement::Branch(x) => {
+                syntax::block::execution::Statement::Branch(x) => {
                     let label = matches!(
                         x.dst,
-                        block::execution::branch::BranchDst::Label(_)
+                        syntax::block::execution::branch::BranchDst::Label(_)
                     );
                     if label {
                         let goto = self.new_local_goto(x)?;
@@ -129,65 +127,65 @@ pub trait ExecutionBuilder {
                         self.insert_statement(Statement::CpuBranch(branch));
                     }
                 }
-                block::execution::Statement::Call(x) => {
+                syntax::block::execution::Statement::Call(x) => {
                     let call = self.new_call_statement(x)?;
                     self.insert_statement(call);
                 }
-                block::execution::Statement::Declare(x) => {
-                    let var = self.create_variable(&x.name, &x.src)?;
+                syntax::block::execution::Statement::Declare(x) => {
+                    let var_id = self.create_variable(&x.name, &x.src, true)?;
+                    let var = self.execution_mut().variable_mut(var_id);
                     if let Some(size) = x.size {
                         let size = NumberNonZeroUnsigned::new(size.value)
                             .map(FieldSize::new_bytes)
                             .ok_or_else(|| {
                                 ExecutionError::InvalidVarLen(size.src)
                             })?;
-                        var.len().set(size);
+                        var.size.set(size);
                     }
                 }
-                block::execution::Statement::Assignment(x) => {
+                syntax::block::execution::Statement::Assignment(x) => {
                     let assignment = self.new_assignment(x)?;
                     self.insert_statement(assignment);
                 }
-                block::execution::Statement::MemWrite(x) => {
+                syntax::block::execution::Statement::MemWrite(x) => {
                     let assignment = self.new_mem_write(x)?;
                     self.insert_statement(Statement::MemWrite(assignment));
                 }
             }
         }
         //update blocks based on the last statement
-        for block in self.execution().blocks() {
-            let statements = block.statements.borrow();
-            let last_statement = statements.last();
+        for block in self.execution_mut().blocks.borrow_mut().iter_mut() {
+            let last_statement = block.statements.last();
             match last_statement {
                 //this block ends with unconditional local_jmp, this replace the
                 //next block
                 Some(Statement::LocalGoto(LocalGoto { cond: None, dst })) => {
                     //remove the goto, the next block will tha it's place
-                    *block.next.borrow_mut() = Some(Rc::clone(dst));
-                    drop(statements);
-                    block.statements.borrow_mut().pop();
+                    block.next = Some(*dst);
+                    block.statements.pop();
                 }
                 //If the last is export or unconditional cpu branch,
                 //this becames an return block, so next is None
                 Some(Statement::Export(_))
                 | Some(Statement::CpuBranch(CpuBranch {
                     cond: None, ..
-                })) => {
-                    *block.next.borrow_mut() = None;
-                }
+                })) => block.next = None,
                 _ => (),
             }
         }
         //find the return type for this execution
         let return_type = {
-            let mut iter = self
-                .execution()
-                .blocks()
+            let execution = self.execution();
+            let blocks = execution.blocks.borrow();
+            let mut iter = blocks
+                .iter()
                 //only blocks with no next block can export
-                .filter(|block| block.next.borrow().is_none())
+                .filter(|block| block.next.is_none())
                 //if the last statement is export, convert to export size
-                .filter_map(|block| match block.statements.borrow().last() {
-                    Some(Statement::Export(exp)) => Some(exp.return_type()),
+                .filter_map(|block| match block.statements.last() {
+                    Some(Statement::Export(exp)) => {
+                        Some(exp.return_type(self.sleigh(), self.execution()))
+                    }
                     _ => None,
                 });
             //FUTURE: replace this with try_reduce:
@@ -203,7 +201,7 @@ pub trait ExecutionBuilder {
             //short circuit, AKA invalid combination of return types
             None => return Err(ExecutionError::InvalidExport),
             //there are no returns
-            Some(None) => ExecutionExport::None,
+            Some(None) => ExportLen::None,
             //some return type
             Some(Some(ret)) => ret,
         };
@@ -212,86 +210,98 @@ pub trait ExecutionBuilder {
 
     fn new_build(
         &mut self,
-        input: block::execution::Build,
+        input: syntax::block::execution::Build,
     ) -> Result<Build, ExecutionError> {
-        let table = self.table(&input.table_name, &input.src)?;
-        Ok(Build::new(GlobalReference::from_element(
-            table,
-            input.src.clone(),
-        )))
+        let table_id = self.table(&input.table_name, &input.src)?;
+        let location = input.src;
+        Ok(Build {
+            table: ExprTable {
+                location,
+                id: table_id,
+            },
+        })
     }
     fn new_export_const(
         &mut self,
         input: &str,
         src: &Span,
     ) -> Result<ExportConst, ExecutionError> {
-        use ExprValue::*;
+        use ReadValue::*;
         match self.read_scope(input, src)? {
-            DisVar(src, _size, dis) => {
-                Ok(ExportConst::DisVar(src, dis.clone()))
-            }
-            TokenField(_size, ass) => Ok(ExportConst::TokenField(ass.clone())),
-            Context(_size, cont) => Ok(ExportConst::Context(cont.clone())),
-            Table(table) => match *table.element().export().borrow() {
-                Some(ExecutionExport::Const(_export)) => {
-                    Ok(ExportConst::Table(table.clone()))
+            DisVar(dis) => Ok(ExportConst::DisVar(dis.id)),
+            TokenField(ass) => Ok(ExportConst::TokenField(ass.id)),
+            Context(cont) => Ok(ExportConst::Context(cont.id)),
+            Table(expr_table) => {
+                let table = self.sleigh().table(expr_table.id);
+                match *table.export.borrow() {
+                    Some(ExportLen::Const(_export)) => {
+                        Ok(ExportConst::Table(expr_table.id))
+                    }
+                    //TODO more specific error
+                    //a const export can only use a table that also export const
+                    Some(_) => Err(ExecutionError::InvalidRef(src.clone())),
+                    //to constructors are available yet, can't use this table
+                    None => Err(ExecutionError::InvalidRef(src.clone())),
                 }
-                //TODO more specific error
-                //a const export can only use a table that also export const
-                Some(_) => Err(ExecutionError::InvalidRef(src.clone())),
-                //to constructors are available yet, can't use this table
-                None => Err(ExecutionError::InvalidRef(src.clone())),
-            },
+            }
             x => todo!("Error export invalid const {:#?}", x),
         }
     }
     fn new_export(
         &mut self,
-        input: block::execution::export::Export,
+        input: syntax::block::execution::export::Export,
     ) -> Result<Export, ExecutionError> {
-        use block::execution::export::Export as RawExport;
+        use syntax::block::execution::export::Export as RawExport;
         match input {
-            //RawExportValue::Unique{} => todo!(),
             RawExport::Value(value) => {
                 let value = self.new_expr(value)?;
                 //if the value is just an varnode, then is actually a reference
                 match value {
-                    Expr::Value(ExprElement::Value(ExprValue::Varnode(
-                        varnode,
-                    ))) => Ok(Export::new_reference(
-                        Expr::Value(ExprElement::Value(ExprValue::new_int(
-                            varnode.location().clone(),
-                            Number::Positive(varnode.element().offset),
-                        ))),
-                        AddrDereference::new(
-                            GlobalReference::from_element(
-                                &varnode.element().space,
-                                varnode.location().clone(),
-                            ),
-                            FieldSize::new_bytes(varnode.element().len_bytes),
-                            varnode.location().clone(),
-                        ),
-                    )),
+                    Expr::Value(ExprElement::Value(ReadValue::Varnode(
+                        varnode_expr,
+                    ))) => {
+                        let varnode = self.sleigh().varnode(varnode_expr.id);
+                        Ok(Export::new_reference(
+                            self.sleigh(),
+                            self.execution(),
+                            Expr::Value(ExprElement::Value(ReadValue::Int(
+                                ExprNumber::new(
+                                    varnode.location.clone(),
+                                    Number::Positive(varnode.address),
+                                ),
+                            ))),
+                            MemoryLocation {
+                                space: varnode.space,
+                                size: FieldSize::new_bytes(varnode.len_bytes),
+                                src: varnode.location.clone(),
+                            },
+                        ))
+                    }
                     _ => Ok(Export::new_value(value)),
                 }
             }
             RawExport::Reference { space, addr } => {
                 let addr = self.new_expr(addr)?;
                 let deref = self.new_addr_derefence(&space)?;
-                Ok(Export::new_reference(addr, deref))
+                Ok(Export::new_reference(
+                    self.sleigh(),
+                    self.execution(),
+                    addr,
+                    deref,
+                ))
             }
             RawExport::Const { size, value, src } => {
                 let value = self.new_export_const(&value, &src)?;
                 let size =
                     NumberNonZeroUnsigned::new(size.value).unwrap(/*TODO*/);
                 let size = FieldSize::new_bytes(size);
-                Ok(Export::new_const(size, value))
+                Ok(Export::new_const(size, src, value))
             }
         }
     }
     fn new_call_statement(
         &mut self,
-        input: block::execution::UserCall,
+        input: syntax::block::execution::UserCall,
     ) -> Result<Statement, ExecutionError> {
         let params = input
             .params
@@ -305,22 +315,22 @@ pub trait ExecutionBuilder {
         {
             GlobalScope::UserFunction(x) => {
                 Ok(Statement::UserCall(UserCall::new(
+                    self.sleigh(),
+                    self.execution(),
                     params,
-                    GlobalReference::from_element(x, input.src),
+                    x,
+                    input.src,
                 )))
             }
             GlobalScope::PcodeMacro(x) => {
-                Ok(Statement::MacroCall(MacroCall::new(
-                    params,
-                    GlobalReference::from_element(x, input.src),
-                )))
+                Ok(Statement::MacroCall(MacroCall::new(params, x)))
             }
             _ => Err(ExecutionError::InvalidRef(input.src)),
         }
     }
     fn new_call_expr(
         &mut self,
-        input: block::execution::UserCall,
+        input: syntax::block::execution::UserCall,
     ) -> Result<ExprElement, ExecutionError> {
         let params = input
             .params
@@ -332,16 +342,18 @@ pub trait ExecutionBuilder {
             .get_global(&input.name)
             .ok_or_else(|| ExecutionError::MissingRef(input.src.clone()))?
         {
-            GlobalScope::UserFunction(x) => Ok(ExprElement::UserCall(
-                //TODO better min output handler
-                FIELD_SIZE_BOOL,
-                UserCall::new(
+            GlobalScope::UserFunction(function) => {
+                Ok(ExprElement::UserCall(UserCall::new(
+                    self.sleigh(),
+                    self.execution(),
                     params,
-                    GlobalReference::from_element(x, input.src),
-                ),
-            )),
+                    function,
+                    input.src,
+                )))
+            }
             GlobalScope::PcodeMacro(x) => {
-                todo!("user defined {} exports?", x.name)
+                let pmacro = self.sleigh().pcode_macro(x);
+                todo!("user defined {} exports?", &pmacro.name)
             }
             _ => Err(ExecutionError::InvalidRef(input.src)),
         }
@@ -349,7 +361,7 @@ pub trait ExecutionBuilder {
 
     fn new_assignment(
         &mut self,
-        input: block::execution::assignment::Assignment,
+        input: syntax::block::execution::assignment::Assignment,
     ) -> Result<Statement, ExecutionError> {
         let mut right = self.new_expr(input.right)?;
         let var = self.write_scope(&input.ident, &input.src).ok();
@@ -358,26 +370,28 @@ pub trait ExecutionBuilder {
             (None, _) => {
                 //the var size is defined if ByteRangeLsb is present
                 //add the var creation statement
-                let new_var = self.create_variable(&input.ident, &input.src)?;
+                let new_var_id =
+                    self.create_variable(&input.ident, &input.src, false)?;
+                let new_var = self.execution_mut().variable_mut(new_var_id);
                 match &input.op {
                     Some(
-                        block::execution::assignment::OpLeft::ByteRangeLsb(x),
+                        syntax::block::execution::assignment::OpLeft::ByteRangeLsb(x),
                     ) => {
-                        let new_len = new_var
-                            .len()
-                            .get()
-                            .set_final_value(
+                        let new_len = new_var.size.get().set_final_value(
                                 NumberNonZeroUnsigned::new(x.value * 8)
                                     .unwrap(),
                             )
                             .unwrap();
-                        new_var.len().set(new_len);
+                        new_var.size.set(new_len);
                     }
                     Some(_) => todo!("create var with this op?"),
                     None => (),
                 }
                 Ok(Statement::Assignment(Assignment::new(
-                    WriteValue::ExeVar(input.src.clone(), new_var),
+                    WriteValue::Local(ExprExeVar {
+                        id: new_var_id,
+                        location: input.src.clone(),
+                    }),
                     None,
                     input.src,
                     right,
@@ -396,28 +410,41 @@ pub trait ExecutionBuilder {
                 match var {
                     //Assign to varnode is actually a mem write
                     WriteValue::Varnode(var) => {
-                        let var_ele = var.element();
-                        let mem = AddrDereference::new(
-                            GlobalReference::from_element(
-                                &var_ele.space,
-                                var.location().clone(),
-                            ),
-                            FieldSize::new_bytes(var_ele.len_bytes),
-                            var.location().clone(),
-                        );
+                        let var_ele = self.sleigh().varnode(var.id);
+                        let mem = MemoryLocation {
+                            space: var_ele.space,
+                            size: FieldSize::new_bytes(var_ele.len_bytes),
+                            src: input.src.clone(),
+                        };
                         let addr = Expr::Value(ExprElement::Value(
-                            ExprValue::new_int(
-                                var.location().clone(),
-                                Number::Positive(var_ele.offset),
-                            ),
+                            ReadValue::Int(ExprNumber {
+                                location: input.src.clone(),
+                                size: FieldSize::new_bytes(
+                                    self.sleigh().addr_bytes().ok_or_else(
+                                        || {
+                                            ExecutionError::InvalidRef(
+                                                input.src.clone(),
+                                            )
+                                        },
+                                    )?,
+                                ),
+                                number: Number::Positive(var_ele.address),
+                            }),
                         ));
-                        right.size_mut().update_action(|size| {
-                            size.intersection(FieldSize::new_bytes(
-                                var_ele.len_bytes,
-                            ))
-                        });
+                        right
+                            .size_mut(self.sleigh(), self.execution())
+                            .update_action(|size| {
+                                size.intersection(FieldSize::new_bytes(
+                                    var_ele.len_bytes,
+                                ))
+                            });
                         Ok(Statement::MemWrite(MemWrite::new(
-                            addr, mem, input.src, right,
+                            self.sleigh(),
+                            self.execution(),
+                            addr,
+                            mem,
+                            input.src,
+                            right,
                         )))
                     }
                     var => Ok(Statement::Assignment(Assignment::new(
@@ -429,18 +456,25 @@ pub trait ExecutionBuilder {
     }
     fn new_mem_write(
         &mut self,
-        input: block::execution::assignment::MemWrite,
+        input: syntax::block::execution::assignment::MemWrite,
     ) -> Result<MemWrite, ExecutionError> {
         let mem = self.new_addr_derefence(&input.mem)?;
         let addr = self.new_expr(input.addr)?;
         let right = self.new_expr(input.right)?;
-        Ok(MemWrite::new(addr, mem, input.src, right))
+        Ok(MemWrite::new(
+            self.sleigh(),
+            self.execution(),
+            addr,
+            mem,
+            input.src,
+            right,
+        ))
     }
     fn new_assignment_op(
         &self,
-        input: block::execution::assignment::OpLeft,
+        input: syntax::block::execution::assignment::OpLeft,
     ) -> Result<Truncate, ExecutionError> {
-        use block::execution::assignment::OpLeft;
+        use syntax::block::execution::assignment::OpLeft;
         //TODO genertic error here
         let error = ExecutionError::BitRangeZero;
         let ass = match input {
@@ -460,9 +494,9 @@ pub trait ExecutionBuilder {
     }
     fn new_cpu_branch_dst(
         &mut self,
-        input: block::execution::branch::BranchDst,
+        input: syntax::block::execution::branch::BranchDst,
     ) -> Result<(bool, Expr), ExecutionError> {
-        use block::execution::branch::BranchDst::*;
+        use syntax::block::execution::branch::BranchDst::*;
         Ok(match input {
             Label(_) => unreachable!(),
             Cpu { direct, expr } => (direct, self.new_expr(expr)?),
@@ -470,47 +504,48 @@ pub trait ExecutionBuilder {
     }
     fn new_cpu_branch(
         &mut self,
-        input: block::execution::branch::Branch,
+        input: syntax::block::execution::branch::Branch,
     ) -> Result<CpuBranch, ExecutionError> {
         let cond = input.cond.map(|x| self.new_expr(x)).transpose()?;
         let call = input.call;
         let (direct, dst) = self.new_cpu_branch_dst(input.dst)?;
 
         Ok(CpuBranch::new(
+            self.sleigh(),
+            self.execution(),
             cond,
             call,
             direct,
             dst,
-            //TODO error here
-            self.sleigh().exec_addr_size().cloned().unwrap(),
         ))
     }
     fn new_local_goto(
         &mut self,
-        input: block::execution::branch::Branch,
+        input: syntax::block::execution::branch::Branch,
     ) -> Result<LocalGoto, ExecutionError> {
         let cond = input.cond.map(|x| self.new_expr(x)).transpose()?;
         if !matches!(input.call, BranchCall::Goto) {
             return Err(ExecutionError::InvalidLocalGoto);
         }
         let dst = match input.dst {
-            block::execution::branch::BranchDst::Label(x) => self
-                .block(&x.name)
+            syntax::block::execution::branch::BranchDst::Label(x) => self
+                .execution()
+                .block_by_name(&x.name)
                 .ok_or_else(|| ExecutionError::MissingLabel(x.src.clone()))?,
             _ => unreachable!(),
         };
-        Ok(LocalGoto::new(cond, dst)?)
+        Ok(LocalGoto::new(self.sleigh(), self.execution(), cond, dst)?)
     }
     fn new_expr_element(
         &mut self,
-        input: block::execution::expr::ExprElement,
+        input: syntax::block::execution::expr::ExprElement,
     ) -> Result<ExprElement, ExecutionError> {
-        use block::execution::expr::ExprElement as RawExprElement;
+        use syntax::block::execution::expr::ExprElement as RawExprElement;
         match input {
-            RawExprElement::Value(Value::Number(src, value)) => {
-                Ok(ExprElement::Value(ExprValue::new_int(src, value)))
-            }
-            RawExprElement::Value(Value::Ident(src, value)) => {
+            RawExprElement::Value(syntax::Value::Number(src, value)) => Ok(
+                ExprElement::Value(ReadValue::Int(ExprNumber::new(src, value))),
+            ),
+            RawExprElement::Value(syntax::Value::Ident(src, value)) => {
                 self.read_scope(&value, &src).map(ExprElement::Value)
             }
             RawExprElement::Reference(src, size, value) => {
@@ -522,16 +557,20 @@ pub trait ExecutionBuilder {
                     })
                     .transpose()?;
                 let value = match self.read_scope(&value, &src)? {
-                    ExprValue::TokenField(_, ass) => ExprElement::Reference(
-                        src,
-                        ref_bytes.map(FieldSize::new_bytes).unwrap_or_default(),
-                        ReferencedValue::TokenField(ass),
-                    ),
+                    ReadValue::TokenField(ass) => {
+                        ExprElement::Reference(Reference {
+                            location: src,
+                            len: ref_bytes
+                                .map(FieldSize::new_bytes)
+                                .unwrap_or_default(),
+                            value: ReferencedValue::TokenField(ass),
+                        })
+                    }
                     //TODO What is a reference to inst_start/inst_next? Just the
                     //value?
-                    ExprValue::InstStart(len, x) => {
+                    ReadValue::InstStart(x) => {
                         let element =
-                            ExprElement::Value(ExprValue::InstStart(len, x));
+                            ExprElement::Value(ReadValue::InstStart(x));
                         if let Some(ref_bytes) = ref_bytes {
                             ExprElement::Truncate(
                                 src,
@@ -542,9 +581,9 @@ pub trait ExecutionBuilder {
                             element
                         }
                     }
-                    ExprValue::InstNext(len, x) => {
+                    ReadValue::InstNext(x) => {
                         let element =
-                            ExprElement::Value(ExprValue::InstNext(len, x));
+                            ExprElement::Value(ReadValue::InstNext(x));
                         if let Some(ref_bytes) = ref_bytes {
                             ExprElement::Truncate(
                                 src,
@@ -555,23 +594,29 @@ pub trait ExecutionBuilder {
                             element
                         }
                     }
-                    ExprValue::Varnode(var) => {
-                        ExprElement::Value(ExprValue::Int(
-                            src,
-                            ref_bytes.map(FieldSize::new_bytes).unwrap_or(
-                                FieldSize::new_bytes(
-                                    var.element().space.addr_bytes(),
-                                ),
-                            ),
-                            Number::Positive(var.element().offset),
-                        ))
+                    ReadValue::Varnode(var) => {
+                        let varnode = self.sleigh().varnode(var.id);
+                        ExprElement::Value(ReadValue::Int(ExprNumber {
+                            location: src,
+                            size: ref_bytes
+                                .map(FieldSize::new_bytes)
+                                .unwrap_or_else(|| {
+                                    let space =
+                                        self.sleigh().space(varnode.space);
+                                    FieldSize::new_bytes(space.addr_bytes)
+                                }),
+                            number: Number::Positive(varnode.address),
+                        }))
                     }
-                    ExprValue::Table(table) => ExprElement::Reference(
-                        src,
-                        ref_bytes.map(FieldSize::new_bytes).unwrap_or_default(),
-                        ReferencedValue::Table(table),
-                    ),
-                    //ExprValue::Param(_, _) => todo!(),
+                    ReadValue::Table(table) => {
+                        ExprElement::Reference(Reference {
+                            location: src,
+                            len: ref_bytes
+                                .map(FieldSize::new_bytes)
+                                .unwrap_or_default(),
+                            value: ReferencedValue::Table(table),
+                        })
+                    }
                     _ => return Err(ExecutionError::InvalidRef(src)),
                 };
                 Ok(value)
@@ -585,14 +630,21 @@ pub trait ExecutionBuilder {
                 let param1 = param1
                     .map(|param| self.new_expr(*param).map(Box::new))
                     .transpose()?;
-                Ok(ExprElement::New(src, param0, param1))
+                Ok(ExprElement::New(ExprNew {
+                    location: src,
+                    first: param0,
+                    second: param1,
+                }))
             }
             RawExprElement::CPool(src, params) => {
                 let params = params
                     .into_iter()
                     .map(|param| self.new_expr(param))
                     .collect::<Result<_, _>>()?;
-                Ok(ExprElement::CPool(src, params))
+                Ok(ExprElement::CPool(ExprCPool {
+                    location: src,
+                    params,
+                }))
             }
             RawExprElement::UserCall(call) => self.new_call_expr(call),
             RawExprElement::Ambiguous1 {
@@ -613,11 +665,11 @@ pub trait ExecutionBuilder {
                     //we know this is not a primitive function, macro
                     //probably never exports, so this can only be a
                     //user_function
-                    self.new_call_expr(block::execution::UserCall::new(
+                    self.new_call_expr(syntax::block::execution::UserCall::new(
                         name,
                         param_src.clone(),
-                        vec![block::execution::expr::Expr::Value(
-                            block::execution::expr::ExprElement::Value(
+                        vec![syntax::block::execution::expr::Expr::Value(
+                            syntax::block::execution::expr::ExprElement::Value(
                                 crate::syntax::Value::Number(
                                     param_src,
                                     Number::Positive(param),
@@ -631,9 +683,9 @@ pub trait ExecutionBuilder {
     }
     fn new_expr(
         &mut self,
-        input: block::execution::expr::Expr,
+        input: syntax::block::execution::expr::Expr,
     ) -> Result<Expr, ExecutionError> {
-        use block::execution::expr::Expr as RawExpr;
+        use syntax::block::execution::expr::Expr as RawExpr;
         match input {
             RawExpr::Value(value) => {
                 self.new_expr_element(value).map(Expr::Value)
@@ -641,17 +693,24 @@ pub trait ExecutionBuilder {
             RawExpr::Op(src, op, left, right) => {
                 let left = self.new_expr(*left)?;
                 let right = self.new_expr(*right)?;
-                Ok(Expr::new_op(src, op, left, right))
+                Ok(Expr::new_op(
+                    self.sleigh(),
+                    self.execution(),
+                    src,
+                    op,
+                    left,
+                    right,
+                ))
             }
         }
     }
     fn new_op_unary(
         &self,
-        input: &block::execution::op::Unary,
+        input: &syntax::block::execution::op::Unary,
         src: Span,
         expr: Expr,
     ) -> Result<ExprElement, ExecutionError> {
-        use block::execution::op::Unary as Op;
+        use syntax::block::execution::op::Unary as Op;
         let to_nonzero =
             //TODO generic error here
             |x: NumberUnsigned| NumberNonZeroUnsigned::new(x).ok_or(ExecutionError::BitRangeZero);
@@ -665,34 +724,42 @@ pub trait ExecutionBuilder {
             }
             Op::ByteRangeLsb(x) => match expr {
                 //NOTE, Lsb on and Int/DisassemblyVar just set the len
-                Expr::Value(ExprElement::Value(ExprValue::Int(
-                    src,
-                    len,
-                    value,
+                Expr::Value(ExprElement::Value(ReadValue::Int(
+                    ExprNumber {
+                        location: src,
+                        size: len,
+                        number: value,
+                    },
                 ))) => {
-                    return Ok(ExprElement::Value(ExprValue::Int(
-                        src,
-                        //TODO error
-                        len.intersection(FieldSize::new_bytes(
-                            NumberNonZeroUnsigned::new(x.value).unwrap(),
-                        ))
-                        .unwrap(),
-                        value,
+                    return Ok(ExprElement::Value(ReadValue::Int(
+                        ExprNumber {
+                            location: src,
+                            //TODO error
+                            size: len
+                                .intersection(FieldSize::new_bytes(
+                                    NumberNonZeroUnsigned::new(x.value)
+                                        .unwrap(),
+                                ))
+                                .unwrap(),
+                            number: value,
+                        },
                     )));
                 }
-                Expr::Value(ExprElement::Value(ExprValue::DisVar(
-                    src,
-                    len,
-                    value,
+                Expr::Value(ExprElement::Value(ReadValue::DisVar(
+                    ExprDisVar { location, size, id },
                 ))) => {
-                    return Ok(ExprElement::Value(ExprValue::DisVar(
-                        src,
-                        //TODO error
-                        len.intersection(FieldSize::new_bytes(
-                            NumberNonZeroUnsigned::new(x.value).unwrap(),
-                        ))
-                        .unwrap(),
-                        value,
+                    return Ok(ExprElement::Value(ReadValue::DisVar(
+                        ExprDisVar {
+                            location,
+                            //TODO error
+                            size: size
+                                .intersection(FieldSize::new_bytes(
+                                    NumberNonZeroUnsigned::new(x.value)
+                                        .unwrap(),
+                                ))
+                                .unwrap(),
+                            id,
+                        },
                     )));
                 }
                 _ => {
@@ -738,8 +805,8 @@ pub trait ExecutionBuilder {
     }
     fn new_addr_derefence(
         &self,
-        input: &block::execution::op::AddrDereference,
-    ) -> Result<AddrDereference, ExecutionError> {
+        input: &syntax::block::execution::op::AddrDereference,
+    ) -> Result<MemoryLocation, ExecutionError> {
         let space = input
             .space
             .as_ref()
@@ -758,10 +825,10 @@ pub trait ExecutionBuilder {
             ),
             None => FieldSize::new_unsized(),
         };
-        Ok(AddrDereference::new(
-            GlobalReference::from_element(space, input.src.clone()),
+        Ok(MemoryLocation {
+            space,
             size,
-            input.src.clone(),
-        ))
+            src: input.src.clone(),
+        })
     }
 }

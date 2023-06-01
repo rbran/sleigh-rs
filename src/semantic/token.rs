@@ -1,69 +1,72 @@
-use crate::{BitRange, NumberNonZeroUnsigned, Span, Endian};
-
-use super::meaning::Meaning;
-use super::GlobalElement;
+use crate::meaning::Meaning;
+use crate::semantic::{
+    AttachLiteralId, AttachNumberId, AttachVarnodeId, PrintBase, TokenId,
+    ValueFmt,
+};
+use crate::{Endian, FieldBits, NumberNonZeroUnsigned, Sleigh, Span};
 
 #[derive(Clone, Debug)]
 pub struct Token {
-    pub src: Span,
+    pub(crate) name: Box<str>,
+    pub location: Span,
     pub len_bytes: NumberNonZeroUnsigned,
     pub endian: Endian,
 }
 
+#[derive(Clone, Debug)]
+pub struct TokenField {
+    pub(crate) name: Box<str>,
+    pub location: Span,
+    pub bits: FieldBits,
+    pub token: TokenId,
+    pub attach: TokenFieldAttach,
+}
+
 impl Token {
-    pub(crate) fn new(
-        src: Span,
-        len_bytes: NumberNonZeroUnsigned,
-        endian: Endian,
-    ) -> Self {
-        Self {
-            src,
-            len_bytes,
-            endian,
-        }
-    }
-    pub fn location(&self) -> &Span {
-        &self.src
-    }
-    pub fn len_bytes(&self) -> NumberNonZeroUnsigned {
-        self.len_bytes
-    }
-    pub fn endian(&self) -> Endian {
-        self.endian
+    pub fn name(&self) -> &str {
+        &self.name
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct TokenField {
-    pub location: Span,
-    pub range: BitRange,
-    pub token: GlobalElement<Token>,
-    pub meaning: Meaning,
-}
 impl TokenField {
-    pub(crate) fn new(
-        src: Span,
-        range: BitRange,
-        token: GlobalElement<Token>,
-        meaning: Meaning,
-    ) -> Self {
-        Self {
-            location: src,
-            range,
-            token,
-            meaning,
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn raw_value_is_signed(&self) -> bool {
+        match self.attach {
+            TokenFieldAttach::NoAttach(fmt) => fmt.signed,
+            TokenFieldAttach::Varnode(_)
+            | TokenFieldAttach::Literal(_)
+            | TokenFieldAttach::Number(_, _) => false,
         }
     }
-    pub fn location(&self) -> &Span {
-        &self.location
+    pub fn execution_value_is_signed(&self, sleigh: &Sleigh) -> bool {
+        match self.attach {
+            TokenFieldAttach::NoAttach(fmt) => fmt.signed,
+            TokenFieldAttach::Varnode(_) | TokenFieldAttach::Literal(_) => {
+                false
+            }
+            TokenFieldAttach::Number(_, value) => {
+                sleigh.attach_number(value).is_signed()
+            }
+        }
     }
-    pub fn range(&self) -> &BitRange {
-        &self.range
+
+    pub fn meaning(&self) -> Meaning {
+        match self.attach {
+            TokenFieldAttach::NoAttach(fmt) => Meaning::NoAttach(fmt),
+            TokenFieldAttach::Varnode(id) => Meaning::Varnode(id),
+            TokenFieldAttach::Literal(id) => Meaning::Literal(id),
+            TokenFieldAttach::Number(base, id) => Meaning::Number(base, id),
+        }
     }
-    pub fn token(&self) -> &GlobalElement<Token> {
-        &self.token
-    }
-    pub fn meaning(&self) -> &Meaning {
-        &self.meaning
-    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TokenFieldAttach {
+    /// No attach, just use the raw value
+    NoAttach(ValueFmt),
+    Varnode(AttachVarnodeId),
+    Literal(AttachLiteralId),
+    Number(PrintBase, AttachNumberId),
 }

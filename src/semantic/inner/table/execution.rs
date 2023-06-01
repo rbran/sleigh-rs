@@ -1,27 +1,28 @@
-use std::rc::Rc;
-
-use crate::semantic::inner::execution::{
-    Block, Execution, ExecutionBuilder, ExprValue, WriteValue,
+use crate::semantic::execution::{
+    BlockId, ExprBitrange, ExprContext, ExprExeVar, ExprInstNext,
+    ExprInstStart, ExprTable, ExprTokenField, ExprVarnode, WriteValue,
 };
-use crate::semantic::inner::{FieldSize, Pattern, Sleigh};
-use crate::semantic::meaning::Meaning;
-use crate::semantic::table::ExecutionError;
-use crate::semantic::GlobalReference;
-use crate::Span;
+use crate::semantic::inner::execution::{
+    Execution, ExecutionBuilder, ExprDisVar, FieldSize, ReadValue,
+};
+use crate::semantic::inner::pattern::Pattern;
+use crate::semantic::inner::Sleigh;
+use crate::semantic::token::TokenFieldAttach;
+use crate::{ExecutionError, Span};
 
 #[derive(Clone, Debug)]
 pub struct Builder<'b, 'c> {
     execution: Execution,
-    current_block: Rc<Block>,
+    current_block: BlockId,
 
     sleigh: &'b Sleigh,
     pattern: &'c Pattern,
 }
 
 impl<'b, 'c> Builder<'b, 'c> {
-    pub fn new(sleigh: &'b Sleigh, pattern: &'c Pattern, src: &Span) -> Self {
+    pub fn new(sleigh: &'b Sleigh, pattern: &'c Pattern, src: Span) -> Self {
         let execution = Execution::new_empty(src);
-        let current_block = Rc::clone(&execution.entry_block);
+        let current_block = execution.entry_block;
         Self {
             execution,
             current_block,
@@ -51,66 +52,75 @@ impl<'b, 'c> ExecutionBuilder for Builder<'b, 'c> {
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<ExprValue, ExecutionError> {
-        self.variable(name)
-            .map(|var| ExprValue::ExeVar(src.clone(), Rc::clone(var)))
-            .or_else(|| {
-                //check the disassembly scope
-                self.pattern.disassembly_vars.get(name).map(|var| {
-                    let size = FieldSize::new_unsized();
-                    size.set_min(1.try_into().unwrap());
-                    ExprValue::DisVar(
-                        src.clone(),
-                        size, //TODO var min size here, like in assembly
-                        Rc::clone(var),
-                    )
-                })
-            })
-            .map(Result::Ok)
-            .unwrap_or_else(|| {
-                //lastly check the global scope
-                use super::GlobalScope::*;
-                match self
-                    .sleigh
-                    .get_global(name)
-                    .ok_or(ExecutionError::MissingRef(src.clone()))?
-                {
-                    //TODO filter out epsilon
-                    //TODO make sure all fields used on execution can be
-                    //produced by the pattern
-                    TokenField(x) => {
-                        Ok(ExprValue::new_token_field(src.clone(), x))
-                    }
-                    InstStart(x) => {
-                        //TODO error
-                        let len = self.sleigh().exec_addr_size().unwrap();
-                        Ok(ExprValue::new_inst_start(src.clone(), *len, x))
-                    }
-                    InstNext(x) => {
-                        //TODO error
-                        let len = self.sleigh().exec_addr_size().unwrap();
-                        Ok(ExprValue::new_inst_next(src.clone(), *len, x))
-                    }
-                    Varnode(x) => Ok(ExprValue::new_varnode(src.clone(), x)),
-                    Bitrange(x) => Ok(ExprValue::new_bitrange(src.clone(), x)),
-                    Context(x) => Ok(ExprValue::new_context(src.clone(), x)),
-                    //only if table export some kind of value
-                    Table(table)
-                        if table
-                            .export()
-                            .borrow()
-                            .as_ref()
-                            .map(|x| !x.export_nothing())
-                            .unwrap_or(false) =>
-                    {
-                        Ok(ExprValue::Table(GlobalReference::from_element(
-                            table,
-                            src.clone(),
-                        )))
-                    }
-                    _ => Err(ExecutionError::InvalidRef(src.clone())),
-                }
-            })
+    ) -> Result<ReadValue, ExecutionError> {
+        //check local scope
+        if let Some(var) = self.execution().variable_by_name(name) {
+            return Ok(ReadValue::ExeVar(ExprExeVar {
+                location: src.clone(),
+                id: var,
+            }));
+        }
+
+        //check the disassembly scope
+        if let Some(var) = self.pattern.disassembly_variable_names.get(name) {
+            return Ok(ReadValue::DisVar(ExprDisVar {
+                location: src.clone(),
+                id: *var,
+                size: FieldSize::new_unsized(),
+            }));
+        }
+
+        //lastly check the global scope
+        use super::GlobalScope::*;
+        match self
+            .sleigh
+            .get_global(name)
+            .ok_or(ExecutionError::MissingRef(src.clone()))?
+        {
+            //TODO make sure all fields used on execution can be
+            //produced by the pattern
+            TokenField(x) => Ok(ReadValue::TokenField(ExprTokenField {
+                location: src.clone(),
+                id: x,
+            })),
+            InstStart(x) => Ok(ReadValue::InstStart(ExprInstStart {
+                location: src.clone(),
+                data: x,
+            })),
+            InstNext(x) => Ok(ReadValue::InstNext(ExprInstNext {
+                location: src.clone(),
+                data: x,
+            })),
+            Varnode(x) => Ok(ReadValue::Varnode(ExprVarnode {
+                location: src.clone(),
+                id: x,
+            })),
+            Bitrange(x) => Ok(ReadValue::Bitrange(ExprBitrange {
+                location: src.clone(),
+                id: x,
+            })),
+            Context(x) => Ok(ReadValue::Context(ExprContext {
+                location: src.clone(),
+                id: x,
+            })),
+            //only if table export some kind of value
+            Table(table)
+                if self
+                    .sleigh()
+                    .table(table)
+                    .export
+                    .borrow()
+                    .as_ref()
+                    .map(|x| !x.export_nothing())
+                    .unwrap_or(false) =>
+            {
+                Ok(ReadValue::Table(ExprTable {
+                    location: src.clone(),
+                    id: table,
+                }))
+            }
+            _ => Err(ExecutionError::InvalidRef(src.clone())),
+        }
     }
 
     fn write_scope(
@@ -118,8 +128,14 @@ impl<'b, 'c> ExecutionBuilder for Builder<'b, 'c> {
         name: &str,
         src: &Span,
     ) -> Result<WriteValue, ExecutionError> {
-        self.variable(name)
-            .map(|var| Ok(WriteValue::ExeVar(src.clone(), Rc::clone(var))))
+        self.execution()
+            .variable_by_name(name)
+            .map(|var| {
+                Ok(WriteValue::Local(ExprExeVar {
+                    location: src.clone(),
+                    id: var,
+                }))
+            })
             .unwrap_or_else(|| {
                 use super::GlobalScope;
                 match self
@@ -127,39 +143,43 @@ impl<'b, 'c> ExecutionBuilder for Builder<'b, 'c> {
                     .get_global(name)
                     .ok_or(ExecutionError::MissingRef(src.clone()))?
                 {
-                    GlobalScope::Varnode(varnode) => Ok(WriteValue::Varnode(
-                        GlobalReference::from_element(varnode, src.clone()),
-                    )),
-                    GlobalScope::TokenField(token_field) => {
-                        let meaning = token_field.meaning();
+                    GlobalScope::Varnode(varnode) => {
+                        Ok(WriteValue::Varnode(ExprVarnode {
+                            location: src.clone(),
+                            id: varnode,
+                        }))
+                    }
+                    GlobalScope::TokenField(id) => {
+                        let meaning = &self.sleigh().token_field(id).attach;
                         //filter field with meaning to variable
                         if !matches!(
                             meaning.as_ref(),
-                            Some(Meaning::Variable(_))
+                            Some(TokenFieldAttach::Varnode(_))
                         ) {
                             return Err(ExecutionError::InvalidRef(
                                 src.clone(),
                             ));
                         }
-                        Ok(WriteValue::TokenField(
-                            GlobalReference::from_element(
-                                token_field,
-                                src.clone(),
-                            ),
-                        ))
+                        Ok(WriteValue::TokenField(ExprTokenField {
+                            location: src.clone(),
+                            id,
+                        }))
                     }
-                    GlobalScope::Table(table) => Ok(WriteValue::Table(
-                        GlobalReference::from_element(table, src.clone()),
-                    )),
+                    GlobalScope::Table(table) => {
+                        Ok(WriteValue::TableExport(ExprTable {
+                            location: src.clone(),
+                            id: table,
+                        }))
+                    }
                     _ => Err(ExecutionError::InvalidRef(src.clone())),
                 }
             })
     }
 
-    fn current_block(&self) -> Rc<Block> {
-        Rc::clone(&self.current_block)
+    fn current_block(&self) -> BlockId {
+        self.current_block
     }
-    fn current_block_mut(&mut self) -> &mut Rc<Block> {
-        &mut self.current_block
+    fn inner_set_curent_block(&mut self, block: BlockId) {
+        self.current_block = block
     }
 }

@@ -1,89 +1,105 @@
-use std::rc::Rc;
-
-use super::inner::PrintFlags;
-use super::varnode::Varnode;
-use super::{GlobalReference, PrintBase, PrintFmt};
+use crate::semantic::{
+    AttachLiteralId, AttachNumberId, AttachVarnodeId, VarnodeId,
+};
 use crate::{Number, NumberNonZeroUnsigned};
 
+use super::inner::execution::FieldSize;
+use super::{PrintBase, ValueFmt};
+
+/// The value is translated with a varnode using this value as index.
+/// In Display, print the varnode name.
+/// In Disassembly, TODO: is unknown.
+/// In Execution, read/write are done on the underlying varnode.
 #[derive(Clone, Debug)]
+pub struct AttachVarnode(pub Box<[(usize, VarnodeId)]>);
+impl AttachVarnode {
+    pub(crate) fn execution_len(
+        &self,
+        sleigh: &super::inner::Sleigh,
+    ) -> FieldSize {
+        //all varnodes have the same len
+        let varnode_bytes = sleigh.varnode(self.0[0].1).len_bytes;
+        FieldSize::new_bytes(varnode_bytes)
+    }
+}
+
+/// The Value is translated into this string. Only affect the value when it's
+/// printed
+#[derive(Clone, Debug)]
+pub struct AttachLiteral(pub Box<[(usize, String)]>);
+
+/// The Value is translated into a signed value with this Format.
+/// In Display, print the translated value using this index.
+/// In Disassembly, TODO: is unknown.
+/// In Execution, the value is translanted and is automatically expanded to
+/// the required len.
+#[derive(Clone, Debug)]
+pub struct AttachNumber(pub Box<[(usize, Number)]>);
+impl AttachNumber {
+    pub(crate) fn execution_len(&self) -> FieldSize {
+        let len_bits = self
+            .0
+            .iter()
+            .map(|(_i, v)| v.bits_required())
+            .max()
+            .unwrap();
+        let len_bits = NumberNonZeroUnsigned::new(len_bits.into()).unwrap();
+        FieldSize::default()
+            .set_min(len_bits.try_into().unwrap())
+            .unwrap()
+    }
+    pub fn is_signed(&self) -> bool {
+        self.0.iter().find(|(_i, v)| v.is_negative()).is_some()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub enum Meaning {
-    ///The value is a Literal, signed if print_fmt.signed is set.
-    ///In Display, print the value with this Format.
-    ///In Disassembly, expand this value into IntTypeS.
-    ///In Execution, the value will automatically expanded to the required len.
-    Literal(PrintFmt),
-    ///The value is translated with a varnode using this index.
-    ///In Display, print the varnode name.
-    ///In Disassembly, TODO: is unknown.
-    ///In Execution, read/write are done on the underlying varnode.
-    Variable(Rc<[(usize, GlobalReference<Varnode>)]>),
-    ///The Value is translated into this string.
-    ///In Display, print the string.
-    ///In Disassembly, TODO: is unknown.
-    ///In Execution, threat like a literal value.
-    Name(Rc<[(usize, String)]>),
-    ///The Value is translated into a signed value with this Format.
-    ///In Display, print the translated value using this index.
-    ///In Disassembly, use the translated value.
-    ///In Execution, the value is translanted and is automatically expanded to
-    ///the required len.
-    Value(PrintBase, Rc<[(usize, Number)]>),
+    NoAttach(ValueFmt),
+    Varnode(AttachVarnodeId),
+    Literal(AttachLiteralId),
+    Number(PrintBase, AttachNumberId),
 }
 
 impl Meaning {
-    pub(crate) fn new_variable(
-        _print_flags: &PrintFlags,
-        variables: &Rc<[(usize, GlobalReference<Varnode>)]>,
-    ) -> Option<Self> {
-        //TODO this happen: a token marked as `dec` is also attach to
-        //name/variable, what to do? Just discarding the flag.
-        //if print_flags.is_set() {
-        //    //can't set variable if a print flag is also set
-        //    return None;
-        //}
-        Some(Meaning::Variable(Rc::clone(variables)))
-    }
-    pub(crate) fn new_name(
-        _print_flags: &PrintFlags,
-        names: &Rc<[(usize, String)]>,
-    ) -> Option<Self> {
-        //TODO this happen: a token marked as `dec` is also attach to
-        //name/variable, what to do? Just discarding the flag.
-        //if print_flags.is_set() {
-        //    //can't set variable if a print flag is also set
-        //    return None;
-        //}
-        Some(Meaning::Name(Rc::clone(names)))
-    }
-    pub(crate) fn new_value(
-        print_flags: &PrintFlags,
-        values: &Rc<[(usize, Number)]>,
-    ) -> Option<Self> {
-        //value is printed in dec by default
-        let base = print_flags.base.unwrap_or(PrintBase::Dec);
-        Some(Meaning::Value(base, Rc::clone(values)))
+    pub fn is_varnode(&self) -> bool {
+        matches!(self, Self::Varnode(_))
     }
     pub fn is_literal(&self) -> bool {
         matches!(self, Self::Literal(_))
     }
-    pub fn is_variable(&self) -> bool {
-        matches!(self, Self::Variable { .. })
+    pub fn is_number(&self) -> bool {
+        matches!(self, Self::Number(_, _))
     }
-    pub fn is_signed(&self) -> bool {
+    pub fn execution_len(
+        &self,
+        sleigh: &super::inner::Sleigh,
+    ) -> Option<FieldSize> {
         match self {
-            Meaning::Literal(print_fmt) => print_fmt.signed(),
-            Meaning::Value(_, _) => true,
-            Meaning::Variable(_) | Meaning::Name(_) => false,
-        }
-    }
-    ///The len in bytes this value will be read/write in execution context.
-    ///Only a value that is translated into varnode have a len known.
-    pub fn exec_len_bytes(&self) -> Option<NumberNonZeroUnsigned> {
-        match self {
-            Self::Variable(vars) => {
-                Some(vars.first().unwrap().1.element().len_bytes)
+            // name don't change the value size
+            Meaning::NoAttach(_) | Meaning::Literal(_) => return None,
+            Meaning::Varnode(vars_id) => {
+                let vars = sleigh.attach_varnode(*vars_id);
+                let varnode_bits =
+                    sleigh.varnode(vars.0[0].1).len_bytes.get() * 8;
+                Some(FieldSize::Value(varnode_bits.try_into().unwrap()))
             }
-            Self::Literal(_) | Self::Name(_) | Self::Value(_, _) => None,
+            Meaning::Number(_, values_id) => {
+                let values = sleigh.attach_number(*values_id);
+                let len_bits = values
+                    .0
+                    .iter()
+                    .map(|(_i, v)| v.bits_required())
+                    .max()
+                    .unwrap();
+                let len_bits =
+                    NumberNonZeroUnsigned::new(len_bits.into()).unwrap();
+                Some(
+                    FieldSize::default()
+                        .set_min(len_bits.try_into().unwrap())
+                        .unwrap(),
+                )
+            }
         }
     }
 }

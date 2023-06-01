@@ -1,140 +1,254 @@
-use indexmap::IndexMap;
+use std::cell::{Cell, Ref, RefCell, RefMut};
 
-use std::cell::{Cell, RefCell};
-use std::rc::{Rc, Weak};
-
-use crate::semantic::execution::{self, BranchCall, ExecutionError};
-use crate::semantic::varnode::{Bitrange, Varnode};
-use crate::semantic::GlobalReference;
-use crate::{semantic, Number, NumberUnsigned, Span};
-
-use super::pcode_macro::{Parameter, PcodeMacroInstance};
-use super::table::Table;
-use super::token::TokenField;
-use super::varnode::Context;
-use super::{
-    disassembly, PcodeMacro, Sleigh, SolverStatus, Space, UserFunction,
+use crate::semantic::execution::{
+    Assignment as FinalAssignment, Block as FinalBlock, BlockId, BranchCall,
+    Build, CpuBranch as FinalCpuBranch, Execution as FinalExecution,
+    Export as FinalExport, ExportConst, LocalGoto as FinalLocalGoto,
+    MacroCall as FinalMacroCall, MemWrite as FinalMemWrite,
+    Statement as FinalStatement, Unary, UserCall as FinalUserCall,
+    Variable as FinalVariable, VariableId, WriteValue,
+};
+use crate::semantic::table::ExecutionExport;
+use crate::semantic::{PcodeMacroId, UserFunctionId};
+use crate::{
+    ExecutionError, Number, NumberNonZeroUnsigned, NumberUnsigned, Span,
 };
 
-mod builder;
-pub use builder::ExecutionBuilder;
+use super::pcode_macro::PcodeMacroCallId;
+use super::{Sleigh, SolverStatus};
 
+mod builder;
+pub use builder::*;
 mod expr;
 pub use expr::*;
-
 mod op;
 pub use op::*;
-
 mod len;
 pub use len::*;
 
-pub type FinalExportConst = semantic::execution::ExportConst;
 #[derive(Clone, Debug)]
-pub enum ExportConst {
-    //Int(IntTypeU),
-    DisVar(Span, Rc<disassembly::Variable>),
-    TokenField(GlobalReference<TokenField>),
-    Context(GlobalReference<Context>),
-    Table(GlobalReference<Table>),
+pub struct Execution {
+    pub src: Span,
+    pub blocks: RefCell<Vec<Block>>,
+    pub vars: Vec<Variable>,
+
+    pub return_value: ExportLen,
+
+    //entry_block have no name and is not on self.labels
+    pub entry_block: BlockId,
 }
-impl ExportConst {
-    pub fn src(&self) -> &Span {
-        match self {
-            Self::DisVar(src, _) => src,
-            Self::TokenField(x) => x.location(),
-            Self::Context(x) => x.location(),
-            Self::Table(x) => x.location(),
-        }
-    }
-    pub fn convert(self) -> FinalExportConst {
-        match self {
-            Self::DisVar(_, variable) => {
-                FinalExportConst::DisVar(variable.convert())
-            }
-            Self::TokenField(ass) => {
-                FinalExportConst::TokenField(ass.convert_reference())
-            }
-            Self::Context(ass) => {
-                FinalExportConst::Context(ass.convert_reference())
-            }
-            Self::Table(table) => {
-                FinalExportConst::Table(table.convert_reference())
-            }
-        }
-    }
+
+#[derive(Clone, Debug)]
+pub struct Block {
+    //None is entry block
+    pub name: Option<Box<str>>,
+    // empty means the entry point
+    //parent: RefCell<Vec<Weak<Block>>>,
+    // None means the block is an return
+    pub next: Option<BlockId>,
+    pub statements: Vec<Statement>,
 }
 
 #[derive(Clone, Debug)]
 pub enum Export {
+    Const {
+        len_bits: FieldSize,
+        location: Span,
+        export: ExportConst,
+    },
     Value(Expr),
-    Reference(Expr, AddrDereference),
-    Const(FieldSize, ExportConst),
+    Reference {
+        addr: Expr,
+        memory: MemoryLocation,
+    },
 }
 
-pub type FinalExport = semantic::execution::Export;
+#[derive(Clone, Debug)]
+pub struct MemWrite {
+    pub addr: Expr,
+    mem: MemoryLocation,
+    src: Span,
+    pub right: Expr,
+}
+
+#[derive(Clone, Debug)]
+pub struct Assignment {
+    pub var: WriteValue,
+    op: Option<Truncate>,
+    src: Span,
+    pub right: Expr,
+}
+
+#[derive(Clone, Debug)]
+pub struct MacroCall {
+    instance: PcodeMacroCallId,
+    pub params: Vec<Expr>,
+}
+
+#[derive(Clone, Debug)]
+pub struct UserCall {
+    pub location: Span,
+    pub output_size: FieldSize,
+    pub function: UserFunctionId,
+    pub params: Vec<Expr>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LocalGoto {
+    pub cond: Option<Expr>,
+    pub dst: BlockId,
+}
+#[derive(Clone, Debug)]
+pub struct CpuBranch {
+    pub cond: Option<Expr>,
+    pub call: BranchCall,
+    //TODO delete direct?
+    direct: bool,
+    pub dst: Expr,
+}
+
+#[derive(Clone, Debug)]
+pub enum Statement {
+    Delayslot(NumberUnsigned),
+    Export(Export),
+    CpuBranch(CpuBranch),
+    LocalGoto(LocalGoto),
+    MacroCall(MacroCall),
+    UserCall(UserCall),
+    Build(Build),
+    Declare(VariableId),
+    Assignment(Assignment),
+    MemWrite(MemWrite),
+}
+
+#[derive(Clone, Debug)]
+pub struct Variable {
+    pub name: String,
+    //pub scope: RefCell<VariableScope>,
+    pub size: Cell<FieldSize>,
+    ///location of the variable declaration, if declared explicitly
+    /// NOTE: PcodeMacro Params src is located in `Parameter`
+    pub src: Option<Span>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum ExportLen {
+    //don't return
+    #[default]
+    None,
+    //type can't be defined yet.
+    //Undefined(FieldSize),
+    //value that is known at Dissassembly time
+    Const(FieldSize),
+    //value that can be know at execution time
+    Value(FieldSize),
+    //References/registers and other mem locations, all with the same size
+    Reference(FieldSize),
+    //multiple source, can by any kind of return, value or address,
+    //but all with the same size
+    Multiple(FieldSize),
+}
+
 impl Export {
     pub fn new_value(expr: Expr) -> Self {
         Self::Value(expr)
     }
-    pub fn new_const(size: FieldSize, value: ExportConst) -> Self {
-        Self::Const(size, value)
+    pub fn new_const(size: FieldSize, src: Span, value: ExportConst) -> Self {
+        Self::Const {
+            len_bits: size,
+            location: src,
+            export: value,
+        }
     }
-    pub fn new_reference(mut addr: Expr, space: AddrDereference) -> Self {
+    pub fn new_reference(
+        sleigh: &Sleigh,
+        execution: &Execution,
+        mut addr: Expr,
+        space_deref: MemoryLocation,
+    ) -> Self {
         //addr expr is the addr to access the space, so it need to be space
         //addr size
-        addr.size_mut()
+        let space = sleigh.space(space_deref.space);
+        addr.size_mut(sleigh, execution)
             .update_action(|size| {
                 size.intersection(
-                    FieldSize::new_bytes(space.space.element().addr_bytes())
+                    FieldSize::new_bytes(space.addr_bytes)
                 )
             })
             .unwrap(/*TODO*/);
-        Self::Reference(addr, space)
+        Self::Reference {
+            addr,
+            memory: space_deref,
+        }
     }
-    pub fn return_type(&self) -> ExecutionExport {
+    pub fn return_type(
+        &self,
+        sleigh: &Sleigh,
+        execution: &Execution,
+    ) -> ExportLen {
         match self {
-            Export::Value(value) => ExecutionExport::Value(value.size()),
-            Export::Reference(_addr, space) => {
-                ExecutionExport::Reference(*space.output_size())
+            Export::Value(value) => {
+                ExportLen::Value(value.size(sleigh, execution))
             }
-            Export::Const(size, _) => ExecutionExport::Const(*size),
+            Export::Reference { addr: _, memory } => {
+                ExportLen::Reference(memory.size)
+            }
+            Export::Const {
+                len_bits: len,
+                location: _,
+                export: _,
+            } => ExportLen::Const(*len),
         }
     }
     pub fn src(&self) -> &Span {
         match self {
-            Self::Value(expr) | Export::Reference(expr, _) => expr.src(),
-            Self::Const(_, con) => con.src(),
-        }
-    }
-    pub fn output_size(&self) -> FieldSize {
-        match self {
-            Self::Value(expr) => expr.size(),
-            //TODO verify this
-            Self::Reference(_, deref) => *deref.output_size(),
-            Self::Const(size, _) => *size,
-        }
-    }
-    pub fn output_size_mut<'a>(&'a mut self) -> Box<dyn FieldSizeMut + 'a> {
-        match self {
-            Self::Value(expr) => expr.size_mut(),
-            //TODO verify this
-            Self::Reference(_, deref) => {
-                Box::new(FieldSizeMutRef::from(deref.output_size_mut()))
+            Self::Value(expr) | Export::Reference { addr: expr, .. } => {
+                expr.src()
             }
-            Self::Const(size, _) => Box::new(FieldSizeMutRef::from(size)),
+            Self::Const { location, .. } => location,
+        }
+    }
+    pub fn output_size(
+        &self,
+        sleigh: &Sleigh,
+        execution: &Execution,
+    ) -> FieldSize {
+        match self {
+            Self::Value(expr) => expr.size(sleigh, execution),
+            //TODO verify this
+            Self::Reference { addr: _, memory } => memory.size,
+            Self::Const { len_bits: len, .. } => *len,
+        }
+    }
+    pub fn output_size_mut<'a>(
+        &'a mut self,
+        sleigh: &'a Sleigh,
+        execution: &'a Execution,
+    ) -> Box<dyn FieldSizeMut + 'a> {
+        match self {
+            Self::Value(expr) => expr.size_mut(sleigh, execution),
+            //TODO verify this
+            Self::Reference { addr: _, memory } => {
+                Box::new(FieldSizeMutRef::from(&mut memory.size))
+            }
+            Self::Const { len_bits, .. } => {
+                Box::new(FieldSizeMutRef::from(len_bits))
+            }
         }
     }
     pub fn solve(
         &mut self,
+        sleigh: &Sleigh,
+        execution: &Execution,
         solved: &mut impl SolverStatus,
     ) -> Result<(), ExecutionError> {
         match self {
-            Self::Const(_, _) => Ok(()),
-            Self::Value(expr) => expr.solve(solved),
-            Self::Reference(addr, deref) => {
-                addr.solve(solved)?;
-                deref.solve(solved);
-                if addr.size().is_undefined() {
+            Self::Const { .. } => Ok(()),
+            Self::Value(expr) => expr.solve(sleigh, execution, solved),
+            Self::Reference { addr, memory } => {
+                addr.solve(sleigh, execution, solved)?;
+                memory.solve(solved);
+                if addr.size(sleigh, execution).is_undefined() {
                     solved.iam_not_finished_location(
                         addr.src(),
                         file!(),
@@ -147,30 +261,30 @@ impl Export {
     }
     pub fn convert(self) -> FinalExport {
         match self {
-            Self::Const(size, value) => FinalExport::Const(
-                size.possible_value().unwrap(),
-                value.convert(),
-            ),
+            Self::Const {
+                len_bits,
+                location,
+                export,
+            } => FinalExport::Const {
+                len_bits: len_bits.possible_value().unwrap(),
+                location,
+                export,
+            },
             Self::Value(expr) => FinalExport::Value(expr.convert()),
-            Self::Reference(expr, deref) => {
-                FinalExport::Reference(expr.convert(), deref.convert())
-            }
+            Self::Reference { addr, memory } => FinalExport::Reference {
+                addr: addr.convert(),
+                memory: memory.convert(),
+            },
         }
     }
 }
 
-pub type FinalMemWrite = semantic::execution::MemWrite;
-#[derive(Clone, Debug)]
-pub struct MemWrite {
-    pub addr: Expr,
-    mem: AddrDereference,
-    src: Span,
-    pub right: Expr,
-}
 impl MemWrite {
     pub fn new(
+        sleigh: &Sleigh,
+        execution: &Execution,
         mut addr: Expr,
-        mem: AddrDereference,
+        mem: MemoryLocation,
         src: Span,
         mut right: Expr,
     ) -> Self {
@@ -183,7 +297,7 @@ impl MemWrite {
             .map(|size| size.get() == 8)
             .unwrap_or(false)
             && right
-                .size()
+                .size(sleigh, execution)
                 .final_value()
                 .map(|size| size.get() == 1)
                 .unwrap_or(false)
@@ -197,8 +311,9 @@ impl MemWrite {
 
         //addr expr is the addr to access the space, so it need to be space
         //addr size
-        addr.size_mut()
-            .set(FieldSize::new_bytes(mem.space.element().addr_bytes()));
+        let space = sleigh.space(mem.space);
+        addr.size_mut(sleigh, execution)
+            .set(FieldSize::new_bytes(space.addr_bytes));
         Self {
             addr,
             mem,
@@ -208,33 +323,43 @@ impl MemWrite {
     }
     pub fn solve(
         &mut self,
+        sleigh: &Sleigh,
+        execution: &Execution,
         solved: &mut impl SolverStatus,
     ) -> Result<(), ExecutionError> {
-        let error = || ExecutionError::VarSize(self.src.clone());
-
-        self.right.solve(solved)?;
+        self.right.solve(sleigh, execution, solved)?;
         //exception in case the right size is smaller then the left size,
         //truncate the right size with a msb(0)
         let left_size = self.mem.size.final_value();
-        let right_size = self.right.size().final_value();
+        let right_size = self.right.size(sleigh, execution).final_value();
         if left_size
             .zip(right_size)
             .map(|(left, right)| left.get() < right.get())
             .unwrap_or(false)
         {
             //dummy value
-            let mut taken = Expr::Value(ExprElement::Value(ExprValue::Int(
-                self.src.clone(),
-                FieldSize::new_unsized(),
-                Number::Positive(0),
-            )));
+            let dummy_src = Span::File(crate::FileSpan {
+                start: crate::FileLocation {
+                    file: std::rc::Rc::from(std::path::Path::new("")),
+                    line: 0,
+                    column: 0,
+                },
+                end_line: 0,
+                end_column: 0,
+            });
+            let mut taken =
+                Expr::Value(ExprElement::Value(ReadValue::Int(ExprNumber {
+                    location: dummy_src,
+                    size: FieldSize::default(),
+                    number: Number::Positive(0),
+                })));
             std::mem::swap(&mut self.right, &mut taken);
             self.right = Expr::Value(ExprElement::Truncate(
                 taken.src().clone(),
                 Truncate::new(0, left_size.unwrap()),
                 Box::new(taken),
             ));
-            self.right.solve(solved)?;
+            self.right.solve(sleigh, execution, solved)?;
             solved.i_did_a_thing()
         }
 
@@ -243,9 +368,12 @@ impl MemWrite {
         if let Some(write_size) = self.mem.size.final_value() {
             //if left side size is known, right side will need to produce a
             //a value with size equal or smaller then that
-            let modified = self.right.size_mut().update_action(|size| {
-                size.set_max(write_size)?.set_possible_value(write_size)
-            });
+            let modified = self
+                .right
+                .size_mut(sleigh, execution)
+                .update_action(|size| {
+                    size.set_max(write_size)?.set_possible_value(write_size)
+                });
             if modified
                 .ok_or_else(|| ExecutionError::VarSize(self.mem.src.clone()))?
             {
@@ -254,16 +382,19 @@ impl MemWrite {
         } else {
             //if the left side is WriteAddr without a size, the only option is
             //to use the right side size
-            let modified = self
-                .mem
-                .size
-                .update_action(|size| size.intersection(self.right.size()));
-            if modified.ok_or_else(error)? {
+            let modified = self.mem.size.update_action(|size| {
+                size.intersection(self.right.size(sleigh, execution))
+            });
+            if modified
+                .ok_or_else(|| ExecutionError::VarSize(self.src.clone()))?
+            {
                 solved.i_did_a_thing();
             }
         }
 
-        if self.addr.size().is_undefined() || self.right.size().is_undefined() {
+        if self.addr.size(sleigh, execution).is_undefined()
+            || self.right.size(sleigh, execution).is_undefined()
+        {
             solved.iam_not_finished_location(self.right.src(), file!(), line!())
         }
 
@@ -276,15 +407,6 @@ impl MemWrite {
             right: self.right.convert(),
         }
     }
-}
-
-pub type FinalAssignment = semantic::execution::Assignment;
-#[derive(Clone, Debug)]
-pub struct Assignment {
-    pub var: WriteValue,
-    op: Option<Truncate>,
-    src: Span,
-    pub right: Expr,
 }
 
 impl Assignment {
@@ -303,47 +425,61 @@ impl Assignment {
     }
     pub fn solve(
         &mut self,
+        sleigh: &Sleigh,
+        execution: &Execution,
         solved: &mut impl SolverStatus,
     ) -> Result<(), ExecutionError> {
         let error_src = self.right.src().clone();
         let error = || ExecutionError::VarSize(error_src.clone());
 
-        self.right.solve(solved)?;
+        self.right.solve(sleigh, execution, solved)?;
 
         //exception in case the right result is 1 bit and the left is
         //less then 1 byte, auto add zext the right side
         let left_size = self
             .op
             .as_ref()
-            .map(|op| *op.output_size())
-            .unwrap_or(self.var.size())
+            .map(|op| op.output_size())
+            .unwrap_or_else(|| self.var.size(sleigh, execution))
             .final_value();
-        let right_size = self.right.size().final_value();
+        let right_size = self.right.size(sleigh, execution).final_value();
         if left_size
             .zip(right_size)
             .map(|(left, right)| left.get() == 8 && right.get() < 8)
             .unwrap_or(false)
         {
-            let mut taken = Expr::Value(ExprElement::Value(ExprValue::Int(
-                self.src.clone(),
-                FieldSize::new_unsized(),
-                Number::Positive(0),
-            )));
+            //dummy value
+            let dummy_src = Span::File(crate::FileSpan {
+                start: crate::FileLocation {
+                    file: std::rc::Rc::from(std::path::Path::new("")),
+                    line: 0,
+                    column: 0,
+                },
+                end_line: 0,
+                end_column: 0,
+            });
+            let mut taken =
+                Expr::Value(ExprElement::Value(ReadValue::Int(ExprNumber {
+                    location: dummy_src,
+                    size: FieldSize::default(),
+                    number: Number::Positive(0),
+                })));
             std::mem::swap(&mut self.right, &mut taken);
-            self.right = Expr::Value(ExprElement::Op(
-                taken.src().clone(),
-                FieldSize::new_bits(left_size.unwrap()),
-                Unary::Zext,
-                Box::new(taken),
-            ));
-            self.right.solve(solved)?;
+            self.right = Expr::Value(ExprElement::Op(ExprUnaryOp {
+                location: taken.src().clone(),
+                output_size: FieldSize::new_bits(left_size.unwrap()),
+                op: Unary::Zext,
+                input: Box::new(taken),
+            }));
+            self.right.solve(sleigh, execution, solved)?;
             solved.i_did_a_thing()
         }
 
         //left and right sizes are the same
         if let Some(trunc) = &mut self.op {
             let modified = [
-                &mut self.right.size_mut() as &mut dyn FieldSizeMut,
+                &mut self.right.size_mut(sleigh, execution)
+                    as &mut dyn FieldSizeMut,
                 &mut FieldSizeMutRef::from(trunc.output_size_mut()),
             ]
             .all_same_lenght();
@@ -352,18 +488,20 @@ impl Assignment {
             }
         } else {
             let modified = [
-                &mut self.right.size_mut() as &mut dyn FieldSizeMut,
-                &mut self.var.size_mut() as &mut dyn FieldSizeMut,
+                &mut self.right.size_mut(sleigh, execution)
+                    as &mut dyn FieldSizeMut,
+                &mut self.var.size_mut(sleigh, execution)
+                    as &mut dyn FieldSizeMut,
             ]
             .all_same_lenght();
 
             //if right size is possible min, so does left if size is not defined
-            if self.var.size().is_undefined()
-                && self.right.size().possible_min()
+            if self.var.size(sleigh, execution).is_undefined()
+                && self.right.size(sleigh, execution).possible_min()
             {
                 if self
                     .var
-                    .size_mut()
+                    .size_mut(sleigh, execution)
                     .update_action(|size| Some(size.set_possible_min()))
                     .unwrap()
                 {
@@ -375,7 +513,9 @@ impl Assignment {
             }
         }
 
-        if self.var.size().is_undefined() || self.right.size().is_undefined() {
+        if self.var.size(sleigh, execution).is_undefined()
+            || self.right.size(sleigh, execution).is_undefined()
+        {
             solved.iam_not_finished_location(self.right.src(), file!(), line!())
         }
 
@@ -383,203 +523,133 @@ impl Assignment {
     }
     pub fn convert(self) -> FinalAssignment {
         FinalAssignment {
-            var: self.var.convert(),
+            location: self.src,
+            var: self.var,
             op: self.op.map(|op| op.convert()),
             right: self.right.convert(),
         }
     }
 }
 
-pub type FinalWriteValue = execution::WriteValue;
-#[derive(Clone, Debug)]
-pub enum WriteValue {
-    Varnode(GlobalReference<Varnode>),
-    Bitrange(GlobalReference<Bitrange>),
-    Table(GlobalReference<Table>),
-    TokenField(GlobalReference<TokenField>),
-    ExeVar(Span, Rc<Variable>),
-    Param(Span, Rc<Parameter>),
-}
-
 impl WriteValue {
-    pub fn size(&self) -> FieldSize {
+    pub(crate) fn size(
+        &self,
+        sleigh: &Sleigh,
+        execution: &Execution,
+    ) -> FieldSize {
         match self {
-            Self::Varnode(var) => FieldSize::new_bytes(var.element().len_bytes),
-            Self::Bitrange(var) => {
-                FieldSize::new_bits(var.element().range.len())
+            Self::Varnode(var) => {
+                FieldSize::new_bytes(sleigh.varnode(var.id).len_bytes)
             }
-            Self::Table(value) => *value
-                .element()
-                .export()
-                .borrow()
-                .as_ref()
-                .unwrap()
-                .size()
-                .unwrap(),
-            Self::TokenField(ass) => ass.element().exec_value_len(),
-            Self::ExeVar(_, var) => var.len().get(),
-            Self::Param(_, param) => param.size().get(),
+            Self::Bitrange(var) => {
+                FieldSize::new_bits(sleigh.bitrange(var.id).bits.len())
+            }
+            Self::TableExport(value) => {
+                let export = sleigh.table(value.id).export.borrow();
+                *export.as_ref().unwrap().size().unwrap()
+            }
+            Self::TokenField(ass) => {
+                sleigh.token_field(ass.id).exec_value_len(sleigh)
+            }
+            Self::Local(var) => execution.variable(var.id).size.get(),
         }
     }
-    pub fn size_mut<'a>(&'a mut self) -> Box<dyn FieldSizeMut + 'a> {
+    pub fn size_mut<'a>(
+        &'a mut self,
+        sleigh: &'a Sleigh,
+        execution: &'a Execution,
+    ) -> Box<dyn FieldSizeMut + 'a> {
         match self {
             Self::Varnode(var) => Box::new(FieldSizeMutOwned::from(
-                FieldSize::new_bytes(var.element().len_bytes),
+                FieldSize::new_bytes(sleigh.varnode(var.id).len_bytes),
             )),
             Self::Bitrange(var) => Box::new(FieldSizeMutOwned::from(
-                FieldSize::new_bits(var.element().range.len()),
+                FieldSize::new_bits(sleigh.bitrange(var.id).bits.len()),
             )),
-            Self::Table(value) => Box::new(value.element()),
-            Self::ExeVar(_, var) => Box::new(var.len()),
-            //NOTE token_field is only valid if it contains attach to variable
             Self::TokenField(ass) => Box::new(FieldSizeMutOwned::from(
-                ass.element().exec_value_len(),
+                sleigh.token_field(ass.id).exec_value_len(sleigh),
             )),
-            Self::Param(_, param) => Box::new(param.size()),
+            Self::TableExport(table) => Box::new(sleigh.table(table.id)),
+            Self::Local(local) => Box::new(&execution.variable(local.id).size),
         }
     }
-    pub fn solve(
-        &self,
-        solved: &mut impl SolverStatus,
-    ) -> Result<(), ExecutionError> {
-        match self {
-            //NOTE call table solve on the main loop only
-            Self::Varnode(_)
-            | Self::Bitrange(_)
-            | Self::Param(_, _)
-            | Self::TokenField(_)
-            | Self::Table(_) => Ok(()),
-            Self::ExeVar(_, var) => var.solve(solved),
-        }
-    }
-    pub fn convert(self) -> FinalWriteValue {
-        match self {
-            Self::Varnode(var) => FinalWriteValue::Varnode(var),
-            Self::Bitrange(var) => FinalWriteValue::Bitrange(var),
-            Self::TokenField(ass) => {
-                FinalWriteValue::TokenField(ass.convert_reference())
-            }
-            Self::Table(table) => {
-                FinalWriteValue::TableExport(table.convert_reference())
-            }
-            Self::ExeVar(_, var) => FinalWriteValue::Local(var.convert()),
-            //TODO param need to change? maybe replace it into a local variable
-            Self::Param(_, param) => FinalWriteValue::Local(param.convert()),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Build {
-    pub table: GlobalReference<Table>,
-}
-impl Build {
-    pub fn new(table: GlobalReference<Table>) -> Self {
-        Self { table }
-    }
-    pub fn convert(self) -> semantic::execution::Build {
-        semantic::execution::Build {
-            table: self.table.convert_reference(),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct MacroCall {
-    function: GlobalReference<PcodeMacro>,
-    instance: Option<Rc<PcodeMacroInstance>>,
-    pub params: Vec<Expr>,
 }
 
 impl MacroCall {
-    pub fn new(
-        params: Vec<Expr>,
-        function: GlobalReference<PcodeMacro>,
-    ) -> Self {
+    pub fn new(params: Vec<Expr>, macro_id: PcodeMacroId) -> Self {
         Self {
             params,
-            function,
-            instance: None,
+            instance: PcodeMacroCallId {
+                macro_id,
+                instance_id: None,
+            },
         }
     }
-    pub fn solve<T>(&mut self, solved: &mut T) -> Result<(), ExecutionError>
+    pub fn solve<T>(
+        &mut self,
+        sleigh: &Sleigh,
+        execution: &Execution,
+        solved: &mut T,
+    ) -> Result<(), ExecutionError>
     where
         T: SolverStatus + Default,
     {
-        let mut correlated_params_instance = |params| {
-            for (param, macro_param) in self.params.iter_mut().zip(params) {
-                let src = param.src().clone();
-                if param
-                    .size_mut()
-                    .update_action(|size| size.intersection(macro_param))
-                    .ok_or(ExecutionError::VarSize(src))?
-                {
-                    solved.we_did_a_thing();
-                }
-                param.solve(solved)?;
-            }
-            Ok(())
-        };
-        //update the param expencted size with the macro expected param size
+        // if already specialized, then finished
+        if self.instance.instance_id.is_some() {
+            return Ok(());
+        }
+
+        //otherwise try to specialize the macro call
+        //update the param expected size with the macro expected param size
         //and solved it
-        if let Some(instance) = &self.instance {
-            let mut iter = instance.params().iter().map(|x| x.size().get());
-            let iter: &mut dyn Iterator<Item = FieldSize> = &mut iter;
-            correlated_params_instance(iter)?;
-            instance.solve(solved).unwrap(/*TODO*/);
-        } else {
-            let element = self.function.element();
-            let default_params = element.params();
-            let mut iter = default_params.iter().map(|x| x.size().get());
-            let iter: &mut dyn Iterator<Item = FieldSize> = &mut iter;
-            correlated_params_instance(iter)?;
-            //try to specialize the macro call
-            self.function.element().solve(solved).unwrap(/*TODO*/);
-            let params_size = self
-                .params
-                .iter()
-                .map(|x| x.size().final_value())
-                .collect::<Option<Vec<_>>>();
-            if let Some(params_size) = params_size {
-                self.instance =
-                    Some(self.function.element().specialize(&params_size));
-                if self.instance.is_none() {
-                    solved.iam_not_finished_location(
-                        &self.function.src,
-                        file!(),
-                        line!(),
-                    )
-                } else {
-                    solved.i_did_a_thing();
-                }
+        let params_iter = sleigh
+            .pcode_macro(self.instance.macro_id)
+            .params
+            .iter()
+            .map(|param| execution.variable(param.variable_id));
+        for (param, macro_param) in self.params.iter_mut().zip(params_iter) {
+            let src = param.src().clone();
+            if param
+                .size_mut(sleigh, execution)
+                .update_action(|size| size.intersection(macro_param.size.get()))
+                .ok_or(ExecutionError::VarSize(src))?
+            {
+                solved.we_did_a_thing();
             }
+            param.solve(sleigh, execution, solved)?;
+        }
+
+        //try to specialize the macro call
+        let params_size = self
+            .params
+            .iter()
+            .map(|x| x.size(sleigh, execution).final_value())
+            .collect::<Option<Vec<_>>>();
+        if let Some(params_size) = params_size {
+            let pcode_macro = sleigh.pcode_macro(self.instance.macro_id);
+            self.instance.instance_id = Some(
+                pcode_macro.specialize(&params_size).map_err(|_| todo!())?,
+            );
+            solved.i_did_a_thing();
         }
         Ok(())
     }
-    pub fn convert(self) -> semantic::execution::MacroCall {
+    pub fn convert(self) -> FinalMacroCall {
         let params = self.params.into_iter().map(|x| x.convert()).collect();
-        semantic::execution::MacroCall::new(
+        FinalMacroCall {
             params,
-            self.instance.unwrap().convert(),
-        )
+            function: self.instance.convert(),
+        }
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct UserCall {
-    pub function: GlobalReference<UserFunction>,
-    pub params: Vec<Expr>,
-}
-impl std::ops::Deref for UserCall {
-    type Target = GlobalReference<UserFunction>;
-    fn deref(&self) -> &Self::Target {
-        &self.function
-    }
-}
 impl UserCall {
     pub fn new(
+        sleigh: &Sleigh,
+        execution: &Execution,
         mut params: Vec<Expr>,
-        function: GlobalReference<UserFunction>,
+        function: UserFunctionId,
+        location: Span,
     ) -> Self {
         //TODO how to handle user functions with variable number of parameter???
         //function.set_param_num(params.len()).unwrap(/*TODO*/);
@@ -588,43 +658,48 @@ impl UserCall {
         params.iter_mut().for_each(|param| {
             //TODO improve the size speculation
             param
-                .size_mut()
+                .size_mut(sleigh, execution)
                 .update_action(|size| Some(size.set_possible_min()))
                 .unwrap();
         });
-        Self { params, function }
-    }
-    pub fn src(&self) -> &Span {
-        self.function.location()
+        Self {
+            params,
+            output_size: FieldSize::new_unsized(),
+            function,
+            location,
+        }
     }
     pub fn solve(
         &mut self,
+        sleigh: &Sleigh,
+        execution: &Execution,
         solved: &mut impl SolverStatus,
     ) -> Result<(), ExecutionError> {
         self.params
             .iter_mut()
-            .map(|x| x.solve(solved))
+            .map(|x| x.solve(sleigh, execution, solved))
             .collect::<Result<_, _>>()
     }
-    pub fn convert(self) -> semantic::execution::UserCall {
+    pub fn convert(self) -> FinalUserCall {
         let params = self.params.into_iter().map(|x| x.convert()).collect();
-        semantic::execution::UserCall::new(params, self.function)
+        FinalUserCall {
+            location: self.location,
+            function: self.function,
+            params,
+        }
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct LocalGoto {
-    pub cond: Option<Expr>,
-    pub dst: Rc<Block>,
-}
 impl LocalGoto {
     pub fn new(
+        sleigh: &Sleigh,
+        execution: &Execution,
         mut cond: Option<Expr>,
-        dst: Rc<Block>,
+        dst: BlockId,
     ) -> Result<Self, ExecutionError> {
         //condition can have any size, preferencially 1 bit for true/false
         cond.iter_mut().for_each(|cond| {
-            cond.size_mut()
+            cond.size_mut(sleigh, execution)
                 .update_action(|size| Some(size.set_possible_min()))
                 .unwrap();
         });
@@ -632,46 +707,38 @@ impl LocalGoto {
     }
     pub fn solve(
         &mut self,
+        sleigh: &Sleigh,
+        execution: &Execution,
         solved: &mut impl SolverStatus,
     ) -> Result<(), ExecutionError> {
         if let Some(cond) = self.cond.as_mut() {
-            cond.solve(solved)?;
-            if cond.size().is_undefined() {
+            cond.solve(sleigh, execution, solved)?;
+            if cond.size(sleigh, execution).is_undefined() {
                 solved.iam_not_finished_location(cond.src(), file!(), line!());
             }
         }
         Ok(())
     }
-    pub fn convert(self) -> semantic::execution::LocalGoto {
-        let cond = self.cond.map(|x| x.convert());
-        let dst = Rc::clone(&self.dst.result);
-        semantic::execution::LocalGoto { cond, dst }
-    }
-}
 
-#[derive(Clone, Debug)]
-pub struct CpuBranch {
-    pub cond: Option<Expr>,
-    pub call: BranchCall,
-    //TODO delete direct?
-    direct: bool,
-    pub dst: Expr,
-    //TODO: HACK: this this is not adequated, it requires that the addr size
-    //being deduced some how
-    exec_addr_size: FieldSize,
+    pub fn convert(self) -> FinalLocalGoto {
+        let cond = self.cond.map(|x| x.convert());
+        let dst = self.dst;
+        FinalLocalGoto { cond, dst }
+    }
 }
 
 impl CpuBranch {
     pub fn new(
+        sleigh: &Sleigh,
+        execution: &Execution,
         mut cond: Option<Expr>,
         call: BranchCall,
         direct: bool,
         dst: Expr,
-        exec_addr_size: FieldSize,
     ) -> Self {
         //condition can have any size, preferencially 1 bit for true/false
         cond.iter_mut().for_each(|cond| {
-            cond.size_mut()
+            cond.size_mut(sleigh, execution)
                 .update_action(|size| Some(size.set_possible_min()))
                 .unwrap();
         });
@@ -680,31 +747,34 @@ impl CpuBranch {
             call,
             direct,
             dst,
-            exec_addr_size,
         }
     }
     pub fn solve(
         &mut self,
+        sleigh: &Sleigh,
+        execution: &Execution,
         solved: &mut impl SolverStatus,
     ) -> Result<(), ExecutionError> {
         let mut modified = false;
         if let Some(cond) = self.cond.as_mut() {
-            cond.solve(solved)?;
-            if cond.size().is_undefined() {
+            cond.solve(sleigh, execution, solved)?;
+            if cond.size(sleigh, execution).is_undefined() {
                 solved.iam_not_finished_location(cond.src(), file!(), line!());
             }
         }
         //correlate the addr execution size and the jmp dest addr size
         let error = ExecutionError::VarSize(self.dst.src().clone());
         modified |= [
-            &mut self.dst.size_mut() as &mut dyn FieldSizeMut,
-            &mut FieldSizeMutRef::from(&mut self.exec_addr_size),
+            &mut self.dst.size_mut(sleigh, execution) as &mut dyn FieldSizeMut,
+            &mut FieldSizeMutOwned::from(FieldSize::new_bytes(
+                sleigh.addr_bytes().unwrap(/*todo*/),
+            )),
         ]
         .all_same_lenght()
         .ok_or_else(|| error)?;
 
-        self.dst.solve(solved)?;
-        if self.dst.size().is_undefined() {
+        self.dst.solve(sleigh, execution, solved)?;
+        if self.dst.size(sleigh, execution).is_undefined() {
             solved.iam_not_finished_location(self.dst.src(), file!(), line!());
         }
 
@@ -713,48 +783,44 @@ impl CpuBranch {
         }
         Ok(())
     }
-    pub fn convert(self) -> semantic::execution::CpuBranch {
+    pub fn convert(self) -> FinalCpuBranch {
         let cond = self.cond.map(|cond| cond.convert());
         let dst = self.dst.convert();
-        semantic::execution::CpuBranch::new(cond, self.call, self.direct, dst)
+        FinalCpuBranch {
+            cond,
+            call: self.call,
+            direct: self.direct,
+            dst,
+        }
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum Statement {
-    Delayslot(NumberUnsigned),
-    Export(Export),
-    CpuBranch(CpuBranch),
-    LocalGoto(LocalGoto),
-    MacroCall(MacroCall),
-    UserCall(UserCall),
-    Build(Build),
-    Declare(Rc<Variable>),
-    Assignment(Assignment),
-    MemWrite(MemWrite),
-}
-
 impl Statement {
-    pub fn solve<T>(&mut self, solved: &mut T) -> Result<(), ExecutionError>
+    pub fn solve<T>(
+        &mut self,
+        sleigh: &Sleigh,
+        execution: &Execution,
+        solved: &mut T,
+    ) -> Result<(), ExecutionError>
     where
         T: SolverStatus + Default,
     {
         match self {
             Self::Build(_x) => (),
             Self::Delayslot(_) => (),
-            Self::Export(x) => x.solve(solved)?,
+            Self::Export(x) => x.solve(sleigh, execution, solved)?,
             Self::Declare(_x) => (),
-            Self::CpuBranch(x) => x.solve(solved)?,
-            Self::LocalGoto(x) => x.solve(solved)?,
-            Self::MacroCall(x) => x.solve(solved)?,
-            Self::UserCall(x) => x.solve(solved)?,
-            Self::Assignment(x) => x.solve(solved)?,
-            Self::MemWrite(x) => x.solve(solved)?,
+            Self::CpuBranch(x) => x.solve(sleigh, execution, solved)?,
+            Self::LocalGoto(x) => x.solve(sleigh, execution, solved)?,
+            Self::MacroCall(x) => x.solve(sleigh, execution, solved)?,
+            Self::UserCall(x) => x.solve(sleigh, execution, solved)?,
+            Self::Assignment(x) => x.solve(sleigh, execution, solved)?,
+            Self::MemWrite(x) => x.solve(sleigh, execution, solved)?,
         }
         Ok(())
     }
-    pub fn convert(self) -> semantic::execution::Statement {
-        use semantic::execution::Statement as New;
+    pub fn convert(self) -> FinalStatement {
+        use FinalStatement as New;
         match self {
             Self::Delayslot(x) => New::Delayslot(x),
             Self::Export(x) => New::Export(x.convert()),
@@ -762,136 +828,71 @@ impl Statement {
             Self::LocalGoto(x) => New::LocalGoto(x.convert()),
             Self::MacroCall(x) => New::MacroCall(x.convert()),
             Self::UserCall(x) => New::UserCall(x.convert()),
-            Self::Build(x) => New::Build(x.convert()),
-            Self::Declare(x) => New::Declare(x.convert()),
+            Self::Build(x) => New::Build(x),
+            Self::Declare(x) => New::Declare(x),
             Self::Assignment(x) => New::Assignment(x.convert()),
             Self::MemWrite(x) => New::MemWrite(x.convert()),
         }
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Block {
-    //None is entry block
-    //pub name: Option<Rc<str>>,
-    // empty means the entry point
-    //parent: RefCell<Vec<Weak<Block>>>,
-    // None means the block is an return
-    pub next: RefCell<Option<Rc<Block>>>,
-    pub statements: RefCell<Vec<Statement>>,
-
-    pub result: Rc<semantic::execution::Block>,
-}
-
 impl Block {
-    pub fn new_empty(name: Option<Rc<str>>) -> Self {
+    pub fn new_empty(name: Option<Box<str>>) -> Self {
         Block {
-            //name,
-            next: RefCell::new(None),
-            statements: RefCell::new(vec![]),
-            result: Rc::new(semantic::execution::Block::new_empty(name)),
+            name,
+            next: None,
+            statements: vec![],
         }
     }
 
-    pub fn solve<T>(&self, solved: &mut T) -> Result<(), ExecutionError>
+    pub fn solve<T>(
+        &mut self,
+        sleigh: &Sleigh,
+        execution: &Execution,
+        solved: &mut T,
+    ) -> Result<(), ExecutionError>
     where
         T: SolverStatus + Default,
     {
         self.statements
-            .borrow_mut()
             .iter_mut()
-            .map(|statements| statements.solve(solved))
+            .map(|statements| statements.solve(sleigh, execution, solved))
             .collect::<Result<(), _>>()
     }
-    pub fn convert(&self) -> Rc<semantic::execution::Block> {
-        let next = self.next.borrow().as_ref().map(|x| Rc::clone(x));
-        if let Some(next_block) = next {
-            *self.result.next.borrow_mut() =
-                Some(Rc::clone(&next_block.result));
-        }
-
-        let statements: Vec<_> =
-            std::mem::take(self.statements.borrow_mut().as_mut());
-        let statements = statements
+    pub fn convert(self) -> FinalBlock {
+        let statements = self
+            .statements
             .into_iter()
             .map(|statement| statement.convert())
             .collect();
-        *self.result.statements.borrow_mut() = statements;
-        Rc::clone(&self.result)
+        let statements = statements;
+        FinalBlock {
+            name: self.name,
+            next: self.next,
+            statements,
+        }
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct Variable {
-    pub name: Rc<str>,
-    //pub scope: RefCell<VariableScope>,
-    pub size: Cell<FieldSize>,
-    //location of the variable declaration
-    pub src: Span,
-    me: Weak<Self>,
-
-    pub result: RefCell<Option<Rc<semantic::execution::Variable>>>,
 }
 
 impl Variable {
-    pub fn new(name: Rc<str>, src: Span) -> Rc<Self> {
-        Rc::new_cyclic(|me| Self {
+    pub fn new(name: String, src: Option<Span>) -> Self {
+        Self {
             name,
             //scope,
-            size: Cell::default(),
+            size: Cell::new(FieldSize::new_unsized()),
             src,
-            me: Weak::clone(me),
-            result: RefCell::default(),
-        })
-    }
-    pub fn me(&self) -> Rc<Self> {
-        self.me.upgrade().unwrap()
-    }
-    fn len(&self) -> &Cell<FieldSize> {
-        &self.size
-    }
-    fn solve<T: SolverStatus>(
-        &self,
-        solved: &mut T,
-    ) -> Result<(), ExecutionError> {
-        if self.size.get().is_undefined() {
-            solved.iam_not_finished_location(&self.src, file!(), line!())
         }
-        Ok(())
     }
-    //fn eval_time(&self) -> EvaluationTime {
-    //    todo!();
-    //}
-    fn convert(&self) -> Rc<semantic::execution::Variable> {
-        if self.result.borrow().is_none() {
-            let mut result = self.result.borrow_mut();
-            *result = Some(Rc::new(semantic::execution::Variable::new(
-                Rc::clone(&self.name),
-            )));
+    fn convert(self) -> FinalVariable {
+        FinalVariable {
+            name: self.name.into(),
+            len_bits: self.size.get().possible_value().unwrap(),
+            location: self.src,
         }
-        self.result.borrow().as_ref().map(Rc::clone).unwrap()
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub enum ExecutionExport {
-    //don't return
-    #[default]
-    None,
-    //type can't be defined yet.
-    //Undefined(FieldSize),
-    //value that is known at Dissassembly time
-    Const(FieldSize),
-    //value that can be know at execution time
-    Value(FieldSize),
-    //References/registers and other mem locations, all with the same size
-    Reference(FieldSize),
-    //multiple source, can by any kind of return, value or address,
-    //but all with the same size
-    Multiple(FieldSize),
-}
-
-impl ExecutionExport {
+impl ExportLen {
     pub fn export_nothing(&self) -> bool {
         matches!(self, Self::None)
     }
@@ -951,50 +952,30 @@ impl ExecutionExport {
         }
     }
     //TODO from Option into a Result
-    pub fn convert(&self) -> Option<crate::semantic::table::ExecutionExport> {
-        use crate::semantic::table;
-        let result = match self {
-            Self::None => table::ExecutionExport::None,
-            Self::Const(len) if !len.is_undefined() => {
-                table::ExecutionExport::Const(len.possible_value().unwrap())
-            }
-            Self::Value(len) if !len.is_undefined() => {
-                table::ExecutionExport::Value(len.possible_value().unwrap())
-            }
-            Self::Reference(len) if !len.is_undefined() => {
-                table::ExecutionExport::Reference(len.possible_value().unwrap())
-            }
-            Self::Multiple(len) if !len.is_undefined() => {
-                table::ExecutionExport::Multiple(len.possible_value().unwrap())
-            }
-            _ => return None,
-        };
-        Some(result)
+    pub fn final_size(&self) -> Option<NumberNonZeroUnsigned> {
+        match self {
+            Self::None => None,
+            Self::Const(len) => Some(len.possible_value().unwrap()),
+            Self::Value(len) => Some(len.possible_value().unwrap()),
+            Self::Reference(len) => Some(len.possible_value().unwrap()),
+            Self::Multiple(len) => Some(len.possible_value().unwrap()),
+        }
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct Execution {
-    src: Span,
-    pub blocks: IndexMap<Rc<str>, Rc<Block>>,
-    pub vars: IndexMap<Rc<str>, Rc<Variable>>,
-
-    pub return_value: ExecutionExport,
-
-    //entry_block have no name and is not on self.labels
-    pub entry_block: Rc<Block>,
-}
-
-pub type FinalExecution = semantic::execution::Execution;
-impl Drop for Execution {
-    fn drop(&mut self) {
-        for block in self.blocks() {
-            //avoid circle references in case Block point to one another
-            let mut next = block.next.borrow_mut();
-            //clean statements to delete Rc<Block> from branchs
-            let mut statements = block.statements.borrow_mut();
-            *next = None;
-            *statements = vec![];
+    pub fn convert(self) -> ExecutionExport {
+        match self {
+            ExportLen::None => ExecutionExport::None,
+            ExportLen::Const(x) => {
+                ExecutionExport::Const(x.possible_value().unwrap())
+            }
+            ExportLen::Value(x) => {
+                ExecutionExport::Value(x.possible_value().unwrap())
+            }
+            ExportLen::Reference(x) => {
+                ExecutionExport::Reference(x.possible_value().unwrap())
+            }
+            ExportLen::Multiple(x) => {
+                ExecutionExport::Multiple(x.possible_value().unwrap())
+            }
         }
     }
 }
@@ -1003,22 +984,28 @@ impl Execution {
     pub fn src(&self) -> &Span {
         &self.src
     }
-    pub fn new_empty(src: &Span) -> Self {
-        let entry_block = Rc::new(Block::new_empty(None));
+    pub fn new_empty(src: Span) -> Self {
+        let entry_block = Block::new_empty(None);
         Execution {
-            src: src.clone(),
-            blocks: IndexMap::default(),
-            vars: IndexMap::default(),
-            return_value: ExecutionExport::default(),
-            entry_block,
+            src,
+            blocks: RefCell::new(vec![entry_block]),
+            vars: vec![],
+            return_value: ExportLen::default(),
+            entry_block: BlockId(0),
         }
     }
-    pub fn solve<T>(&mut self, solved: &mut T) -> Result<(), ExecutionError>
+    pub fn solve<T>(
+        &mut self,
+        sleigh: &Sleigh,
+        solved: &mut T,
+    ) -> Result<(), ExecutionError>
     where
         T: SolverStatus + Default,
     {
-        self.blocks()
-            .map(|blocks| blocks.solve(solved))
+        self.blocks
+            .borrow_mut()
+            .iter_mut()
+            .map(|blocks| blocks.solve(sleigh, self, solved))
             .collect::<Result<(), _>>()?;
 
         //get the export sizes, otherwise we are finished
@@ -1029,10 +1016,12 @@ impl Execution {
         };
         //find and combine all the output sizes
         let mut modified = self
-            .blocks()
-            .filter(|block| block.next.borrow().is_none())
-            .filter_map(|block| match block.statements.borrow().last()? {
-                Statement::Export(exp) => Some(exp.output_size()),
+            .blocks
+            .borrow()
+            .iter()
+            .filter(|block| block.next.is_none())
+            .filter_map(|block| match block.statements.last()? {
+                Statement::Export(exp) => Some(exp.output_size(sleigh, self)),
                 _ => None,
             })
             .try_fold(false, |acc, out_size| {
@@ -1042,14 +1031,16 @@ impl Execution {
                     .ok_or_else(|| ExecutionError::InvalidExport)
             })?;
         //update all the export output sizes
-        self.blocks()
-            .filter(|block| block.next.borrow().is_none())
+        self.blocks
+            .borrow_mut()
+            .iter_mut()
+            .filter(|block| block.next.is_none())
             .for_each(|block| {
-                let mut statements = block.statements.borrow_mut();
+                let statements = &mut block.statements;
                 match statements.last_mut() {
                     Some(Statement::Export(export)) => {
                         modified |= export
-                            .output_size_mut()
+                            .output_size_mut(sleigh, self)
                             .update_action(|size| {
                                 size.intersection(return_size)
                             })
@@ -1071,22 +1062,12 @@ impl Execution {
         }
         Ok(())
     }
-    pub fn convert(mut self) -> FinalExecution {
-        let blocks = std::mem::take(&mut self.blocks);
-        let vars = std::mem::take(&mut self.vars);
-        let entry_block = self.entry_block.convert();
-        let blocks = blocks
-            .into_iter()
-            .map(|(name, block)| (name, block.convert()))
-            .collect();
-        let vars = vars
-            .into_iter()
-            .map(|(name, var)| (name, var.convert()))
-            .collect();
+    pub fn convert(self) -> FinalExecution {
+        let blocks = self.blocks.take();
         FinalExecution {
-            blocks,
-            vars,
-            entry_block,
+            blocks: blocks.into_iter().map(|block| block.convert()).collect(),
+            variables: self.vars.into_iter().map(|var| var.convert()).collect(),
+            entry_block: self.entry_block,
         }
     }
     pub fn return_size(&self) -> Option<&FieldSize> {
@@ -1095,45 +1076,64 @@ impl Execution {
     pub fn return_size_mut(&mut self) -> Option<&mut FieldSize> {
         self.return_value.size_mut()
     }
-    pub fn return_type(&self) -> &ExecutionExport {
+    pub fn return_type(&self) -> &ExportLen {
         &self.return_value
     }
-    pub fn return_type_mut(&mut self) -> &mut ExecutionExport {
+    pub fn return_type_mut(&mut self) -> &mut ExportLen {
         &mut self.return_value
     }
-    pub fn blocks(&self) -> impl Iterator<Item = &Block> {
+    pub fn block(&self, id: BlockId) -> Ref<Block> {
+        Ref::map(self.blocks.borrow(), |x| &x[id.0])
+    }
+    pub fn block_mut(&self, id: BlockId) -> RefMut<Block> {
+        RefMut::map(self.blocks.borrow_mut(), |x| &mut x[id.0])
+    }
+    pub fn block_by_name(&self, name: &str) -> Option<BlockId> {
         self.blocks
-            .values()
-            .map(Rc::as_ref)
-            .chain([Rc::as_ref(&self.entry_block)])
+            .borrow()
+            .iter()
+            .position(|block| {
+                block
+                    .name
+                    .as_ref()
+                    .map(|block_name| block_name.as_ref() == name)
+                    .unwrap_or(false)
+            })
+            .map(BlockId)
     }
-    pub fn block(&self, name: &str) -> Option<Rc<Block>> {
-        self.blocks.get(name).map(|x| Rc::clone(x))
+    pub fn new_block(&mut self, name: String) -> Option<()> {
+        if self.block_by_name(&name).is_some() {
+            return None;
+        }
+        let block = Block::new_empty(Some(name.into()));
+        self.blocks.borrow_mut().push(block);
+        Some(())
     }
-    pub fn new_block(&mut self, name: &str) -> Option<Rc<Block>> {
-        let name = Rc::from(name);
-        let block = Rc::new(Block::new_empty(Some(Rc::clone(&name))));
-        self.blocks
-            .insert(name, Rc::clone(&block))
-            .map_or(Some(block), |_| None)
+    pub fn variable(&self, id: VariableId) -> &Variable {
+        &self.vars[id.0]
     }
-    pub fn entry_block(&self) -> &Block {
-        &self.entry_block
+    pub fn variable_mut(&mut self, id: VariableId) -> &mut Variable {
+        &mut self.vars[id.0]
     }
-    pub fn variable(&self, name: &str) -> Option<&Rc<Variable>> {
-        self.vars.get(name)
+    pub fn variable_by_name(&self, name: &str) -> Option<VariableId> {
+        self.vars
+            .iter()
+            .position(|vars| &vars.name == name)
+            .map(VariableId)
     }
     pub fn create_variable(
         &mut self,
-        name_ori: &str,
+        name: String,
         src: Span,
-        //scope: VariableScope,
-    ) -> Result<Rc<Variable>, ExecutionError> {
-        let name = Rc::from(name_ori);
+        explicit: bool,
+    ) -> Result<VariableId, ExecutionError> {
+        // don't allow duplicated name
+        if self.variable_by_name(&name).is_some() {
+            return Err(ExecutionError::InvalidRef(src));
+        }
         //TODO src
-        let var = Variable::new(name, src.clone());
-        self.vars
-            .insert(Rc::clone(&var.name), Rc::clone(&var))
-            .map_or(Ok(var), |_| Err(ExecutionError::InvalidRef(src)))
+        let var = Variable::new(name, explicit.then_some(src));
+        self.vars.push(var);
+        Ok(VariableId(self.vars.len() - 1))
     }
 }

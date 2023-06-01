@@ -1,121 +1,50 @@
-use std::rc::Rc;
-
-use crate::semantic::display::DisplayError;
-use crate::semantic::inner::disassembly;
-use crate::semantic::inner::table::Table;
-use crate::semantic::inner::token::TokenField;
-use crate::semantic::varnode::Varnode;
-use crate::semantic::{GlobalReference, InstNext, InstStart};
+use crate::semantic::display::{Display, DisplayElement};
 use crate::syntax::block;
-use crate::Span;
+use crate::{DisplayError, Span};
 
-use super::varnode::Context;
 use super::{Pattern, Sleigh};
 
-#[derive(Clone, Debug)]
-pub enum DisplayElement {
-    Varnode(GlobalReference<Varnode>),
-    Context(GlobalReference<Context>),
-    //Bitrange(GlobalReference<Bitrange>),
-    TokenField(GlobalReference<TokenField>),
-    InstStart(GlobalReference<InstStart>),
-    InstNext(GlobalReference<InstNext>),
-    Table(GlobalReference<Table>),
-    Dissasembly(Rc<disassembly::Variable>),
-    Literal(String),
-    Space,
-}
-
-impl DisplayElement {
-    fn is_space(&self) -> bool {
-        matches!(self, Self::Space)
-    }
-}
-
-impl From<DisplayElement> for crate::semantic::display::DisplayScope {
-    fn from(value: DisplayElement) -> Self {
-        match value {
-            DisplayElement::Space => Self::Space,
-            DisplayElement::TokenField(x) => {
-                Self::TokenField(x.convert_reference())
+impl Sleigh {
+    fn get_display_ref(
+        &self,
+        pattern: &mut Pattern,
+        name: &str,
+        src: &Span,
+    ) -> Result<DisplayElement, DisplayError> {
+        use crate::semantic::inner::GlobalScope::*;
+        if let Some(disassembly_var) =
+            pattern.disassembly_variable_names.get(name)
+        {
+            return Ok(DisplayElement::Disassembly(*disassembly_var));
+        }
+        match self
+            .get_global(name)
+            .ok_or(DisplayError::MissingRef(src.clone()))?
+        {
+            TokenField(x) => {
+                if pattern
+                    .produce_token_field(self, x)
+                    .map(|block_num| block_num.is_none())
+                    .unwrap()
+                {
+                    //TODO error here
+                    todo!()
+                }
+                Ok(DisplayElement::TokenField(x))
             }
-            DisplayElement::Varnode(x) => Self::Varnode(x),
-            //DisplayElement::Bitrange(x) => Self::Bitrange(x),
-            DisplayElement::Literal(x) => Self::Literal(x),
-            DisplayElement::Table(x) => Self::Table(x.convert_reference()),
-            DisplayElement::Dissasembly(x) => Self::Disassembly(x.convert()),
-            DisplayElement::Context(x) => Self::Context(x.convert_reference()),
-            DisplayElement::InstStart(x) => Self::InstStart(x),
-            DisplayElement::InstNext(x) => Self::InstNext(x),
+            Varnode(x) => Ok(DisplayElement::Varnode(x)),
+            Table(x) => Ok(DisplayElement::Table(x)),
+            Context(x) => Ok(DisplayElement::Context(x)),
+            _ => Err(DisplayError::InvalidRef(src.clone())),
         }
     }
-}
 
-#[derive(Clone, Debug, Default)]
-pub struct Display {
-    pub mneumonic: Option<String>,
-    pub elements: Vec<DisplayElement>,
-}
-
-impl From<Display> for crate::semantic::display::Display {
-    fn from(value: Display) -> Self {
-        Self::new(
-            value.mneumonic,
-            value.elements.into_iter().map(|x| x.into()).collect(),
-        )
-    }
-}
-
-fn get_display_ref(
-    sleigh: &Sleigh,
-    pattern: &mut Pattern,
-    name: &str,
-    src: &Span,
-) -> Result<DisplayElement, DisplayError> {
-    use crate::semantic::inner::GlobalScope::*;
-    pattern
-        .disassembly_vars
-        .get(name)
-        .map(|var| Ok(DisplayElement::Dissasembly(Rc::clone(var))))
-        .unwrap_or_else(|| {
-            match sleigh
-                .get_global(name)
-                .ok_or(DisplayError::MissingRef(src.clone()))?
-            {
-                TokenField(x) => {
-                    let token_field =
-                        GlobalReference::from_element(x, src.clone());
-                    if pattern
-                        .produce_token_field(&token_field)
-                        .map(|block_num| block_num.is_none())
-                        .unwrap()
-                    {
-                        //TODO error here
-                        todo!()
-                    }
-                    Ok(DisplayElement::TokenField(token_field))
-                }
-                Varnode(x) => Ok(DisplayElement::Varnode(
-                    GlobalReference::from_element(x, src.clone()),
-                )),
-                Table(x) => Ok(DisplayElement::Table(
-                    GlobalReference::from_element(x, src.clone()),
-                )),
-                Context(x) => Ok(DisplayElement::Context(
-                    GlobalReference::from_element(x, src.clone()),
-                )),
-                _ => Err(DisplayError::InvalidRef(src.clone())),
-            }
-        })
-}
-
-impl Display {
-    pub fn new<'a>(
+    pub fn new_display(
+        &self,
         display: block::display::Display,
-        sleigh: &Sleigh,
         pattern: &mut Pattern,
         is_root: bool,
-    ) -> Result<Self, DisplayError> {
+    ) -> Result<Display, DisplayError> {
         use block::display::DisplayElement::*;
         //solve the idents, plus condensate multiple literals, plus split said
         //literals with spaces
@@ -125,7 +54,7 @@ impl Display {
         //in root table first element is the mneumonic
         let mneumonic = if is_root {
             let Some(ele) = iter.next() else {
-                return Ok(Self::default());
+                return Ok(Display::default());
             };
             match ele {
                 Concat => None,
@@ -156,7 +85,7 @@ impl Display {
                         split_spaces_add_literals(&mut out, &str_acc);
                         str_acc.clear();
                     }
-                    out.push(get_display_ref(sleigh, pattern, &name, &src)?)
+                    out.push(self.get_display_ref(pattern, &name, &src)?)
                 }
             }
         }
@@ -217,7 +146,7 @@ impl Display {
         }
         Ok(Display {
             mneumonic,
-            elements,
+            elements: elements.into(),
         })
     }
 }

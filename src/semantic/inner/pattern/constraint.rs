@@ -1,18 +1,6 @@
-use crate::bit_in_field;
-use crate::pattern::{CmpOp, ConstraintValue};
-use crate::{BitRange, Endian};
-
-/// Represent how a bit is limited in a pattern
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum BitConstraint {
-    //can have any value
-    #[default]
-    Unrestrained,
-    //only one value possible 0->false, 1->true
-    Defined(bool),
-    //the value is limited depending on other bits.
-    Restrained,
-}
+use crate::pattern::BitConstraint;
+use crate::semantic::pattern::{CmpOp, ConstraintValue};
+use crate::FieldBits;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SinglePatternOrdering {
@@ -102,24 +90,27 @@ impl BitConstraint {
 
 pub fn apply_value(
     field: &mut [BitConstraint],
-    endian: Endian,
-    value_bits: BitRange,
+    bit_order: fn(u32, u32) -> u32,
+    value_bits: FieldBits,
     op: CmpOp,
     value: &ConstraintValue,
 ) -> Option<()> {
     //only set the value, if its Eq and the value is known at compile time
     use crate::semantic::disassembly::{ExprElement, ReadScope};
     let value = match (op, value.expr().elements()) {
-        (CmpOp::Eq, [ExprElement::Value(ReadScope::Integer(value))]) => {
-            Some(value.signed_super())
-        }
+        (
+            CmpOp::Eq,
+            [ExprElement::Value {
+                value: ReadScope::Integer(value),
+                location: _,
+            }],
+        ) => Some(value.signed_super()),
         _ => None,
     };
 
     for (input_value_bit, field_bit) in value_bits.0.into_iter().enumerate() {
         let field_bits: u32 = field.len().try_into().unwrap();
-        let field_bit =
-            bit_in_field(field_bit.try_into().unwrap(), endian, field_bits);
+        let field_bit = bit_order(field_bit.try_into().unwrap(), field_bits);
         let bit = &mut field[field_bit as usize];
         if let Some(value) = value {
             *bit = bit.define((value >> input_value_bit) & 1 != 0)?;
@@ -133,24 +124,34 @@ pub fn apply_value(
 
 #[cfg(test)]
 mod test {
-    use crate::Number;
-
     #[test]
     fn test_apply_value() {
         let mut field = vec![super::BitConstraint::default(); 64];
+        let dummy_location = crate::Span::File(crate::FileSpan {
+            start: crate::FileLocation {
+                file: std::rc::Rc::from(std::path::Path::new("")),
+                line: 0,
+                column: 0,
+            },
+            end_line: 0,
+            end_column: 0,
+        });
         super::apply_value(
             &mut field,
             crate::Endian::Big,
-            crate::BitRange(35..37),
-            crate::pattern::CmpOp::Eq,
-            &crate::pattern::ConstraintValue::new(
-                crate::disassembly::Expr::new(Box::from([
-                    crate::disassembly::ExprElement::Value(
-                        crate::disassembly::ReadScope::Integer(
-                            Number::Positive(2),
-                        ),
-                    ),
-                ])),
+            crate::FieldBits(35..37),
+            crate::semantic::pattern::CmpOp::Eq,
+            &crate::semantic::pattern::ConstraintValue::new(
+                crate::semantic::disassembly::Expr {
+                    rpn: Box::from([
+                        crate::semantic::disassembly::ExprElement::Value{
+                            value: crate::semantic::disassembly::ReadScope::Integer(
+                                crate::Number::Positive(2),
+                            ),
+                            location: dummy_location,
+                        },
+                    ]),
+                },
             ),
         )
         .unwrap();

@@ -1,71 +1,36 @@
-use std::ops::ControlFlow;
-use std::rc::Rc;
+use crate::disassembly::VariableId;
+use crate::semantic::{
+    ContextId, Sleigh as FinalSleigh, TableId, TokenFieldId,
+};
+use crate::{bit_in_be, bit_in_context, bit_in_le, NumberUnsigned, Span};
 
-use thiserror::Error;
+use super::disassembly::{Assertation, Expr, Variable};
+use super::InstStart;
 
-use crate::semantic::inner::pattern::{BitConstraint, SinglePatternOrdering};
-use crate::{from_error, Endian, NumberUnsigned, Span};
-
-use super::disassembly::{Assertation, DisassemblyError, Expr, Variable};
-use super::table::Table;
-use super::token::TokenField;
-use super::varnode::Context;
-use super::{GlobalReference, InstStart};
-
-#[derive(Clone, Debug, Error)]
-pub enum PatternError {
-    #[error("Invalid Ref {0}")]
-    InvalidRef(Span),
-    #[error("Missing Ref {0}")]
-    MissingRef(Span),
-    #[error("Unable to merge Blocks mixing & and | {0}")]
-    InvalidMixOp(Span),
-
-    #[error("Invalid Recursive at {0}")]
-    InvalidRecursive(Span),
-    #[error("In Or block, all elements need to have the same len")]
-    InvalidOrLen(Span),
-    #[error("Each patern can only have a single recursive")]
-    MultipleRecursives(Span),
-    #[error("Mix `|` and `&` operations on pattern is forbidden")]
-    MixOperations(Span),
-    #[error("Field produced multiple times at {0} and {1}")]
-    MultipleProduction(Span, Span),
-    #[error("Field produced is implicit and abiguous")]
-    AmbiguousProduction(Span),
-    #[error("Pattern in Or statement without constraint")]
-    UnrestrictedOr(Span),
-
-    #[error("Invalid assignment Error")]
-    ConstraintExpr(DisassemblyError),
-}
-from_error!(PatternError, DisassemblyError, ConstraintExpr);
-
-// each bit have four possible states:
-// mask 1, value X: bit is restricted to `value`
-// mask 0, value 0: bit is unrestricted
-// mask 0, value 1: bit is restricted but value can't be defined at compile time
-#[derive(Clone, Copy, Default, Debug)]
-pub struct PatternByte {
-    pub(crate) value: u8,
-    pub(crate) mask: u8,
+/// Represent how a bit is limited in a pattern
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BitConstraint {
+    //can have any value
+    #[default]
+    Unrestrained,
+    //only one value possible 0->false, 1->true
+    Defined(bool),
+    //the value is limited depending on other bits.
+    Restrained,
 }
 
-impl PatternByte {
-    pub fn defined_value(&self) -> u8 {
-        self.value & self.mask
+impl BitConstraint {
+    pub fn value(&self) -> Option<bool> {
+        match self {
+            Self::Defined(value) => Some(*value),
+            _ => None,
+        }
     }
-
-    pub fn defined_bits(&self) -> u8 {
-        self.mask
-    }
-
-    pub fn defined_bit(&self, bit: u8) -> bool {
-        (self.mask >> bit) & 1 != 0
-    }
-
-    pub fn defined_bit_value(&self, bit: u8) -> Option<bool> {
-        self.defined_bit(bit).then(|| (self.value >> bit) & 1 != 0)
+    pub fn restrained(&self) -> bool {
+        match self {
+            BitConstraint::Unrestrained => false,
+            BitConstraint::Defined(_) | BitConstraint::Restrained => true,
+        }
     }
 }
 
@@ -173,148 +138,67 @@ impl PatternLen {
         }
     }
 }
+
 #[derive(Clone, Debug)]
 pub struct ProducedTable {
-    table: GlobalReference<Table>,
-    always: bool,
-    recursive: bool,
-}
-
-impl ProducedTable {
-    pub(crate) fn new(
-        table: GlobalReference<Table>,
-        always: bool,
-        recursive: bool,
-    ) -> Self {
-        Self {
-            table,
-            always,
-            recursive,
-        }
-    }
-    pub fn table(&self) -> &GlobalReference<Table> {
-        &self.table
-    }
-    pub fn always(&self) -> bool {
-        self.always
-    }
-    pub fn recursive(&self) -> bool {
-        self.recursive
-    }
+    pub table: TableId,
+    pub location: Span,
+    pub always: bool,
+    pub recursive: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct ProducedTokenField {
+    pub field: TokenFieldId,
     //if this field is produced explicitly (on pattern) or implicitly deduced
     //the existence of by the use of it in a desassembly/execution
-    explicit: bool,
-    local: bool,
-    field: GlobalReference<TokenField>,
+    pub source: Option<Span>,
+    pub local: bool,
 }
-impl ProducedTokenField {
-    pub(crate) fn new(
-        field: GlobalReference<TokenField>,
-        local: bool,
-        explicit: bool,
-    ) -> Self {
-        Self {
-            field,
-            local,
-            explicit,
-        }
-    }
-    pub fn token_field(&self) -> &GlobalReference<TokenField> {
-        &self.field
-    }
-    pub fn is_explicit(&self) -> bool {
-        self.explicit
-    }
-    pub fn is_local(&self) -> bool {
-        self.local
-    }
-}
-
-//#[derive(Clone, Debug, Default)]
-//pub struct FieldProducts {
-//    fields: Box<[ProductTokenField]>,
-//    tables: Box<[ProductTable]>,
-//}
-//impl FieldProducts {
-//    pub(crate) fn new(
-//        fields: Box<[ProductTokenField]>,
-//        tables: Box<[ProductTable]>,
-//    ) -> Self {
-//        Self { fields, tables }
-//    }
-//    pub fn tables(&self) -> &[ProductTable] {
-//        &self.tables
-//    }
-//    pub fn fields(&self) -> &[ProductTokenField] {
-//        &self.fields
-//    }
-//}
 
 #[derive(Clone, Debug)]
 pub struct Pattern {
-    len: PatternLen,
-    disassembly_vars: Box<[Rc<Variable>]>,
-    blocks: Box<[Block]>,
-    pos: Box<[Assertation]>,
+    pub len: PatternLen,
+    pub disassembly_vars: Box<[Variable]>,
+    pub blocks: Box<[Block]>,
+    pub pos: Box<[Assertation]>,
 }
 
 impl Pattern {
-    pub(crate) fn new(
-        disassembly_vars: Box<[Rc<Variable>]>,
-        blocks: Box<[Block]>,
-        pos: Box<[Assertation]>,
-        len: PatternLen,
-    ) -> Self {
-        Self {
-            disassembly_vars,
-            blocks,
-            len,
-            pos,
-        }
-    }
     pub fn blocks(&self) -> &[Block] {
         &self.blocks
     }
-    pub fn disassembly_vars(&self) -> &[Rc<Variable>] {
+
+    pub fn disassembly_var(&self, id: VariableId) -> &Variable {
+        &self.disassembly_vars[id.0]
+    }
+
+    pub fn disassembly_vars(&self) -> &[Variable] {
         &self.disassembly_vars
     }
+
     pub fn disassembly_pos_match(&self) -> &[Assertation] {
         &self.pos
     }
-    pub fn tables(&self) -> impl Iterator<Item = &ProducedTable> {
-        self.blocks().iter().map(Block::tables).flatten()
+
+    pub fn produced_tables(&self) -> impl Iterator<Item = &ProducedTable> {
+        self.blocks().iter().flat_map(Block::tables)
     }
-    pub fn token_fields(&self) -> impl Iterator<Item = &ProducedTokenField> {
+
+    pub fn produced_token_fields(
+        &self,
+    ) -> impl Iterator<Item = &ProducedTokenField> {
         self.blocks()
             .iter()
-            .map(|block| block.token_fields().iter())
-            .flatten()
+            .flat_map(|block| block.token_fields().iter())
     }
-    pub fn len(&self) -> &PatternLen {
-        &self.len
-    }
-    pub fn flat_pattern_len(&self) -> usize {
-        let mut flat_len = 0;
-        for block in self.blocks.iter() {
-            //stop parsing if the len is not defined
-            if let Some(len) = block.len().single_len() {
-                flat_len += usize::try_from(len).unwrap() * 8;
-            } else {
-                flat_len += usize::try_from(block.len().min()).unwrap() * 8;
-                break;
-            }
-        }
-        flat_len
-    }
+
     pub fn variants_num(&self) -> usize {
         self.blocks
             .iter()
             .fold(1, |acc, block| acc * block.variants_number())
     }
+
     pub fn bits_produced(&self) -> usize {
         let len = self.len.single_len().unwrap_or_else(|| self.len.min());
         usize::try_from(len).unwrap() * 8
@@ -322,106 +206,37 @@ impl Pattern {
 
     pub(crate) fn constraint(
         &self,
-        endian: Endian,
+        sleigh: &FinalSleigh,
         variant_id: usize,
         context: &mut [BitConstraint],
         constraint: &mut [BitConstraint],
     ) -> Option<()> {
         let mut current = constraint;
         for block in self.blocks.iter() {
-            block.constraint(endian, variant_id, context, current);
+            block.constraint(sleigh, variant_id, context, current);
             let next_offset = block.bits_produced();
             current = &mut current[next_offset..];
         }
         Some(())
     }
 
-    pub(crate) fn constraint_single(
-        &self,
-        endian: Endian,
-        context_bytes: usize,
-    ) -> Option<Vec<BitConstraint>> {
-        let context_bits = context_bytes * 8;
-        let mut final_buf = vec![
-            BitConstraint::Unrestrained;
-            context_bits + self.bits_produced()
-        ];
-        let self_buf = std::cell::RefCell::new(vec![
-            BitConstraint::Unrestrained;
-            context_bits
-                + self.bits_produced()
-        ]);
-
-        let mut variant_gen =
-            (0..self.variants_num()).into_iter().filter_map(|var| {
-                let mut self_buf = self_buf.borrow_mut();
-                self_buf.fill(BitConstraint::Unrestrained);
-                let (self_context, self_constraint) =
-                    self_buf.split_at_mut(context_bits);
-                //ignore impossible variants
-                self.constraint(endian, var, self_context, self_constraint)
-            });
-
-        let Some(_first) = variant_gen.next() else {
-            // all patterns are impossible
-            return None;
-        };
-        final_buf.copy_from_slice(&self_buf.borrow());
-
-        for _ in variant_gen {
-            final_buf
-                .iter_mut()
-                .zip(self_buf.borrow().iter())
-                .for_each(|(x, y)| *x = x.least_restrictive(*y));
-        }
-        Some(final_buf)
-    }
-
-    ////7.8.1. Matching
-    ////one pattern contains the other if all the cases that match the contained,
-    ////also match the pattern.
-    ////eg: `a` contains `b` if all cases that match `b` also match `a`. In other
-    ////words `a` is a special case of `b`.
-    ////NOTE the opose don't need to be true.
-    pub(crate) fn ordering(
-        &self,
-        other: &Self,
-        context_bytes: usize,
-    ) -> SinglePatternOrdering {
-        use BitConstraint::*;
-        use SinglePatternOrdering::*;
-        let self_pattern_len = self.bits_produced();
-        let other_pattern_len = other.bits_produced();
-        let max_pattern_len = self_pattern_len.max(other_pattern_len);
-        //Endian don't matter here, as long it is consistent
-        let self_buf = self.constraint_single(Endian::Little, context_bytes);
-        let other_buf = other.constraint_single(Endian::Little, context_bytes);
-
-        let self_extend = max_pattern_len - self_pattern_len;
-        let other_extend = max_pattern_len - other_pattern_len;
-
-        self_buf
-            .unwrap()
-            .into_iter()
-            .chain(
-                (0..self_extend)
-                    .into_iter()
-                    .map(|_| BitConstraint::Unrestrained),
-            )
-            .zip(
-                other_buf.unwrap().into_iter().chain(
-                    (0..other_extend)
-                        .into_iter()
-                        .map(|_| BitConstraint::Unrestrained),
-                ),
-            )
-            .map(|(self_bit, other_bit)| match (self_bit, other_bit) {
-                (Defined(_) | Restrained, Defined(_) | Restrained)
-                | (Unrestrained, Unrestrained) => Eq,
-                (Unrestrained, _) => Contained,
-                (_, Unrestrained) => Contains,
-            })
-            .collect()
+    /// the bit pattern for all variants.
+    pub(crate) fn pattern_bits_variants<'a>(
+        &'a self,
+        sleigh: &'a FinalSleigh,
+    ) -> impl Iterator<Item = (usize, (Vec<BitConstraint>, Vec<BitConstraint>))> + 'a
+    {
+        let context_bits =
+            usize::try_from(sleigh.context_memory.memory_bits).unwrap();
+        let pattern_bits = self.bits_produced();
+        let mut context_buf = Vec::with_capacity(context_bits);
+        let mut pattern_buf = Vec::with_capacity(pattern_bits);
+        (0..self.variants_num()).into_iter().filter_map(move |i| {
+            context_buf.resize_with(context_bits, BitConstraint::default);
+            pattern_buf.resize_with(pattern_bits, BitConstraint::default);
+            self.constraint(sleigh, i, &mut context_buf, &mut pattern_buf)?;
+            Some((i, (context_buf.clone(), pattern_buf.clone())))
+        })
     }
 }
 
@@ -429,7 +244,6 @@ impl Pattern {
 pub enum Block {
     And {
         len: PatternLen,
-        token_len: NumberUnsigned,
         token_fields: Box<[ProducedTokenField]>,
         tables: Box<[ProducedTable]>,
         verifications: Box<[Verification]>,
@@ -498,7 +312,7 @@ impl Block {
 
     fn constraint(
         &self,
-        endian: Endian,
+        sleigh: &FinalSleigh,
         variant_id: usize,
         context_bits: &mut [BitConstraint],
         constraint_bits: &mut [BitConstraint],
@@ -506,45 +320,13 @@ impl Block {
         match self {
             Self::And { verifications, .. } => {
                 for verification in verifications.iter() {
-                    match verification {
-                        Verification::TableBuild { .. } => (),
-                        Verification::ContextCheck { context, op, value } => {
-                            //TODO update this once multiple varnode context
-                            //is implemented
-                            super::inner::pattern::apply_value(
-                                context_bits,
-                                endian,
-                                context.element().range.clone(),
-                                *op,
-                                value,
-                            )?
-                        }
-                        Verification::TokenFieldCheck { field, op, value } => {
-                            let field = field.element();
-                            let token_len: usize = field
-                                .token()
-                                .len_bytes()
-                                .get()
-                                .try_into()
-                                .unwrap();
-                            super::inner::pattern::apply_value(
-                                &mut constraint_bits[0..token_len * 8],
-                                field.token.endian,
-                                field.range.clone(),
-                                *op,
-                                value,
-                            )?
-                        }
-                        Verification::SubPattern {
-                            location: _,
-                            pattern,
-                        } => pattern.constraint(
-                            endian,
-                            variant_id,
-                            context_bits,
-                            constraint_bits,
-                        )?,
-                    }
+                    apply_verification(
+                        sleigh,
+                        variant_id,
+                        verification,
+                        context_bits,
+                        constraint_bits,
+                    )?;
                 }
                 Some(())
             }
@@ -560,48 +342,13 @@ impl Block {
                 for branch in branches.iter() {
                     let verification_variants = branch.variants_number();
                     if verification_id < verification_variants {
-                        match branch {
-                            Verification::TableBuild { .. } => (),
-                            Verification::ContextCheck {
-                                context,
-                                op,
-                                value,
-                            } => super::inner::pattern::apply_value(
-                                context_bits,
-                                endian,
-                                context.element().range.clone(),
-                                *op,
-                                value,
-                            )?,
-                            Verification::TokenFieldCheck {
-                                field,
-                                op,
-                                value,
-                            } => {
-                                let field = field.element();
-                                let token_len: usize = field
-                                    .token()
-                                    .len_bytes()
-                                    .get()
-                                    .try_into()
-                                    .unwrap();
-                                super::inner::pattern::apply_value(
-                                    &mut constraint_bits[0..token_len * 8],
-                                    field.token.endian,
-                                    field.range.clone(),
-                                    *op,
-                                    value,
-                                )?
-                            }
-                            Verification::SubPattern { pattern, .. } => pattern
-                                .constraint(
-                                    endian,
-                                    variant_id,
-                                    context_bits,
-                                    constraint_bits,
-                                )?,
-                        };
-                        return Some(());
+                        return apply_verification(
+                            sleigh,
+                            variant_id,
+                            branch,
+                            context_bits,
+                            constraint_bits,
+                        );
                     }
                     verification_id -= verification_variants;
                 }
@@ -611,10 +358,54 @@ impl Block {
     }
 }
 
+fn apply_verification(
+    sleigh: &FinalSleigh,
+    variant_id: usize,
+    verification: &Verification,
+    context_bits: &mut [BitConstraint],
+    constraint_bits: &mut [BitConstraint],
+) -> Option<()> {
+    match verification {
+        Verification::TableBuild { .. } => Some(()),
+        Verification::ContextCheck { context, op, value } => {
+            let bits = sleigh.context_memory.context(*context);
+            super::inner::pattern::apply_value(
+                context_bits,
+                bit_in_context,
+                bits,
+                *op,
+                value,
+            )
+        }
+        Verification::TokenFieldCheck { field, op, value } => {
+            let token_field = sleigh.token_field(*field);
+            let token = sleigh.token(token_field.token);
+            let token_len: usize = token.len_bytes.get().try_into().unwrap();
+            let bit_order = match token.endian {
+                crate::Endian::Little => bit_in_le,
+                crate::Endian::Big => bit_in_be,
+            };
+            super::inner::pattern::apply_value(
+                &mut constraint_bits[0..token_len * 8],
+                bit_order,
+                token_field.bits.clone(),
+                *op,
+                value,
+            )
+        }
+        Verification::SubPattern { pattern, .. } => pattern.constraint(
+            sleigh,
+            variant_id,
+            context_bits,
+            constraint_bits,
+        ),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Verification {
     ContextCheck {
-        context: GlobalReference<Context>,
+        context: ContextId,
         op: CmpOp,
         value: ConstraintValue,
     },
@@ -623,7 +414,7 @@ pub enum Verification {
         verification: Option<(CmpOp, ConstraintValue)>,
     },
     TokenFieldCheck {
-        field: GlobalReference<TokenField>,
+        field: TokenFieldId,
         op: CmpOp,
         value: ConstraintValue,
     },
@@ -643,10 +434,10 @@ impl Verification {
 
 #[derive(Clone, Debug)]
 pub enum ConstraintField {
-    TokenField(GlobalReference<TokenField>),
-    Context(GlobalReference<Context>),
-    InstStart(GlobalReference<InstStart>),
-    Table(GlobalReference<Table>),
+    TokenField(TokenFieldId),
+    Context(ContextId),
+    InstStart(InstStart),
+    Table(TableId),
 }
 
 #[derive(Clone, Debug)]
@@ -677,81 +468,4 @@ pub enum CmpOp {
 pub enum Ellipsis {
     Left,
     Right,
-}
-
-pub trait PatternWalker<B = ()> {
-    fn pattern(&mut self, pattern: &Pattern) -> ControlFlow<B, ()> {
-        pattern
-            .blocks
-            .iter()
-            .try_for_each(|block| self.block(block))
-    }
-    fn block(&mut self, block: &Block) -> ControlFlow<B, ()> {
-        block
-            .token_fields()
-            .iter()
-            .try_for_each(|prod| self.token_field(&prod.field))?;
-        block
-            .tables()
-            .iter()
-            .try_for_each(|prod| self.table(&prod.table))?;
-        block
-            .verifications()
-            .iter()
-            .try_for_each(|ver| self.verification(ver))
-    }
-    fn token_field(
-        &mut self,
-        _field: &GlobalReference<TokenField>,
-    ) -> ControlFlow<B, ()> {
-        ControlFlow::Continue(())
-    }
-    fn table(&mut self, _table: &GlobalReference<Table>) -> ControlFlow<B, ()> {
-        ControlFlow::Continue(())
-    }
-    fn context(
-        &mut self,
-        _table: &GlobalReference<Context>,
-    ) -> ControlFlow<B, ()> {
-        ControlFlow::Continue(())
-    }
-    fn value(&mut self, _value: &ConstraintValue) -> ControlFlow<B, ()> {
-        ControlFlow::Continue(())
-    }
-    fn verification(
-        &mut self,
-        verification: &Verification,
-    ) -> ControlFlow<B, ()> {
-        match verification {
-            Verification::ContextCheck {
-                context,
-                op: _,
-                value,
-            } => {
-                self.context(context)?;
-                self.value(value)
-            }
-            Verification::TableBuild {
-                produced_table,
-                verification,
-            } => {
-                if let Some((_op, value)) = verification {
-                    self.value(value)?;
-                }
-                self.table(&produced_table.table)
-            }
-            Verification::SubPattern {
-                location: _,
-                pattern,
-            } => self.pattern(pattern),
-            Verification::TokenFieldCheck {
-                field,
-                op: _,
-                value,
-            } => {
-                self.value(value)?;
-                self.token_field(field)
-            }
-        }
-    }
 }

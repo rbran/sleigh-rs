@@ -1,4 +1,5 @@
-use crate::{NumberUnsigned, PatternLen};
+use crate::semantic::pattern::PatternLen;
+use crate::NumberUnsigned;
 
 //Describe a Block/Pattern possible len
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

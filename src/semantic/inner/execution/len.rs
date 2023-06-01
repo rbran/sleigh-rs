@@ -111,14 +111,17 @@ impl FieldSize {
             }
         )
     }
+    pub fn is_possible(&self) -> bool {
+        !self.is_undefined()
+    }
+    pub fn is_final(&self) -> bool {
+        self.final_value().is_some()
+    }
     pub fn final_value(&self) -> Option<NumberNonZeroUnsigned> {
         match self {
             Self::Value(value) => Some(*value),
             Self::Unsized { .. } => None,
         }
-    }
-    pub fn is_final(&self) -> bool {
-        self.final_value().is_some()
     }
     pub fn update_action<F>(&mut self, mut action: F) -> Option<bool>
     where
@@ -212,14 +215,12 @@ impl FieldSize {
             | Self::Unsized {
                 possible: FieldAuto::Value(_),
                 ..
-            } => self,
+            } => {}
             Self::Unsized {
                 ref mut possible, ..
-            } => {
-                *possible = FieldAuto::Min;
-                self
-            }
+            } => *possible = FieldAuto::Min,
         }
+        self
     }
     pub fn set_possible_value(
         mut self,
@@ -278,6 +279,7 @@ impl<'a: 'b, 'b> FieldSizeIntersectIter
     }
 }
 
+//TODO make it a enum, that is better
 pub trait FieldSizeMut {
     fn get(&self) -> FieldSize;
     fn set(&mut self, size: FieldSize) -> Option<bool>;

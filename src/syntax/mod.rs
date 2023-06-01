@@ -123,18 +123,15 @@ impl Assertation {
         let assertation = match &token_ref.token_type {
             //TODO make those reserved words into tokens?
             TokenType::Ident(x) if x == "define" => {
-                input
-                    .parse_until(buf, |x| &x.token_type == &token_type!(";"))?;
+                input.parse_until(buf, |x| x.token_type == token_type!(";"))?;
                 Define::parse(buf).map(Self::Define)?
             }
             TokenType::Ident(x) if x == "attach" => {
-                input
-                    .parse_until(buf, |x| &x.token_type == &token_type!(";"))?;
+                input.parse_until(buf, |x| x.token_type == token_type!(";"))?;
                 Attach::parse(buf).map(Self::Attach)?
             }
             TokenType::Ident(x) if x == "macro" => {
-                input
-                    .parse_until(buf, |x| &x.token_type == &token_type!("}"))?;
+                input.parse_until(buf, |x| x.token_type == token_type!("}"))?;
                 PcodeMacro::parse(buf).map(Self::PcodeMacro)?
             }
             TokenType::Ident(x) if x == "with" => {

@@ -1,49 +1,39 @@
-use crate::semantic::inner::{FieldSize, SolverStatus};
-use crate::semantic::space::Space;
+use crate::semantic::execution::{
+    Binary, MemoryLocation as FinalMemoryLocation, Truncate as FinalTruncate,
+};
+use crate::semantic::inner::SolverStatus;
+use crate::semantic::SpaceId;
 use crate::{
     FloatType, NumberNonZeroUnsigned, NumberSigned, NumberUnsigned, Span,
 };
 
-use crate::semantic::{execution, GlobalReference};
+use super::FieldSize;
 
-pub type FinalAddrDereference = execution::AddrDereference;
 #[derive(Clone, Debug)]
-pub struct AddrDereference {
-    pub space: GlobalReference<Space>,
+pub struct MemoryLocation {
+    pub space: SpaceId,
     pub size: FieldSize,
     pub src: Span,
 }
-impl AddrDereference {
-    pub fn new(
-        space: GlobalReference<Space>,
-        size: FieldSize,
-        src: Span,
-    ) -> Self {
-        Self { space, size, src }
-    }
-    pub fn output_size(&self) -> &FieldSize {
-        &self.size
-    }
-    pub fn output_size_mut(&mut self) -> &mut FieldSize {
-        &mut self.size
-    }
+impl MemoryLocation {
     pub fn solve(&self, solved: &mut impl SolverStatus) {
         if !self.size.is_final() {
             solved.iam_not_finished_location(&self.src, file!(), line!())
         }
     }
-    pub fn convert(self) -> FinalAddrDereference {
-        FinalAddrDereference {
-            size: self.size.possible_value().unwrap(),
+    pub fn convert(self) -> FinalMemoryLocation {
+        FinalMemoryLocation {
+            len_bytes: self.size.possible_value().unwrap(),
             space: self.space,
         }
     }
 }
 
-pub type FinalTruncate = execution::Truncate;
 #[derive(Clone, Debug)]
 pub struct Truncate {
+    /// least significant bit to truncate
     pub lsb: NumberUnsigned,
+    /// number of bits to take (relative to lsb)
     pub size: FieldSize,
 }
 
@@ -69,63 +59,21 @@ impl Truncate {
             .unwrap(),
         )
     }
-    pub fn output_size(&self) -> &FieldSize {
-        &self.size
+    pub fn output_size(&self) -> FieldSize {
+        self.size
     }
     pub fn output_size_mut(&mut self) -> &mut FieldSize {
         &mut self.size
     }
     pub fn convert(self) -> FinalTruncate {
-        FinalTruncate::new(self.lsb, self.size.possible_value().unwrap())
-    }
-}
-
-pub type FinalUnary = execution::Unary;
-#[derive(Clone, Debug)]
-pub enum Unary {
-    //NOTE: Byte Range Operator is part of the expr::ExprElement::Ambiguous1
-    Negation,
-    BitNegation,
-    Negative,
-    FloatNegative,
-    Popcount,
-    Zext,
-    Sext,
-    FloatNan,
-    FloatAbs,
-    FloatSqrt,
-    Int2Float,
-    Float2Float,
-    SignTrunc,
-    FloatCeil,
-    FloatFloor,
-    FloatRound,
-}
-
-impl Unary {
-    pub fn convert(self) -> FinalUnary {
-        match self {
-            Self::Negation => FinalUnary::Negation,
-            Self::BitNegation => FinalUnary::BitNegation,
-            Self::Negative => FinalUnary::Negative,
-            Self::FloatNegative => FinalUnary::FloatNegative,
-            Self::Popcount => FinalUnary::Popcount,
-            Self::Zext => FinalUnary::Zext,
-            Self::Sext => FinalUnary::Sext,
-            Self::FloatNan => FinalUnary::FloatNan,
-            Self::FloatAbs => FinalUnary::FloatAbs,
-            Self::FloatSqrt => FinalUnary::FloatSqrt,
-            Self::Int2Float => FinalUnary::Int2Float,
-            Self::Float2Float => FinalUnary::Float2Float,
-            Self::SignTrunc => FinalUnary::SignTrunc,
-            Self::FloatCeil => FinalUnary::FloatCeil,
-            Self::FloatFloor => FinalUnary::FloatFloor,
-            Self::FloatRound => FinalUnary::FloatRound,
+        FinalTruncate {
+            lsb: self.lsb,
+            len_bits: self.size.possible_value().unwrap(),
         }
     }
 }
 
-impl execution::Binary {
+impl Binary {
     pub fn execute(
         &self,
         left: NumberUnsigned,

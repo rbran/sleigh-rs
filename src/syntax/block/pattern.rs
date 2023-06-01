@@ -15,6 +15,7 @@ pub enum Op {
     And,
     Or,
 }
+
 impl Op {
     pub fn parse(input: &[Token]) -> IResult<&[Token], Op, SleighError> {
         alt((value(Op::Or, tag!("|")), value(Op::And, tag!("&"))))(input)

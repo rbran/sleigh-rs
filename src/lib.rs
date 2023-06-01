@@ -2,28 +2,32 @@ use std::ops::{Bound, RangeBounds};
 use std::path::Path;
 use std::rc::Rc;
 
-mod preprocessor;
+use thiserror::Error;
 
+pub(crate) mod preprocessor;
 pub(crate) mod semantic;
 pub(crate) mod syntax;
 
 use preprocessor::FilePreProcessor;
-pub(crate) use preprocessor::PreprocessorError;
+use preprocessor::PreprocessorError;
 
-use semantic::pcode_macro::PcodeMacroError;
-use semantic::table::TableError;
 use syntax::{BitRangeLsbLen, BitRangeLsbMsb};
-use thiserror::Error;
 
-pub use semantic::meaning::Meaning;
-pub use semantic::pattern::{Block, Pattern, PatternLen};
-pub use semantic::pcode_macro::PcodeMacro;
-pub use semantic::space::Space;
-pub use semantic::table::{Constructor, Table};
-pub use semantic::token::{Token, TokenField};
-pub use semantic::user_function::UserFunction;
-pub use semantic::varnode::{Bitrange, Context, Varnode};
-pub use semantic::*;
+pub use semantic::disassembly;
+pub use semantic::display;
+pub use semantic::meaning;
+pub use semantic::pattern;
+pub use semantic::pcode_macro;
+pub use semantic::space;
+pub use semantic::table;
+pub use semantic::token;
+pub use semantic::user_function;
+pub use semantic::varnode;
+pub use semantic::{
+    AttachLiteralId, AttachNumberId, AttachVarnodeId, BitrangeId, ContextId,
+    GlobalScope, PcodeMacroId, Sleigh, SpaceId, TableId, TokenFieldId, TokenId,
+    UserFunctionId, VarnodeId,
+};
 
 pub type FloatType = f64;
 pub type NumberUnsigned = u64;
@@ -40,6 +44,14 @@ pub type IntTypeU = NumberUnsigned;
 pub type IntTypeS = NumberSigned;
 pub type NonZeroTypeU = NumberNonZeroUnsigned;
 pub type NonZeroTypeS = NumberNonZeroSigned;
+
+//constants used only for debug purposes, don't commit with a diferent value
+pub(crate) const DISABLE_EXECUTION_PARSING: bool = true;
+
+pub(crate) const IDENT_INSTRUCTION: &str = "instruction";
+pub(crate) const IDENT_INST_START: &str = "inst_start";
+pub(crate) const IDENT_INST_NEXT: &str = "inst_next";
+pub(crate) const IDENT_EPSILON: &str = "epsilon";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Endian {
@@ -63,6 +75,12 @@ pub enum Number {
 }
 
 impl Number {
+    pub fn is_positive(&self) -> bool {
+        matches!(self, Number::Positive(x) if *x != 0)
+    }
+    pub fn is_negative(&self) -> bool {
+        matches!(self, Number::Negative(x) if *x != 0)
+    }
     pub fn unsigned(self) -> Option<NumberUnsigned> {
         match self {
             Number::Positive(value) => Some(value),
@@ -96,6 +114,21 @@ impl Number {
             }
         }
     }
+    pub(crate) fn bits_required(&self) -> u32 {
+        let value = match self {
+            Number::Positive(value) | Number::Negative(value)
+                if *value != 0 =>
+            {
+                value.ilog2() + 1
+            }
+            _ => 1,
+        };
+        let signal = match self {
+            Number::Positive(_) => 0,
+            Number::Negative(_) => 1,
+        };
+        value + signal
+    }
 }
 impl From<u64> for Number {
     fn from(value: u64) -> Self {
@@ -111,16 +144,6 @@ impl From<i64> for Number {
         }
     }
 }
-
-//constants used only for debug purposes, don't commit with a diferent value
-pub(crate) const DISABLE_EXECUTION_PARSING: bool = true;
-
-pub const IDENT_INSTRUCTION: &str = "instruction";
-pub const IDENT_INST_START: &str = "inst_start";
-pub const IDENT_INST_NEXT: &str = "inst_next";
-pub const IDENT_EPSILON: &str = "epsilon";
-pub const IDENT_CONST: &str = "const";
-pub const IDENT_UNIQUE: &str = "unique";
 
 #[derive(Clone, Debug)]
 pub struct ParamNumber {
@@ -147,18 +170,14 @@ impl RangeBounds<usize> for ParamNumber {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BitRange(std::ops::Range<NumberUnsigned>);
-impl BitRange {
-    pub fn new(
-        start: NumberUnsigned,
-        end: NumberUnsigned,
-        span: Span,
-    ) -> Result<Self, SleighError> {
+#[derive(Debug, Clone, PartialEq, Hash, Eq)]
+pub struct FieldBits(pub(crate) std::ops::Range<NumberUnsigned>);
+impl FieldBits {
+    pub fn new(start: NumberUnsigned, end: NumberUnsigned) -> Self {
         if start >= end {
-            return Err(SleighError::InvalidBitrange(span));
+            unreachable!()
         }
-        Ok(Self(start..end))
+        Self(start..end)
     }
     pub fn len(&self) -> NumberNonZeroUnsigned {
         let len = self.0.end - self.0.start;
@@ -174,19 +193,29 @@ impl BitRange {
         self.end()
     }
 }
-impl TryFrom<BitRangeLsbMsb> for BitRange {
+impl TryFrom<BitRangeLsbMsb> for FieldBits {
     type Error = SleighError;
     fn try_from(value: BitRangeLsbMsb) -> Result<Self, Self::Error> {
-        Self::new(value.lsb_bit, value.msb_bit + 1, value.src)
+        let start = value.lsb_bit;
+        let end = value.msb_bit + 1;
+        if start >= end {
+            return Err(SleighError::InvalidBitrange(value.src));
+        }
+        Ok(Self::new(start, end))
     }
 }
-impl TryFrom<BitRangeLsbLen> for BitRange {
+impl TryFrom<BitRangeLsbLen> for FieldBits {
     type Error = SleighError;
     fn try_from(value: BitRangeLsbLen) -> Result<Self, Self::Error> {
-        Self::new(value.lsb_bit, value.lsb_bit + value.n_bits, value.src)
+        let start = value.lsb_bit;
+        let end = value.lsb_bit + value.n_bits;
+        if start >= end {
+            return Err(SleighError::InvalidBitrange(value.src));
+        }
+        Ok(Self::new(start, end))
     }
 }
-impl RangeBounds<NumberUnsigned> for BitRange {
+impl RangeBounds<NumberUnsigned> for FieldBits {
     fn start_bound(&self) -> Bound<&NumberUnsigned> {
         self.0.start_bound()
     }
@@ -197,25 +226,29 @@ impl RangeBounds<NumberUnsigned> for BitRange {
 
 #[derive(Error, Debug)]
 pub enum SleighError {
-    #[error("Missing global endian definition")]
-    EndianMissing,
-
-    #[error("Multiple alignment definitions")]
-    AlignmentMult,
-    #[error("Multiple global endian definitions")]
-    EndianMult,
     #[error("Unable during the pre-processor phase {0}")]
     PreProcessor(#[from] PreprocessorError),
+
+    #[error("Missing global endian definition")]
+    EndianMissing,
+    #[error("Missing default Space Address")]
+    SpaceMissingDefault,
+
+    #[error("Multiple global endian definitions")]
+    EndianMultiple,
+
+    #[error("Name already taken first")]
+    NameDuplicated,
 
     #[error("Invalid Endian at {0}")]
     InvalidEndian(Span),
     #[error("Endian defined multiple times {0}")]
     MultipleEndian(Span),
 
+    #[error("Multiple alignment definitions")]
+    AlignmentMultiple,
     #[error("Invalid Allignment {0}")]
-    InvalidAlignment(Span),
-    #[error("Alignment defined multiple times {0}")]
-    MultipleAlignment(Span),
+    AlignmentInvalid(Span),
 
     #[error("Space missing size attribute {0}")]
     SpaceSizeMissing(Span),
@@ -223,19 +256,34 @@ pub enum SleighError {
     SpaceAttMultiple(Span),
     #[error("Space attribute value is invalid {0}")]
     SpaceInvalidAtt(Span),
+    #[error("Space don't have the size att {0}")]
+    SpaceMissingSize(Span),
+    #[error("Space don't have the size att {0}")]
+    SpaceInvalidSize(Span),
+    #[error("Multiple default Space Address")]
+    SpaceMultipleDefault,
 
     #[error("Token size is invalid {0}")]
     TokenSizeInvalid(Span),
     #[error("Token size need to be multiple of 8 {0}")]
     TokenSizeNonByte(Span),
 
+    #[error("Field can't be attached {0}")]
+    AttachInvalid(Span),
+
     #[error("Token Field size is invalid {0}")]
     TokenFieldSizeInvalid(Span),
     #[error("Token Field Attribute is declared mutliple times {0}")]
     TokenFieldAttDup(Span),
+    #[error("Token Field attached mutliple times {0}")]
+    TokenFieldAttachDup(Span),
 
     #[error("Varnode size is invalid {0}")]
     VarnodeInvalidSize(Span),
+    #[error("Undefined varnode at {0}")]
+    VarnodeUndefined(Span),
+    #[error("Invalid varnode at {0}")]
+    VarnodeInvalid(Span),
 
     #[error("Invalid statement at {0}")]
     UnableToParse(Span, nom::error::ErrorKind),
@@ -247,11 +295,8 @@ pub enum SleighError {
     #[error("Invalid space at {0}")]
     SpaceInvalid(Span),
 
-    #[error("Undefined varnode at {0}")]
-    VarnodeUndefined(Span),
-    #[error("Invalid varnode at {0}")]
-    VarnodeInvalid(Span),
-
+    #[error("Context can't be attached to a number {0}")]
+    ContextAttachNumber(Span),
     #[error("Context Attribute is declared mutliple times {0}")]
     ContextAttDup(Span),
 
@@ -280,13 +325,171 @@ pub enum SleighError {
     ContextInvalidSize(Span),
 
     //TODO doit better
-    #[error("Table Error: {0}")]
-    Table(#[from] TableError),
-    #[error("PcodeMacro Error {0}")]
-    PcodeMacro(#[from] PcodeMacroError),
-    //TODO delete this
-    #[error("SemanticError {0}")]
-    SemanticError(#[from] SemanticError),
+    #[error("Table error at ({location}) Error: {error}")]
+    Table { location: Span, error: TableError },
+    #[error("Pcrode error at ({location}) Error: {error}")]
+    PacodeMacro {
+        location: Span,
+        error: PcodeMacroError,
+    },
+
+    #[error("Invalid With Block")]
+    WithBlock {
+        location: Span,
+        error: WithBlockError,
+    },
+}
+
+#[derive(Clone, Debug, Error)]
+pub enum TableError {
+    #[error("Table Constructor can't be inserted in invalid Table name")]
+    TableNameInvalid,
+
+    #[error("Table Constructor have invalid Export size")]
+    TableConstructorExportSizeInvalid,
+
+    #[error("Pattern Error: {0}")]
+    Pattern(#[from] PatternError),
+    #[error("Disassembly Error: {0}")]
+    Disassembly(#[from] DisassemblyError),
+    #[error("Display Error: {0}")]
+    Display(#[from] DisplayError),
+    #[error("Execution Error: {0}")]
+    Execution(#[from] ExecutionError),
+}
+
+#[derive(Clone, Debug, Error)]
+pub enum PatternError {
+    #[error("Invalid Ref {0}")]
+    InvalidRef(Span),
+    #[error("Missing Ref {0}")]
+    MissingRef(Span),
+    #[error("Unable to merge Blocks mixing & and | {0}")]
+    InvalidMixOp(Span),
+
+    #[error("Invalid Recursive at {0}")]
+    InvalidRecursive(Span),
+    #[error("In Or block, all elements need to have the same len")]
+    InvalidOrLen(Span),
+    #[error("Each patern can only have a single recursive")]
+    MultipleRecursives(Span),
+    #[error("Mix `|` and `&` operations on pattern is forbidden")]
+    MixOperations(Span),
+    #[error("Field produced multiple times at {0} and {1}")]
+    MultipleProduction(Span, Span),
+    #[error("Field produced is implicit and abiguous")]
+    AmbiguousProduction(Span),
+    #[error("Pattern in Or statement without constraint")]
+    UnrestrictedOr(Span),
+
+    #[error("Invalid assignment Error")]
+    ConstraintExpr(#[from] DisassemblyError),
+}
+
+#[derive(Clone, Debug, Error)]
+pub enum DisassemblyError {
+    #[error("Invalid Ref {0}")]
+    InvalidRef(Span),
+    #[error("Missing Ref {0}")]
+    MissingRef(Span),
+
+    #[error("GlobalSet Address Ref missing {0}")]
+    GlobalsetAddressMissing(Span),
+    #[error("GlobalSet Address Ref invalid {0}")]
+    GlobalsetAddressInvalid(Span),
+
+    #[error("GlobalSet Address Ref not a context {0}")]
+    GlobalsetAddressNotContext(Span),
+}
+
+#[derive(Clone, Debug, Error)]
+pub enum DisplayError {
+    #[error("Invalid Ref {0}")]
+    InvalidRef(Span),
+    #[error("Missing Ref {0}")]
+    MissingRef(Span),
+}
+
+#[derive(Clone, Debug, Error)]
+pub enum ExecutionError {
+    #[error("Invalid Ref: {0}")]
+    InvalidRef(Span),
+    #[error("Missing Ref: {0}")]
+    MissingRef(Span),
+
+    //TODO migrate this to PcodeMacro
+    #[error("Macro don't allow Build statements")]
+    MacroBuildInvalid,
+
+    #[error("Invalid Var declaration {0}")]
+    InvalidVarDeclare(Span),
+    #[error("Invalid Var Len {0}")]
+    InvalidVarLen(Span),
+    #[error("Label invalid {0}")]
+    InvalidLabel(Span),
+    #[error("Label not found {0}")]
+    MissingLabel(Span),
+    #[error("Label Duplicated {0}")]
+    DuplicatedLabel(Span),
+
+    #[error("Default address space not found")]
+    DefaultSpace, //TODO src
+    #[error("Can only `goto` to a label")]
+    InvalidLocalGoto, //TODO src
+    #[error("TableConstructor have diferent return types")]
+    InvalidExport,
+    #[error("BitRange can't be zero")]
+    BitRangeZero, //TODO src
+
+    #[error("Can't apply op to variable due to size at {0}")]
+    VarSize(Span), //TODO sub-type error
+
+    #[error("Call user Function with invalid param numbers {0}")]
+    UserFunctionParamNumber(Span),
+    #[error("Call user Function with invalid return Size {0}")]
+    UserFunctionReturnSize(Span),
+
+    //TODO remove this
+    #[error("Invalid amb1: {0}")]
+    InvalidAmb1(Span),
+}
+
+#[derive(Clone, Debug, Error)]
+pub enum PcodeMacroError {
+    #[error("Invalid Ref {0}")]
+    InvalidRef(Span),
+    #[error("Missing Ref {0}")]
+    MissingRef(Span),
+
+    #[error("Invalid param size")]
+    InvalidSpecialization(Span),
+
+    #[error("Execution Error")]
+    Execution(#[from] ExecutionError),
+}
+
+#[derive(Clone, Debug, Error)]
+pub enum WithBlockError {
+    #[error("Table name Error")]
+    TableName,
+    #[error("Pattern Error")]
+    Pattern(#[from] PatternError),
+    #[error("Disassembly Error")]
+    Disassembly(#[from] DisassemblyError),
+}
+
+impl SleighError {
+    pub fn new_table<E: Into<TableError>>(location: Span, error: E) -> Self {
+        let error: TableError = error.into();
+        Self::Table { location, error }
+    }
+    pub fn new_pcode_macro<E: Into<PcodeMacroError>>(
+        location: Span,
+        error: E,
+    ) -> Self {
+        let error: PcodeMacroError = error.into();
+        Self::PacodeMacro { location, error }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -294,6 +497,7 @@ pub enum Span {
     Macro(MacroSpan),
     File(FileSpan),
 }
+
 impl Span {
     pub fn start_line(&self) -> u64 {
         match self {
@@ -350,6 +554,7 @@ impl Span {
         }
     }
 }
+
 impl std::fmt::Display for Span {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Location(")?;
@@ -366,6 +571,7 @@ pub enum Location {
     Macro(MacroLocation),
     File(FileLocation),
 }
+
 impl Location {
     pub fn into_span(&self, end_line: u64, end_column: u64) -> Span {
         match self {
@@ -376,6 +582,7 @@ impl Location {
         }
     }
 }
+
 impl std::fmt::Display for Location {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Location(")?;
@@ -386,6 +593,7 @@ impl std::fmt::Display for Location {
         write!(f, ")")
     }
 }
+
 #[derive(Debug, Clone)]
 pub struct MacroLocation {
     pub value: FileSpan,
@@ -393,6 +601,7 @@ pub struct MacroLocation {
     pub line: u64,
     pub column: u64,
 }
+
 impl MacroLocation {
     fn into_span(&self, end_line: u64, end_column: u64) -> MacroSpan {
         MacroSpan {
@@ -402,6 +611,7 @@ impl MacroLocation {
         }
     }
 }
+
 impl std::fmt::Display for MacroLocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -414,12 +624,14 @@ impl std::fmt::Display for MacroLocation {
         )
     }
 }
+
 #[derive(Debug, Clone)]
 pub struct MacroSpan {
     pub start: MacroLocation,
     pub end_line: u64,
     pub end_column: u64,
 }
+
 impl MacroSpan {
     fn start(self) -> MacroLocation {
         self.start
@@ -447,6 +659,7 @@ impl MacroSpan {
         }
     }
 }
+
 impl std::fmt::Display for MacroSpan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -461,12 +674,14 @@ impl std::fmt::Display for MacroSpan {
         )
     }
 }
+
 #[derive(Debug, Clone)]
 pub struct FileSpan {
     pub start: FileLocation,
     pub end_line: u64,
     pub end_column: u64,
 }
+
 impl FileSpan {
     fn start(self) -> FileLocation {
         self.start
@@ -494,12 +709,13 @@ impl FileSpan {
         }
     }
 }
+
 impl std::fmt::Display for FileSpan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "FileSpan({}, start:{}:{}, end:{}:{})",
-            self.start.file.as_os_str().to_string_lossy(),
+            self.start.file.to_string_lossy(),
             self.start.line + 1,
             self.start.column + 1,
             self.end_line + 1,
@@ -507,12 +723,14 @@ impl std::fmt::Display for FileSpan {
         )
     }
 }
+
 #[derive(Clone, Debug, Error)]
 pub struct FileLocation {
     pub file: Rc<Path>,
     pub line: u64,
     pub column: u64,
 }
+
 impl FileLocation {
     fn into_span(&self, end_line: u64, end_column: u64) -> FileSpan {
         FileSpan {
@@ -522,31 +740,41 @@ impl FileLocation {
         }
     }
 }
+
 impl std::fmt::Display for FileLocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{}:{}:{}",
-            self.file.as_os_str().to_string_lossy(),
+            self.file.to_string_lossy(),
             self.line + 1,
-            self.column + 1,
+            self.column + 1
         )
     }
 }
 
-// convert the bit number for this endian.
-// NOTE the bit order inside a byte is bit0=lsb .. bit7=msb
-fn bit_in_field(value_bit: u32, endian: Endian, field_bits: u32) -> u32 {
-    assert!(value_bit < field_bits);
-    match endian {
-        Endian::Little => value_bit,
-        Endian::Big => {
-            let field_bytes = field_bits / 8;
-            let value_byte = value_bit / 8;
-            let bit_in_byte = value_bit % 8;
-            (((field_bytes - 1) * 8) - (value_byte * 8)) + bit_in_byte
-        }
-    }
+/// bit in Little endian constraint
+/// in 4 bytes, bit 0 => bit 0, bit 1 => bit 1, bit 8 => bit 8
+fn bit_in_le(value_bit: u32, _field_bits: u32) -> u32 {
+    value_bit
+}
+
+/// bit in Big endian constraint
+/// in 4 bytes, bit 0 => bit 8, bit 1 => bit 9, bit 8 => bit 0
+/// AKA invert the byte order, but bit order is bit 0 => lsb, bit N => msb
+fn bit_in_be(value_bit: u32, field_bits: u32) -> u32 {
+    let field_bytes = (field_bits + 7) / 8;
+    let value_byte = value_bit / 8;
+    let bit_in_byte = value_bit % 8;
+    (((field_bytes - 1) - value_byte) * 8) + bit_in_byte
+}
+
+// bit in context constraint
+// in context, the byte order don't mater, but the bit order is bit 0 => msb
+// bit N => lsb.
+/// in 4 bytes, bit 0 => bit 31, bit 1 => bit 30, bit 8 => bit 23
+fn bit_in_context(value_bit: u32, field_bits: u32) -> u32 {
+    (field_bits - 1) - value_bit
 }
 
 pub fn file_to_sleigh(filename: &Path) -> Result<Sleigh, SleighError> {

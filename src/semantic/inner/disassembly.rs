@@ -1,18 +1,14 @@
-use indexmap::IndexMap;
-use std::cell::RefCell;
-use std::ops::ControlFlow;
-use std::rc::{Rc, Weak};
+use std::collections::HashMap;
 
-use crate::semantic::disassembly::{Op, OpUnary};
-use crate::semantic::varnode::Varnode;
-use crate::semantic::{
-    self, DisassemblyError, GlobalReference, InstNext, InstStart,
+use crate::semantic::disassembly::{
+    AddrScope, Assertation, Expr, ExprElement, GlobalSet, ReadScope, WriteScope,
 };
-use crate::{syntax, Number, NumberUnsigned, Span};
+use crate::semantic::disassembly::{Assignment, Variable, VariableId};
+use crate::semantic::{ContextId, Span};
+use crate::{syntax, DisassemblyError};
 
-use super::token::TokenField;
-use super::varnode::Context;
-use super::{Pattern, Sleigh, Table};
+use super::pattern::Pattern;
+use super::Sleigh;
 
 pub trait ExprBuilder {
     fn read_scope(
@@ -37,12 +33,21 @@ pub trait ExprBuilder {
     ) -> Result<ExprElement, DisassemblyError> {
         match input {
             syntax::block::disassembly::ExprElement::Value(
-                syntax::Value::Number(_src, int),
-            ) => Ok(ExprElement::Value(ReadScope::Integer(int))),
+                syntax::Value::Number(src, int),
+            ) => Ok(ExprElement::Value {
+                value: ReadScope::Integer(int),
+                location: src,
+            }),
 
             syntax::block::disassembly::ExprElement::Value(
                 syntax::Value::Ident(src, ident),
-            ) => self.read_scope(&ident, &src).map(ExprElement::Value),
+            ) => {
+                self.read_scope(&ident, &src)
+                    .map(|value| ExprElement::Value {
+                        value,
+                        location: src,
+                    })
+            }
 
             syntax::block::disassembly::ExprElement::Op(x) => {
                 Ok(ExprElement::Op(x))
@@ -96,43 +101,33 @@ impl<'a, 'b> ExprBuilder for Builder<'a, 'b> {
         name: &str,
         src: &Span,
     ) -> Result<ReadScope, DisassemblyError> {
-        use super::GlobalScope::*;
+        use super::GlobalScope;
         self.pattern
-            .disassembly_vars
+            .disassembly_variable_names
             .get(name)
-            .map(|local| Ok(ReadScope::Local(Rc::clone(local))))
+            .map(|local| Ok(ReadScope::Local(*local)))
             .unwrap_or_else(|| {
                 match self
                     .sleigh
                     .get_global(name)
                     .ok_or(DisassemblyError::MissingRef(src.clone()))?
                 {
-                    InstNext(x) => {
+                    GlobalScope::InstNext(x) => {
                         //inst_next can only be known after the pattern is
                         //completly match
                         self.block_counter.post_match();
-                        Ok(ReadScope::InstNext(
-                            GlobalReference::from_element(x, src.clone()),
-                        ))
+                        Ok(ReadScope::InstNext(x))
                     }
-                    InstStart(x) => Ok(ReadScope::InstStart(
-                        GlobalReference::from_element(x, src.clone()),
-                    )),
-                    TokenField(x) => {
+                    GlobalScope::InstStart(x) => Ok(ReadScope::InstStart(x)),
+                    GlobalScope::TokenField(x) => {
                         //check the pattern will produce this field
-                        let Ok(Some(block_num)) = self.pattern.produce_token_field(
-                            &GlobalReference::from_element(x, src.clone()),
-                        ) else {
+                        let Ok(Some(block_num)) = self.pattern.produce_token_field(&self.sleigh, x) else {
                             return Err(DisassemblyError::InvalidRef(src.clone()))
                         };
                         self.block_counter.pre_disassembly_at(block_num);
-                        Ok(ReadScope::TokenField(
-                            GlobalReference::from_element(x, src.clone()),
-                        ))
+                        Ok(ReadScope::TokenField(x))
                     }
-                    Context(x) => Ok(ReadScope::Context(
-                        GlobalReference::from_element(x, src.clone()),
-                    )),
+                    GlobalScope::Context(x) => Ok(ReadScope::Context(x)),
                     _ => Err(DisassemblyError::InvalidRef(src.clone())),
                 }
             })
@@ -171,9 +166,9 @@ impl<'a, 'b> Builder<'a, 'b> {
         use super::GlobalScope::*;
         //get from local, otherwise get from global
         self.pattern
-            .disassembly_vars
+            .disassembly_variable_names
             .get(name)
-            .map(|local| Ok(AddrScope::Local(Rc::clone(local))))
+            .map(|local| Ok(AddrScope::Local(*local)))
             .unwrap_or_else(|| {
                 match self
                     .sleigh
@@ -182,32 +177,19 @@ impl<'a, 'b> Builder<'a, 'b> {
                 {
                     //TODO make sure the pattern will produce this table
                     Table(x) => {
-                        let table_ref =
-                            GlobalReference::from_element(x, src.clone());
                         //TODO error
                         let block_num =
-                            self.pattern.is_table_produced(&table_ref).unwrap();
+                            self.pattern.is_table_produced(x).unwrap();
                         self.block_counter.pos_disassembly_at(block_num);
-                        Ok(AddrScope::Table(table_ref))
+                        Ok(AddrScope::Table(x))
                     }
-                    InstStart(x) => Ok(AddrScope::InstStart(
-                        GlobalReference::from_element(x, src.clone()),
-                    )),
+                    InstStart(x) => Ok(AddrScope::InstStart(x)),
                     InstNext(x) => {
                         //inst_next can only be known after the pattern is
                         //completly match
                         self.block_counter.post_match();
-                        Ok(AddrScope::InstNext(GlobalReference::from_element(
-                            x,
-                            src.clone(),
-                        )))
+                        Ok(AddrScope::InstNext(x))
                     }
-                    //TokenField(x) => Ok(AddrScope::TokenField(
-                    //    GlobalReference::from_element(x, src),
-                    //)),
-                    Varnode(x) => Ok(AddrScope::Varnode(
-                        GlobalReference::from_element(x, src.clone()),
-                    )),
                     _ => Err(DisassemblyError::InvalidRef(src.clone())),
                 }
             })
@@ -219,51 +201,54 @@ impl<'a, 'b> Builder<'a, 'b> {
         src: &Span,
     ) -> Result<WriteScope, DisassemblyError> {
         //if variable exists, return it
-        let var = self
-            .pattern
-            .disassembly_vars
-            .get(name)
-            .map(|var| WriteScope::Local(Rc::clone(var)))
-            .or_else(|| {
-                //check the global context, if context return it
-                //NOTE if other thing with the same name, but is not context,
-                //create the variable to shadow global context
-                let context = self.sleigh.get_global(name)?.unwrap_context()?;
-                Some(WriteScope::Context(GlobalReference::from_element(
-                    context,
-                    src.clone(),
-                )))
-            })
-            .unwrap_or_else(|| {
-                //otherwise create the variable
-                let var = Variable::new(name, src.clone());
-                self.pattern
-                    .disassembly_vars
-                    .insert(Rc::clone(var.name()), Rc::clone(&var));
-                WriteScope::Local(var)
-            });
-        Ok(var)
+        if let Some(var) = self.pattern.disassembly_variable_names.get(name) {
+            return Ok(WriteScope::Local(*var));
+        }
+        //check the global context, if context return it
+        //NOTE if other thing with the same name, but is not context,
+        //create the variable to shadow global context
+        if let Some(context) = self
+            .sleigh
+            .get_global(name)
+            .map(|global| global.context())
+            .flatten()
+        {
+            return Ok(WriteScope::Context(context));
+        }
+        //otherwise create the variable
+        let var = Variable {
+            location: src.clone(),
+            len_bits: None,
+            name: name.to_owned().into(),
+        };
+        self.pattern.disassembly_variables.push(var);
+        let var_id = VariableId(self.pattern.disassembly_variables.len() - 1);
+        self.pattern
+            .disassembly_variable_names
+            .insert(name.to_owned(), var_id);
+        Ok(WriteScope::Local(var_id))
     }
     fn context(
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<GlobalReference<Context>, DisassemblyError> {
+    ) -> Result<ContextId, DisassemblyError> {
         let context = self
             .sleigh
             .get_global(name)
-            .ok_or(DisassemblyError::MissingRef(src.clone()))?
-            .context_or(DisassemblyError::InvalidRef(src.clone()))?;
-        Ok(GlobalReference::from_element(context, src.clone()))
+            .ok_or_else(|| DisassemblyError::MissingRef(src.clone()))?
+            .context()
+            .ok_or_else(|| DisassemblyError::InvalidRef(src.clone()))?;
+        Ok(context)
     }
 
     fn new_globalset(
         &mut self,
         input: syntax::block::disassembly::GlobalSet,
     ) -> Result<GlobalSet, DisassemblyError> {
-        let (src, address) = match input.address {
+        let (_src, address) = match input.address {
             syntax::Value::Number(src, int) => {
-                let addr = AddrScope::Interger(int.unsigned().unwrap());
+                let addr = AddrScope::Integer(int.unsigned().unwrap());
                 (src, addr)
             }
             syntax::Value::Ident(src, ident) => {
@@ -271,8 +256,11 @@ impl<'a, 'b> Builder<'a, 'b> {
                 (src, addr)
             }
         };
-        let context = self.context(&input.context, &src)?;
-        Ok(GlobalSet { address, context })
+        Ok(GlobalSet {
+            address,
+            context: self.context(&input.context, &input.src)?,
+            location: input.src,
+        })
     }
     fn new_assignment(
         &mut self,
@@ -311,262 +299,9 @@ impl<'a, 'b> Builder<'a, 'b> {
     }
 }
 
-pub type FinalReadScope = semantic::disassembly::ReadScope;
-#[derive(Clone, Debug)]
-pub enum ReadScope {
-    //TODO: table??? Handle tables that the execution is just export Disassembly
-    //Table(Reference<GlobalElement<Table>>),
-    Integer(Number),
-    Context(GlobalReference<Context>),
-    TokenField(GlobalReference<TokenField>),
-    InstStart(GlobalReference<InstStart>),
-    InstNext(GlobalReference<InstNext>),
-    Local(Rc<Variable>),
-}
-
-impl From<ReadScope> for FinalReadScope {
-    fn from(input: ReadScope) -> Self {
-        match input {
-            ReadScope::Integer(x) => Self::Integer(x),
-            ReadScope::Context(x) => Self::Context(x.convert_reference()),
-            ReadScope::TokenField(x) => Self::TokenField(x.convert_reference()),
-            ReadScope::InstStart(x) => Self::InstStart(x),
-            ReadScope::InstNext(x) => Self::InstNext(x),
-            ReadScope::Local(x) => Self::Local(x.convert()),
-        }
-    }
-}
-
-pub type FinalWriteScope = semantic::disassembly::WriteScope;
-#[derive(Clone, Debug)]
-pub enum WriteScope {
-    Context(GlobalReference<Context>),
-    Local(Rc<Variable>),
-}
-impl From<WriteScope> for FinalWriteScope {
-    fn from(input: WriteScope) -> Self {
-        match input {
-            WriteScope::Context(x) => Self::Context(x.convert_reference()),
-            WriteScope::Local(x) => Self::Local(x.convert()),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum AddrScope {
-    Interger(NumberUnsigned),
-    Table(GlobalReference<Table>),
-    Varnode(GlobalReference<Varnode>),
-    //TokenField(GlobalReference<TokenField>),
-    InstStart(GlobalReference<InstStart>),
-    InstNext(GlobalReference<InstNext>),
-    Local(Rc<Variable>),
-}
-pub type FinalAddrScope = semantic::disassembly::AddrScope;
-impl From<AddrScope> for FinalAddrScope {
-    fn from(input: AddrScope) -> Self {
-        match input {
-            AddrScope::Interger(x) => Self::Integer(x),
-            AddrScope::Varnode(x) => Self::Varnode(x.clone()),
-            //AddrScope::TokenField(x) => Self::TokenField(x.convert_reference()),
-            AddrScope::InstStart(x) => Self::InstStart(x),
-            AddrScope::InstNext(x) => Self::InstNext(x),
-            AddrScope::Table(x) => Self::Table(x.convert_reference()),
-            AddrScope::Local(x) => Self::Local(x.convert()),
-        }
-    }
-}
-
-pub type FinalVariable = Rc<semantic::disassembly::Variable>;
-#[derive(Clone, Debug)]
-pub struct Variable {
-    name: Rc<str>,
-    src: Span,
-    result: RefCell<Option<FinalVariable>>,
-    me: Weak<Self>,
-}
-impl Variable {
-    pub fn new(name: &str, src: Span) -> Rc<Self> {
-        Rc::new_cyclic(|me| Self {
-            name: Rc::from(name),
-            src,
-            result: RefCell::default(),
-            me: Weak::clone(me),
-        })
-    }
-    pub fn src(&self) -> &Span {
-        &self.src
-    }
-    pub fn me(&self) -> Rc<Self> {
-        self.me.upgrade().unwrap()
-    }
-    pub fn name(&self) -> &Rc<str> {
-        &self.name
-    }
-    pub fn reference(&self) -> FinalVariable {
-        Rc::clone(self.result.borrow().as_ref().unwrap())
-    }
-    pub fn convert(&self) -> FinalVariable {
-        let create = self.result.borrow().is_none();
-        if create {
-            let mut result = self.result.borrow_mut();
-            *result = Some(Rc::new(semantic::disassembly::Variable::new(
-                Rc::clone(&self.name),
-            )));
-        }
-        self.reference()
-    }
-}
-
-pub type FinalExpr = semantic::disassembly::Expr;
-#[derive(Clone, Debug)]
-pub struct Expr {
-    pub rpn: Vec<ExprElement>,
-}
-
-impl Expr {
-    pub fn convert(self) -> FinalExpr {
-        FinalExpr::new(self.rpn.into_iter().map(|x| x.convert()).collect())
-    }
-}
-
-pub type FinalExprElement = semantic::disassembly::ExprElement;
-#[derive(Clone, Debug)]
-pub enum ExprElement {
-    Value(ReadScope),
-    Op(Op),
-    OpUnary(OpUnary),
-}
-impl ExprElement {
-    pub fn convert(self) -> FinalExprElement {
-        match self {
-            Self::Value(x) => FinalExprElement::Value(x.into()),
-            Self::Op(x) => FinalExprElement::Op(x),
-            Self::OpUnary(x) => FinalExprElement::OpUnary(x),
-        }
-    }
-}
-
-pub type FinalGlobalSet = semantic::disassembly::GlobalSet;
-#[derive(Clone, Debug)]
-pub struct GlobalSet {
-    //pub src: InputSource,
-    pub address: AddrScope,
-    pub context: GlobalReference<Context>,
-}
-impl GlobalSet {
-    pub fn convert(self) -> FinalGlobalSet {
-        //let src = self.src;
-        let address = self.address.into();
-        let context = self.context.convert_reference();
-        FinalGlobalSet::new(address, context)
-    }
-}
-
-pub type FinalAssignment = semantic::disassembly::Assignment;
-#[derive(Clone, Debug)]
-pub struct Assignment {
-    pub left: WriteScope,
-    pub right: Expr,
-}
-impl Assignment {
-    pub fn convert(self) -> FinalAssignment {
-        let left = self.left.into();
-        let right = self.right.convert();
-        FinalAssignment::new(left, right)
-    }
-}
-
-pub type FinalAssertation = semantic::disassembly::Assertation;
-#[derive(Clone, Debug)]
-pub enum Assertation {
-    GlobalSet(GlobalSet),
-    Assignment(Assignment),
-}
-
-impl Assertation {
-    pub fn convert(self) -> FinalAssertation {
-        match self {
-            Assertation::GlobalSet(x) => {
-                FinalAssertation::GlobalSet(x.convert())
-            }
-            Assertation::Assignment(x) => {
-                FinalAssertation::Assignment(x.convert())
-            }
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct Disassembly {
-    pub vars: IndexMap<Rc<str>, Rc<Variable>>,
+    pub variable_names: HashMap<String, VariableId>,
+    pub variables: Vec<Variable>,
     pub assertations: Vec<Assertation>,
-}
-
-pub trait WalkerDisassembly<Break = ()> {
-    fn disassembly(
-        &mut self,
-        disassembly: &Disassembly,
-    ) -> ControlFlow<Break, ()> {
-        disassembly
-            .vars
-            .values()
-            .try_for_each(|var| self.declare_variable(var))?;
-        disassembly
-            .assertations
-            .iter()
-            .try_for_each(|ass| self.assertation(ass))
-    }
-    fn declare_variable(
-        &mut self,
-        _var: &Rc<Variable>,
-    ) -> ControlFlow<Break, ()> {
-        ControlFlow::Continue(())
-    }
-    fn assertation(&mut self, ass: &Assertation) -> ControlFlow<Break, ()> {
-        match ass {
-            Assertation::GlobalSet(gs) => self.global_set(gs),
-            Assertation::Assignment(ass) => self.assignment(ass),
-        }
-    }
-    fn global_set(&mut self, global_set: &GlobalSet) -> ControlFlow<Break, ()> {
-        self.global_set_address(&global_set.address)?;
-        self.global_set_context(&global_set.context)
-    }
-    fn assignment(
-        &mut self,
-        assignment: &Assignment,
-    ) -> ControlFlow<Break, ()> {
-        self.write(&assignment.left)?;
-        self.expr(&assignment.right)
-    }
-    fn write(&mut self, _var: &WriteScope) -> ControlFlow<Break, ()> {
-        ControlFlow::Continue(())
-    }
-    fn global_set_address(
-        &mut self,
-        _address: &AddrScope,
-    ) -> ControlFlow<Break, ()> {
-        ControlFlow::Continue(())
-    }
-    fn global_set_context(
-        &mut self,
-        _context: &GlobalReference<Context>,
-    ) -> ControlFlow<Break, ()> {
-        ControlFlow::Continue(())
-    }
-    fn expr(&mut self, expr: &Expr) -> ControlFlow<Break, ()> {
-        expr.rpn.iter().try_for_each(|ele| self.element(ele))
-    }
-    fn element(&mut self, element: &ExprElement) -> ControlFlow<Break, ()> {
-        match element {
-            ExprElement::Value(value) => self.read(value),
-            ExprElement::Op(_) | ExprElement::OpUnary(_) => {
-                ControlFlow::Continue(())
-            }
-        }
-    }
-    fn read(&mut self, _value: &ReadScope) -> ControlFlow<Break, ()> {
-        ControlFlow::Continue(())
-    }
 }

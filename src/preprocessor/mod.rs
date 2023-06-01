@@ -11,7 +11,7 @@ use nom::sequence::pair;
 use nom::IResult;
 use thiserror::Error;
 
-use indexmap::IndexMap;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -521,7 +521,7 @@ impl DrainingFile {
 }
 
 #[derive(Debug, Default)]
-struct PreProcessorState(IndexMap<Rc<str>, Define>);
+struct PreProcessorState(HashMap<Rc<str>, Define>);
 impl PreProcessorState {
     fn exists(&self, ident: &str) -> bool {
         self.0.contains_key(ident)

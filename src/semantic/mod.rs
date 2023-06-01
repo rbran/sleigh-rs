@@ -14,167 +14,17 @@ pub mod varnode;
 // represenatation
 mod inner;
 
-use indexmap::IndexMap;
-use std::rc::Rc;
-use std::rc::Weak;
-
-use thiserror::Error;
-
 use crate::semantic::inner::{SolvedLocation, SolverStatus};
-use crate::Constructor;
-use crate::NonZeroTypeU;
 use crate::{syntax, Endian, NumberNonZeroUnsigned, SleighError, Span};
 
-use self::disassembly::DisassemblyError;
-use self::inner::pattern::BitConstraint;
-use self::inner::{GlobalConvert, Solved};
-use self::pattern::PatternByte;
-use self::pattern::PatternError;
-use self::pcode_macro::{PcodeMacro, PcodeMacroError};
+use self::inner::Solved;
+use self::meaning::{AttachLiteral, AttachNumber, AttachVarnode};
+use self::pcode_macro::PcodeMacro;
 use self::space::Space;
-use self::table::{Table, TableError};
-use self::token::*;
+use self::table::Table;
+use self::token::{Token, TokenField};
 use self::user_function::UserFunction;
-use self::varnode::{Bitrange, Context, Varnode};
-
-#[macro_export]
-macro_rules! from_error {
-    ($parent:ident, $child:ident, $name:ident $(,)?) => {
-        impl From<$child> for $parent {
-            fn from(input: $child) -> $parent {
-                $parent::$name(input)
-            }
-        }
-    };
-}
-
-#[derive(Clone, Debug, Error)]
-pub enum WithBlockError {
-    #[error("Table name Error")]
-    TableName,
-    #[error("Pattern Error")]
-    Pattern(PatternError),
-    #[error("Disassembly Error")]
-    Disassembly(DisassemblyError),
-}
-from_error!(WithBlockError, PatternError, Pattern);
-from_error!(WithBlockError, DisassemblyError, Disassembly);
-
-#[derive(Error, Debug, Clone)]
-pub enum SemanticError {
-    #[error("Missing global endian definition")]
-    EndianMissing,
-
-    #[error("Multiple alignment definitions")]
-    AlignmentMult,
-    #[error("Multiple global endian definitions")]
-    EndianMult,
-
-    //TODO Src for duplication
-    #[error("Name already taken")]
-    NameDuplicated,
-
-    #[error("Missing alignment definition")]
-    AlignmentMissing,
-    #[error("Missing default Space Address")]
-    SpaceMissingDefault,
-    #[error("Multiple default Space Address")]
-    SpaceMultipleDefault,
-
-    #[error("Space Address not found")]
-    SpaceMissing,
-    #[error("Invalid ref Space Address")]
-    SpaceInvalid,
-    #[error("Space duplicate attribute")]
-    SpaceInvalidAtt,
-    #[error("Space missing size")]
-    SpaceMissingSize,
-    #[error("Space invalid size")]
-    SpaceInvalidSize,
-    #[error("Space invalid wordsize")]
-    SpaceInvalidWordSize,
-
-    #[error("Invalid Varnode Size")]
-    VarnodeInvalidVarnodeSize,
-    #[error("Invalid Varnode Memory Size is too big")]
-    VarnodeInvalidMemorySize,
-    #[error("Invalid Varnode Memory Size is too big")]
-    VarnodeInvalidMemoryEnd,
-    #[error("Varnode not found")]
-    VarnodeMissing,
-    #[error("Varnode ref invalid")]
-    VarnodeInvalid,
-
-    #[error("Bitrange invalid bit size")]
-    BitrangeInvalidSize,
-    #[error("Bitrange ref varnode is too small")]
-    BitrangeInvalidVarnodeSize,
-
-    #[error("Context invalid Size")]
-    ContextInvalidSize,
-    #[error("Context duplicated attribute")]
-    ContextInvalidAtt,
-
-    #[error("Token invalid Size")]
-    TokenInvalidSize,
-
-    #[error("Token Field invalid Size")]
-    TokenFieldInvalidSize,
-    #[error("Token Field Duplicated Attribute {0}")]
-    TokenFieldAttDup(Span),
-    #[error("TokenField not found")]
-    TokenFieldMissing,
-    #[error("Token Field ref invalid")]
-    TokenFieldInvalid,
-    #[error("Token Field Attach duplicated {0}")]
-    TokenFieldAttachDup(Span),
-    #[error("Attach to a field with print flags set{0}")]
-    AttachWithPrintFlags(Span),
-    //#[error("Invalid Data {message}")]
-    //InvalidData { message: String },
-    //
-    #[error("Table not found")]
-    TableMissing,
-    #[error("Invalid ref Table")]
-    TableInvalid,
-
-    #[error("Pattern Missing Ref")]
-    PatternMissingRef,
-    #[error("Pattern Invalid Ref")]
-    PatternInvalidRef,
-
-    #[error("Disassembly Ref not found")]
-    DisassemblyMissingRef(Span),
-    #[error("Disassembly Invalid Ref")]
-    DisassemblyInvalidRef(Span),
-
-    #[error("Display Ref not found")]
-    DisplayMissingRef,
-    #[error("Display Invalid Ref")]
-    DisplayInvalidRef,
-
-    #[error("Execution Label is defined multiple times")]
-    ExecutionDuplicatedLabel,
-    #[error("Execution Label not found")]
-    ExecutionMissingLabel,
-
-    //TODO: remove Satan
-    #[error("TODO: Remove Satan")]
-    Satanic,
-    #[error("TODO: Remove Satan with ref")]
-    SatanicRef(Span),
-
-    //TODO: FOR REAL!!!
-    #[error("Table Error: {0}")]
-    Table(TableError),
-    #[error("PcodeMacro Error")]
-    PcodeMacro(PcodeMacroError),
-    #[error("WithBlock Invalid name")]
-    WithBlock(WithBlockError),
-}
-from_error!(SemanticError, TableError, Table);
-from_error!(SemanticError, PcodeMacroError, PcodeMacro);
-from_error!(SemanticError, WithBlockError, WithBlock);
+use self::varnode::{Bitrange, Context, ContextMemoryMapping, Varnode};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum PrintBase {
@@ -190,272 +40,124 @@ impl PrintBase {
     }
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct PrintFmt {
-    pub(crate) signed: bool,
-    pub(crate) base: PrintBase,
+pub struct ValueFmt {
+    pub signed: bool,
+    pub base: PrintBase,
 }
-impl PrintFmt {
-    pub fn signed(&self) -> bool {
-        self.signed
-    }
-    pub fn base(&self) -> PrintBase {
-        self.base
-    }
-}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InstStart;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InstNext;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Epsilon;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PcodeMacroId(pub usize);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct SpaceId(pub usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TableId(pub usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TokenId(pub usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TokenFieldId(pub usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct UserFunctionId(pub usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BitrangeId(pub usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ContextId(pub usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct VarnodeId(pub usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AttachLiteralId(pub usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AttachNumberId(pub usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AttachVarnodeId(pub usize);
 
 #[derive(Clone, Copy, Debug)]
-pub struct InstStart(());
-#[derive(Clone, Copy, Debug)]
-pub struct InstNext(());
-#[derive(Clone, Copy, Debug)]
-pub struct Epsilon(());
-
-#[derive(Debug)]
-pub struct GlobalAnonReference<T> {
-    name: Rc<str>,
-    value: Weak<T>,
-}
-
-impl<T> GlobalAnonReference<T> {
-    pub fn from_element(element: &GlobalElement<T>) -> Self {
-        Self {
-            name: Rc::clone(element.name_raw()),
-            value: Rc::downgrade(element.element_raw()),
-        }
-    }
-    pub(crate) fn name_raw(&self) -> &Rc<str> {
-        &self.name
-    }
-    pub fn element_ptr(&self) -> *const T {
-        Weak::as_ptr(&self.value)
-    }
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-    pub fn element(&self) -> GlobalElement<T> {
-        GlobalElement::new(
-            Rc::clone(self.name_raw()),
-            self.value.upgrade().unwrap(),
-        )
-    }
-}
-impl<T> Eq for GlobalAnonReference<T> {}
-impl<T> PartialEq for GlobalAnonReference<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.element_ptr() == other.element_ptr()
-    }
-}
-impl<T> Clone for GlobalAnonReference<T> {
-    fn clone(&self) -> Self {
-        Self {
-            name: Rc::clone(self.name_raw()),
-            value: Weak::clone(&self.value),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct GlobalReference<T> {
-    src: Span,
-    name: Rc<str>,
-    value: Weak<T>,
-}
-
-impl<T> GlobalReference<T> {
-    pub fn from_element(element: &GlobalElement<T>, src: Span) -> Self {
-        Self {
-            src,
-            name: Rc::clone(element.name_raw()),
-            value: Rc::downgrade(element.element_raw()),
-        }
-    }
-    pub(crate) fn name_raw(&self) -> &Rc<str> {
-        &self.name
-    }
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-    pub fn location(&self) -> &Span {
-        &self.src
-    }
-    pub fn element(&self) -> GlobalElement<T> {
-        GlobalElement::new(
-            Rc::clone(self.name_raw()),
-            self.value.upgrade().unwrap(),
-        )
-    }
-    pub fn element_ptr(&self) -> *const T {
-        Weak::as_ptr(&self.value)
-    }
-}
-impl<T> Eq for GlobalReference<T> {}
-impl<T> PartialEq for GlobalReference<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.element_ptr() == other.element_ptr()
-    }
-}
-impl<T> From<GlobalReference<T>> for GlobalAnonReference<T> {
-    fn from(input: GlobalReference<T>) -> Self {
-        Self {
-            name: input.name,
-            value: input.value,
-        }
-    }
-}
-impl<T> Clone for GlobalReference<T> {
-    fn clone(&self) -> Self {
-        Self {
-            src: self.src.clone(),
-            name: Rc::clone(self.name_raw()),
-            value: Weak::clone(&self.value),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct GlobalElement<T> {
-    name: Rc<str>,
-    value: Rc<T>,
-}
-impl<T> Clone for GlobalElement<T> {
-    fn clone(&self) -> Self {
-        Self {
-            name: Rc::clone(&self.name),
-            value: Rc::clone(&self.value),
-        }
-    }
-}
-impl<T> std::ops::Deref for GlobalElement<T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        &self.value
-    }
-}
-impl<T> Eq for GlobalElement<T> {}
-impl<T> PartialEq for GlobalElement<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.element_ptr() == other.element_ptr()
-    }
-}
-impl<T> From<&GlobalReference<T>> for GlobalElement<T> {
-    fn from(input: &GlobalReference<T>) -> Self {
-        input.element()
-    }
-}
-impl<T> From<&GlobalAnonReference<T>> for GlobalElement<T> {
-    fn from(input: &GlobalAnonReference<T>) -> Self {
-        input.element()
-    }
-}
-
-impl<T> GlobalElement<T> {
-    pub(crate) fn new(name: Rc<str>, value: Rc<T>) -> Self {
-        Self { name, value }
-    }
-    pub(crate) fn new_from(name: &str, value: T) -> Self {
-        Self {
-            name: Rc::from(name),
-            value: Rc::new(value),
-        }
-    }
-    pub(crate) fn name_raw(&self) -> &Rc<str> {
-        &self.name
-    }
-    pub(crate) fn element_raw(&self) -> &Rc<T> {
-        &self.value
-    }
-    pub fn element_ptr(&self) -> *const T {
-        Rc::as_ptr(&self.value)
-    }
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-    pub fn element(&self) -> &T {
-        &self.value
-    }
-    pub fn reference(&self) -> GlobalAnonReference<T> {
-        GlobalAnonReference {
-            name: Rc::clone(self.name_raw()),
-            value: Rc::downgrade(self.element_raw()),
-        }
-    }
-    pub(crate) fn reference_from(&self, location: Span) -> GlobalReference<T> {
-        GlobalReference {
-            src: location,
-            name: Rc::clone(self.name_raw()),
-            value: Rc::downgrade(self.element_raw()),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
 pub enum GlobalScope {
-    Space(GlobalElement<Space>),
-    Varnode(GlobalElement<Varnode>),
-    Context(GlobalElement<Context>),
-    Bitrange(GlobalElement<Bitrange>),
-    Token(GlobalElement<Token>),
-    TokenField(GlobalElement<TokenField>),
-    InstStart(GlobalElement<InstStart>),
-    InstNext(GlobalElement<InstNext>),
-    Epsilon(GlobalElement<Epsilon>),
-    UserFunction(GlobalElement<UserFunction>),
-    PcodeMacro(GlobalElement<PcodeMacro>),
-    Table(GlobalElement<Table>),
+    Space(SpaceId),
+    Varnode(VarnodeId),
+    Context(ContextId),
+    Bitrange(BitrangeId),
+    Token(TokenId),
+    TokenField(TokenFieldId),
+    InstStart(InstStart),
+    InstNext(InstNext),
+    Epsilon(Epsilon),
+    UserFunction(UserFunctionId),
+    PcodeMacro(PcodeMacroId),
+    Table(TableId),
 }
 
 impl GlobalScope {
-    pub fn token_field(&self) -> Option<&GlobalElement<TokenField>> {
+    pub fn token_field(&self) -> Option<TokenFieldId> {
         match self {
-            GlobalScope::TokenField(x) => Some(x),
+            GlobalScope::TokenField(x) => Some(*x),
             _ => None,
         }
     }
-    pub fn token(&self) -> Option<&GlobalElement<Token>> {
+    pub fn token(&self) -> Option<TokenId> {
         match self {
-            GlobalScope::Token(x) => Some(x),
+            GlobalScope::Token(x) => Some(*x),
             _ => None,
         }
     }
-    pub fn space(&self) -> Option<&GlobalElement<Space>> {
+    pub fn space(&self) -> Option<SpaceId> {
         match self {
-            GlobalScope::Space(x) => Some(x),
+            GlobalScope::Space(x) => Some(*x),
             _ => None,
         }
     }
-    pub fn varnode(&self) -> Option<&GlobalElement<Varnode>> {
+    pub fn varnode(&self) -> Option<VarnodeId> {
         match self {
-            GlobalScope::Varnode(x) => Some(x),
+            GlobalScope::Varnode(x) => Some(*x),
             _ => None,
         }
     }
-    pub fn context(&self) -> Option<&GlobalElement<Context>> {
+    pub fn context(&self) -> Option<ContextId> {
         match self {
-            GlobalScope::Context(x) => Some(x),
+            GlobalScope::Context(x) => Some(*x),
             _ => None,
         }
     }
-    pub fn bitrange(&self) -> Option<&GlobalElement<Bitrange>> {
+    pub fn bitrange(&self) -> Option<BitrangeId> {
         match self {
-            GlobalScope::Bitrange(x) => Some(x),
+            GlobalScope::Bitrange(x) => Some(*x),
             _ => None,
         }
     }
-    pub fn pcode_macro(&self) -> Option<&GlobalElement<PcodeMacro>> {
+    pub fn pcode_macro(&self) -> Option<PcodeMacroId> {
         match self {
-            GlobalScope::PcodeMacro(x) => Some(x),
+            GlobalScope::PcodeMacro(x) => Some(*x),
             _ => None,
         }
     }
-    pub fn table(&self) -> Option<&GlobalElement<Table>> {
+    pub fn table(&self) -> Option<TableId> {
         match self {
-            GlobalScope::Table(x) => Some(x),
+            GlobalScope::Table(x) => Some(*x),
             _ => None,
         }
     }
-    pub fn user_function(&self) -> Option<&GlobalElement<UserFunction>> {
+    pub fn user_function(&self) -> Option<UserFunctionId> {
         match self {
-            GlobalScope::UserFunction(x) => Some(x),
+            GlobalScope::UserFunction(x) => Some(*x),
             _ => None,
         }
     }
@@ -466,36 +168,80 @@ pub struct Sleigh {
     pub endian: Endian,
     pub alignment: u8,
 
-    //pub default_space: Rc<space::Space>,
-    //pub instruction_table: Rc<table::Table>,
-    addr_len_bytes: NumberNonZeroUnsigned,
+    pub default_space: SpaceId,
+    pub instruction_table: TableId,
 
+    spaces: Box<[Space]>,
+    varnodes: Box<[Varnode]>,
+    contexts: Box<[Context]>,
+    bitranges: Box<[Bitrange]>,
+    tokens: Box<[Token]>,
+    token_fields: Box<[TokenField]>,
+    user_functions: Box<[UserFunction]>,
+    pcode_macros: Box<[PcodeMacro]>,
+    tables: Box<[Table]>,
+
+    attach_varnodes: Box<[AttachVarnode]>,
+    attach_literals: Box<[AttachLiteral]>,
+    attach_numbers: Box<[AttachNumber]>,
     //scope with all the global identifiers
-    pub global_scope: IndexMap<Rc<str>, GlobalScope>,
+    //pub global_scope: HashMap<String, GlobalScope>,
+    /// Context mapped into single and packed memory block
+    pub context_memory: ContextMemoryMapping,
 }
 
 impl Sleigh {
-    pub fn endian(&self) -> Endian {
-        self.endian
+    pub fn space(&self, space: SpaceId) -> &Space {
+        &self.spaces[space.0]
     }
-    pub fn alignment(&self) -> u8 {
-        self.alignment
+    pub fn varnode(&self, varnode: VarnodeId) -> &Varnode {
+        &self.varnodes[varnode.0]
     }
-    pub fn addr_len_bytes(&self) -> NumberNonZeroUnsigned {
-        self.addr_len_bytes
+    pub fn context(&self, context: ContextId) -> &Context {
+        &self.contexts[context.0]
+    }
+    pub fn bitrange(&self, bitrange: BitrangeId) -> &Bitrange {
+        &self.bitranges[bitrange.0]
+    }
+    pub fn token(&self, token: TokenId) -> &Token {
+        &self.tokens[token.0]
+    }
+    pub fn token_field(&self, token_field: TokenFieldId) -> &TokenField {
+        &self.token_fields[token_field.0]
+    }
+    pub fn user_function(
+        &self,
+        user_function: UserFunctionId,
+    ) -> &UserFunction {
+        &self.user_functions[user_function.0]
+    }
+    pub fn pcode_macro(&self, pcode_macro: PcodeMacroId) -> &PcodeMacro {
+        &self.pcode_macros[pcode_macro.0]
+    }
+    pub fn table(&self, table: TableId) -> &Table {
+        &self.tables[table.0]
+    }
+    pub fn attach_varnode(&self, id: AttachVarnodeId) -> &AttachVarnode {
+        &self.attach_varnodes[id.0]
+    }
+    pub fn attach_number(&self, id: AttachNumberId) -> &AttachNumber {
+        &self.attach_numbers[id.0]
+    }
+    pub fn attach_literal(&self, id: AttachLiteralId) -> &AttachLiteral {
+        &self.attach_literals[id.0]
     }
     pub(crate) fn new(value: syntax::Sleigh) -> Result<Self, SleighError> {
         let inner = inner::Sleigh::new(value)?;
         //HACK: verify that indirect recursion don't happen
         //NOTE we don't need to worry about direct (self) recursion.
         //AKA `Tablea` calling itself
-        for table in inner
-            .idents
-            .values()
-            .filter_map(|ident| ident.unwrap_table())
+        for table_id in
+            inner.global_scope.values().filter_map(GlobalScope::table)
         {
             use std::ops::ControlFlow;
-            if let ControlFlow::Break(rec) = table.pattern_indirect_recursion()
+            let table = inner.table(table_id);
+            if let ControlFlow::Break(rec) =
+                table.pattern_indirect_recursion(&inner, table_id)
             {
                 unimplemented!(
                     "Indirect recursion is not implemented at the moment {:?}",
@@ -504,65 +250,14 @@ impl Sleigh {
             }
         }
 
-        let mut tables = vec![];
-        let mut pcode = vec![];
-        let mut global_scope: IndexMap<Rc<str>, GlobalScope> = inner
-            .idents
-            .iter()
-            .filter_map(|(k, v)| {
-                let v = match v {
-                    inner::GlobalScope::Space(x) => {
-                        GlobalScope::Space(x.clone())
-                    }
-                    inner::GlobalScope::Token(x) => {
-                        GlobalScope::Token(x.clone())
-                    }
-                    inner::GlobalScope::TokenField(x) => {
-                        GlobalScope::TokenField(x.element_convert())
-                    }
-                    inner::GlobalScope::UserFunction(x) => {
-                        GlobalScope::UserFunction(x.clone())
-                    }
-                    inner::GlobalScope::Varnode(x) => {
-                        GlobalScope::Varnode(x.clone())
-                    }
-                    inner::GlobalScope::Context(x) => {
-                        GlobalScope::Context(x.element_convert())
-                    }
-                    inner::GlobalScope::Bitrange(x) => {
-                        GlobalScope::Bitrange(x.clone())
-                    }
-                    inner::GlobalScope::PcodeMacro(x) => {
-                        pcode.push(x);
-                        return None;
-                    }
-                    inner::GlobalScope::Table(x) => {
-                        tables.push(x);
-                        return None;
-                    }
-                    inner::GlobalScope::InstStart(x) => {
-                        GlobalScope::InstStart(x.clone())
-                    }
-                    inner::GlobalScope::InstNext(x) => {
-                        GlobalScope::InstNext(x.clone())
-                    }
-                    inner::GlobalScope::Epsilon(x) => {
-                        GlobalScope::Epsilon(x.clone())
-                    }
-                };
-                Some((Rc::clone(k), v))
-            })
-            .collect();
-
         //TODO: if unable to solve addr size or default space not set, error
-        let exec_addr_size = inner.exec_addr_size().unwrap();
         let _ = inner.default_space.as_ref().unwrap();
         //solve all pcodes macros inside the tables
         //solve all tables
         for i in 0.. {
             let mut solved = Solved::default();
-            for table in tables.iter() {
-                table.solve(&mut solved)?;
+            for table in inner.tables.iter() {
+                table.solve(&inner, &mut solved)?;
             }
             if solved.we_finished() && !solved.we_did_a_thing() {
                 break;
@@ -577,8 +272,8 @@ impl Sleigh {
                 //print the location that where unable to solve
                 //TODO change solve functions to use <T: SolverStatus + ?Sized>
                 let mut solved = SolvedLocation::default();
-                for table in tables.iter() {
-                    table.solve(&mut solved)?;
+                for table in inner.tables.iter() {
+                    table.solve(&inner, &mut solved)?;
                 }
                 //TODO return an error, but for now force the conversion,
                 //so we can find where the error occour
@@ -586,177 +281,98 @@ impl Sleigh {
                 panic!("Unable to solve the table")
             }
         }
+        let context_memory = ContextMemoryMapping::map_all(&inner);
+        let contexts: Box<[_]> = inner
+            .contexts
+            .into_iter()
+            .map(|context| context.convert())
+            .collect();
 
-        let context_bytes: usize = Self::context_len(
-            global_scope.values().filter_map(GlobalScope::context),
-        )
-        .map(|x| x.get().try_into().unwrap())
-        .unwrap_or(0);
-        global_scope.extend(tables.into_iter().map(|x| {
-            x.convert(context_bytes);
-            let x = x.element_convert();
-            (Rc::clone(&x.name), GlobalScope::Table(x))
-        }));
-        //only convert used macros, AKA the ones that was solved/used by tables
-        global_scope.extend(
-            pcode
-                .into_iter()
-                .filter(|x| x.is_solved())
-                .map(|x| x.element_convert())
-                .map(|x| (Rc::clone(&x.name), GlobalScope::PcodeMacro(x))),
-        );
-
-        let endian = inner.endian.ok_or(SemanticError::EndianMissing)?;
+        let endian = inner.endian.ok_or(SleighError::EndianMissing)?;
         let alignment = inner.alignment.unwrap_or(0).try_into().unwrap();
-        let inst_len_bytes = exec_addr_size.final_value().unwrap().get();
-        assert!(inst_len_bytes % 8 == 0);
-        assert!(inst_len_bytes / 8 != 0);
-        let inst_len_bytes = (inst_len_bytes / 8).try_into().unwrap();
+        // unwrap because should be created on Sleigh::new
+        let default_space = inner
+            .default_space
+            .ok_or_else(|| SleighError::SpaceMissingDefault)?;
         //TODO check all constructor for tables have export of the same size
-        Ok(Self {
+        let token_fields = inner
+            .token_fields
+            .into_iter()
+            .map(|x| x.convert())
+            .collect();
+        let pcode_macros = inner
+            .pcode_macros
+            .into_iter()
+            .map(|x| x.convert())
+            .collect();
+        let mut sleigh = Self {
             endian,
             alignment,
-            global_scope,
-            addr_len_bytes: inst_len_bytes,
-        })
-    }
-    pub fn context_len<'a>(
-        mut contexts: impl Iterator<Item = &'a GlobalElement<Context>> + 'a,
-    ) -> Option<NonZeroTypeU> {
-        //for now only allow the context to point to a single varnode
-        let first_context = contexts.next();
-        let first_context = first_context?;
-        let varnode = &first_context.varnode;
-        for context in contexts {
-            if &context.varnode != varnode {
-                //TODO allow multiple varnodes
-                panic!("Context pointing to multiple varnodes");
-            }
-        }
-        Some(varnode.len_bytes())
-    }
-
-    /// produces the context and patterns bytes for this pattern, generate by
-    /// combining all the possible variations of it.
-    pub fn pattern_bytes(
-        &self,
-        constructor: &Constructor,
-    ) -> Option<(Vec<PatternByte>, Vec<PatternByte>)> {
-        let context_bytes: usize = Self::context_len(self.contexts())
-            .map(|x| x.get())
-            .unwrap_or(0)
-            .try_into()
-            .unwrap();
-        let endian = self.endian;
-        let constraint = constructor
-            .pattern
-            .constraint_single(endian, context_bytes)?;
-        let mut variant = vec![
-            PatternByte::default();
-            context_bytes
-                + constructor.pattern.bits_produced() / 8
-        ];
-        for (bit, bit_constraint) in constraint.into_iter().enumerate() {
-            match bit_constraint {
-                BitConstraint::Unrestrained => {}
-                BitConstraint::Restrained => {
-                    variant[bit / 8].value |= 1 << (bit % 8);
-                }
-                BitConstraint::Defined(value) => {
-                    variant[bit / 8].value |= (value as u8) << (bit % 8);
-                    variant[bit / 8].mask |= 1 << (bit % 8);
-                }
-            }
-        }
-        let pattern = variant.split_off(context_bytes);
-        let context = variant;
-        Some((context, pattern))
-    }
-
-    /// all the possible variants of this pattern
-    pub fn pattern_bytes_variants<'a>(
-        &self,
-        constructor: &'a Constructor,
-    ) -> impl Iterator<Item = (Vec<PatternByte>, Vec<PatternByte>)> + 'a {
-        let context_bytes: usize = Self::context_len(self.contexts())
-            .map(|x| x.get())
-            .unwrap_or(0)
-            .try_into()
-            .unwrap();
-        let endian = self.endian;
-        let len_bits = context_bytes * 8 + constructor.pattern.bits_produced();
-        let mut buf = vec![BitConstraint::default(); len_bits];
-        let mut result = vec![PatternByte::default(); len_bits / 8];
-        (0..constructor.pattern.variants_num())
+            default_space,
+            context_memory,
+            contexts,
+            token_fields,
+            pcode_macros,
+            tokens: inner.tokens.into(),
+            instruction_table: inner.instruction_table,
+            spaces: inner.spaces.into(),
+            varnodes: inner.varnodes.into(),
+            user_functions: inner.user_functions.into(),
+            bitranges: inner.bitranges.into(),
+            attach_varnodes: inner.attach_varnodes.into(),
+            attach_literals: inner.attach_literals.into(),
+            attach_numbers: inner.attach_numbers.into(),
+            tables: Box::new([]),
+            //global_scope: inner.global_scope,
+        };
+        let tables = inner
+            .tables
             .into_iter()
-            .filter_map(move |i| {
-                buf.fill(BitConstraint::default());
-                result.fill(PatternByte::default());
-                let (context, constraint) = buf.split_at_mut(context_bytes * 8);
-                constructor
-                    .pattern
-                    .constraint(endian, i, context, constraint);
-                for (bit, restriction) in buf.iter().enumerate() {
-                    match restriction {
-                        BitConstraint::Unrestrained => (),
-                        BitConstraint::Restrained => {
-                            result[bit / 8].value |= 1 << (bit % 8);
-                        }
-                        BitConstraint::Defined(value) => {
-                            result[bit / 8].value |=
-                                (*value as u8) << (bit % 8);
-                            result[bit / 8].mask |= 1 << (bit % 8);
-                        }
-                    }
-                }
-                let (context, constraint) = result.split_at(context_bytes);
-                Some((context.to_vec(), constraint.to_vec()))
-            })
+            .map(|x| x.convert(&sleigh))
+            .collect();
+        sleigh.tables = tables;
+
+        //TODO remove unused table/macro/pcode_macro/etc?
+        Ok(sleigh)
+    }
+    pub fn addr_bytes(&self) -> NumberNonZeroUnsigned {
+        self.space(self.default_space).addr_bytes
     }
 
-    pub fn spaces<'a>(
-        &'a self,
-    ) -> impl Iterator<Item = &'a GlobalElement<Space>> + 'a {
-        self.global_scope.values().filter_map(|x| x.space())
+    pub fn spaces(&self) -> &[Space] {
+        &self.spaces
     }
-    pub fn varnodes<'a>(
-        &'a self,
-    ) -> impl Iterator<Item = &'a GlobalElement<Varnode>> + 'a {
-        self.global_scope.values().filter_map(|x| x.varnode())
+    pub fn varnodes(&self) -> &[Varnode] {
+        &self.varnodes
     }
-    pub fn contexts<'a>(
-        &'a self,
-    ) -> impl Iterator<Item = &'a GlobalElement<Context>> + 'a {
-        self.global_scope.values().filter_map(|x| x.context())
+    pub fn contexts(&self) -> &[Context] {
+        &self.contexts
     }
-    pub fn bitranges<'a>(
-        &'a self,
-    ) -> impl Iterator<Item = &'a GlobalElement<Bitrange>> + 'a {
-        self.global_scope.values().filter_map(|x| x.bitrange())
+    pub fn bitranges(&self) -> &[Bitrange] {
+        &self.bitranges
     }
-    pub fn user_functions<'a>(
-        &'a self,
-    ) -> impl Iterator<Item = &'a GlobalElement<UserFunction>> + 'a {
-        self.global_scope.values().filter_map(|x| x.user_function())
+    pub fn user_functions(&self) -> &[UserFunction] {
+        &self.user_functions
     }
-    pub fn pcode_macros<'a>(
-        &'a self,
-    ) -> impl Iterator<Item = &'a GlobalElement<PcodeMacro>> + 'a {
-        self.global_scope.values().filter_map(|x| x.pcode_macro())
+    pub fn pcode_macros(&self) -> &[PcodeMacro] {
+        &self.pcode_macros
     }
-    pub fn tables<'a>(
-        &'a self,
-    ) -> impl Iterator<Item = &'a GlobalElement<Table>> + 'a {
-        self.global_scope.values().filter_map(|x| x.table())
+    pub fn tables(&self) -> &[Table] {
+        &self.tables
     }
-    pub fn tokens<'a>(
-        &'a self,
-    ) -> impl Iterator<Item = &'a GlobalElement<Token>> + 'a {
-        self.global_scope.values().filter_map(|x| x.token())
+    pub fn tokens(&self) -> &[Token] {
+        &self.tokens
     }
-    pub fn token_fields<'a>(
-        &'a self,
-    ) -> impl Iterator<Item = &'a GlobalElement<TokenField>> + 'a {
-        self.global_scope.values().filter_map(|x| x.token_field())
+    pub fn token_fields(&self) -> &[TokenField] {
+        &self.token_fields
+    }
+    pub fn attach_varnodes(&self) -> &[AttachVarnode] {
+        &self.attach_varnodes
+    }
+    pub fn attach_numbers(&self) -> &[AttachNumber] {
+        &self.attach_numbers
+    }
+    pub fn attach_literals(&self) -> &[AttachLiteral] {
+        &self.attach_literals
     }
 }

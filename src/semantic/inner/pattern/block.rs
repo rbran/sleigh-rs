@@ -1,25 +1,20 @@
+use std::collections::HashMap;
 use std::convert::TryFrom;
 
-use indexmap::IndexMap;
-
-use crate::semantic::inner::disassembly::Assertation;
-use crate::semantic::inner::pattern::ConstraintValue;
-use crate::semantic::inner::table::Table;
-use crate::semantic::inner::token::TokenField;
+use crate::semantic::disassembly::Assertation;
 use crate::semantic::inner::{GlobalScope, Sleigh, SolverStatus};
-use crate::semantic::pattern::{Ellipsis, PatternError, PatternLen};
-use crate::semantic::token::Token;
-use crate::semantic::{GlobalAnonReference, GlobalReference};
-use crate::syntax::block;
-use crate::syntax::block::pattern::Op;
-use crate::Span;
+use crate::semantic::pattern::{
+    Block as FinalBlock, ConstraintValue, Ellipsis, PatternLen,
+};
+use crate::semantic::{TableId, TokenFieldId, TokenId};
+use crate::{syntax, PatternError, Span};
 
+use super::pattern_len::ConstructorPatternLen;
 use super::{
-    ConstructorPatternLen, FindValues, Pattern, ProducedTable,
-    ProducedTokenField, Verification,
+    DisassemblyBuilder, FindValues, Pattern, ProducedTable, ProducedTokenField,
+    Verification,
 };
 
-pub type FinalBlock = crate::semantic::pattern::Block;
 #[derive(Clone, Debug)]
 pub struct Block {
     pub base: BlockBase,
@@ -34,7 +29,7 @@ pub enum BlockPhase {
 #[derive(Clone, Debug)]
 pub struct BlockBase {
     /// Op And, Or
-    pub op: Op,
+    pub op: syntax::block::pattern::Op,
 
     //TODO remove this? Blocks could be a concat of pattern and with_block, so
     //there is no single location
@@ -42,11 +37,11 @@ pub struct BlockBase {
     pub location: Span,
 
     /// token that this block produces, and the number of times it produces
-    pub tokens: IndexMap<*const Token, (usize, GlobalAnonReference<Token>)>,
+    pub tokens: HashMap<TokenId, usize>,
     /// fields produced, implicitly or explicity, localy or in sub_pattern
-    pub token_fields: IndexMap<*const TokenField, ProducedTokenField>,
+    pub token_fields: HashMap<TokenFieldId, ProducedTokenField>,
     /// produced tables
-    pub tables: IndexMap<*const Table, ProducedTable>,
+    pub tables: HashMap<TableId, ProducedTable>,
 
     /// verification in the order they are defined in code
     pub verifications: Vec<Verification>,
@@ -79,8 +74,8 @@ pub struct BlockPhase2 {
 impl Block {
     pub fn new(
         sleigh: &Sleigh,
-        input: block::pattern::Block,
-        this_table: *const Table,
+        input: syntax::block::pattern::Block,
+        this_table: TableId,
     ) -> Result<Self, PatternError> {
         let base = BlockBase::new(sleigh, input, this_table)?;
         // no verification the block is len 0
@@ -97,10 +92,13 @@ impl Block {
     }
     pub fn solve<T: SolverStatus>(
         &mut self,
+        sleigh: &Sleigh,
         solved: &mut T,
     ) -> Result<bool, PatternError> {
         match &mut self.phase {
-            BlockPhase::Phase1(ph1) => ph1.solve(solved, &mut self.base),
+            BlockPhase::Phase1(ph1) => {
+                ph1.solve(sleigh, solved, &mut self.base)
+            }
             BlockPhase::Phase2(_) => Ok(true),
         }
     }
@@ -127,15 +125,52 @@ impl Block {
             BlockPhase::Phase1(_ph1) => None,
         }
     }
+    pub fn convert(self) -> FinalBlock {
+        let Block{base, phase: BlockPhase::Phase2(ph2)} = self else {
+            unreachable!()
+        };
+        let token_fields = base
+            .token_fields
+            .into_iter()
+            .map(|(_, k)| k.into())
+            .collect();
+        let tables = base.tables.into_iter().map(|(_, k)| k.into()).collect();
+        let verifications = base
+            .verifications
+            .into_iter()
+            .map(|k| k.convert())
+            .collect();
+        match base.op {
+            syntax::block::pattern::Op::And => FinalBlock::And {
+                len: ph2.len,
+                token_fields,
+                tables,
+                verifications,
+                pre: base.pre.into(),
+                pos: base.pos.into(),
+                variants_prior: ph2.variants_prior,
+                variants_number: ph2.variants_number,
+            },
+            syntax::block::pattern::Op::Or => FinalBlock::Or {
+                len: ph2.len,
+                token_fields,
+                tables,
+                branches: verifications,
+                pos: base.pre.into_iter().chain(base.pos.into_iter()).collect(),
+                variants_prior: ph2.variants_prior,
+                variants_number: ph2.variants_number,
+            },
+        }
+    }
 }
 
 impl BlockBase {
     pub fn new(
         sleigh: &Sleigh,
-        input: block::pattern::Block,
-        this_table: *const Table,
+        input: syntax::block::pattern::Block,
+        this_table: TableId,
     ) -> Result<Self, PatternError> {
-        let block::pattern::Block {
+        let syntax::block::pattern::Block {
             src,
             first,
             elements,
@@ -144,7 +179,7 @@ impl BlockBase {
         //NOTE I'll not allow to mix `&` and `|` in the same level
         let op = match &elements[..] {
             //a single element don't care for operations, just default to and
-            [] => block::pattern::Op::And,
+            [] => syntax::block::pattern::Op::And,
             [(first_op, _), rest @ ..] => {
                 if rest.iter().all(|(op, _)| first_op == op) {
                     *first_op
@@ -159,10 +194,10 @@ impl BlockBase {
             .chain(elements.into_iter().map(|(_op, element)| element));
 
         match op {
-            block::pattern::Op::Or => {
+            syntax::block::pattern::Op::Or => {
                 Self::new_or(sleigh, src, all_elements, this_table)
             }
-            block::pattern::Op::And => {
+            syntax::block::pattern::Op::And => {
                 Self::new_and(sleigh, src, all_elements, this_table)
             }
         }
@@ -170,23 +205,24 @@ impl BlockBase {
     fn new_or<'a>(
         sleigh: &Sleigh,
         location: Span,
-        elements: impl Iterator<Item = block::pattern::Element>,
-        this_table: *const Table,
+        elements: impl Iterator<Item = syntax::block::pattern::Element>,
+        this_table: TableId,
     ) -> Result<Self, PatternError> {
         //convert the verifications and generate the tokens/token_fields that
         //all branches produces.
-        let mut tokens: Option<IndexMap<_, (usize, _)>> = None;
-        let mut token_fields: Option<IndexMap<_, _>> = None;
+        let mut tokens: Option<HashMap<TokenId, usize>> = None;
+        let mut token_fields: Option<HashMap<_, _>> = None;
         let branches = elements
             //convert into Verifications
             .map(|element| {
-                let block::pattern::Element { field, ellipsis } = element;
+                let syntax::block::pattern::Element { field, ellipsis } =
+                    element;
                 if ellipsis.is_some() {
                     //TODO error here
                     todo!("Ellipsis on OR pattern?");
                 }
                 match field {
-                    block::pattern::Field::Field {
+                    syntax::block::pattern::Field::Field {
                         field,
                         src,
                         constraint: None,
@@ -200,13 +236,11 @@ impl BlockBase {
                                 //token/token_fields, so clean/empty it
                                 match &mut tokens {
                                     Some(tokens) => tokens.clear(),
-                                    None => tokens = Some(IndexMap::new()),
+                                    None => tokens = Some(HashMap::new()),
                                 }
                                 match &mut token_fields {
                                     Some(token_fields) => token_fields.clear(),
-                                    None => {
-                                        token_fields = Some(IndexMap::new())
-                                    }
+                                    None => token_fields = Some(HashMap::new()),
                                 }
                                 Ok(Verification::new_table(
                                     this_table, table, src, None,
@@ -215,13 +249,13 @@ impl BlockBase {
                             _ => Err(PatternError::UnrestrictedOr(src)),
                         }
                     }
-                    block::pattern::Field::Field {
+                    syntax::block::pattern::Field::Field {
                         field,
                         src,
                         constraint: Some(constraint),
                     } => {
                         let verification = Verification::from_constraint(
-                            sleigh, &field, &src, constraint, this_table,
+                            sleigh, field, src, constraint, this_table,
                         )?;
                         match &verification {
                             Verification::ContextCheck { .. }
@@ -230,39 +264,33 @@ impl BlockBase {
                                 //so no token/token_fields, so clean/empty it
                                 match &mut tokens {
                                     Some(tokens) => tokens.clear(),
-                                    None => tokens = Some(IndexMap::new()),
+                                    None => tokens = Some(HashMap::new()),
                                 }
                                 match &mut token_fields {
                                     Some(token_fields) => token_fields.clear(),
-                                    None => {
-                                        token_fields = Some(IndexMap::new())
-                                    }
+                                    None => token_fields = Some(HashMap::new()),
                                 }
                             }
                             Verification::TokenFieldCheck { field, .. } => {
-                                let field_ele = field.element();
-                                let token = &field_ele.token;
+                                let field_ele = sleigh.token_field(*field);
+                                let token = field_ele.token;
                                 //this branch checks a token_field, remove all
                                 //tokens except for this one
                                 match &mut tokens {
                                     Some(tokens) => {
                                         tokens.retain(|this_token, _| {
-                                            *this_token == token.element_ptr()
+                                            *this_token == token
                                         })
                                     }
                                     None => {
-                                        tokens = Some(IndexMap::from([(
-                                            token.element_ptr(),
-                                            (1, token.reference()),
-                                        )]))
+                                        tokens =
+                                            Some(HashMap::from([(token, 1)]))
                                     }
                                 }
                                 //to token_fields are produced, clean/empty it
                                 match &mut token_fields {
                                     Some(token_fields) => token_fields.clear(),
-                                    None => {
-                                        token_fields = Some(IndexMap::new())
-                                    }
+                                    None => token_fields = Some(HashMap::new()),
                                 }
                             }
                             Verification::SubPattern { .. } => {
@@ -271,20 +299,18 @@ impl BlockBase {
                         }
                         Ok(verification)
                     }
-                    block::pattern::Field::SubPattern(sub) => {
+                    syntax::block::pattern::Field::SubPattern(sub) => {
                         let pattern = Pattern::new(sleigh, sub, this_table)?;
                         //remote all the tokens that this sub_pattern don't
                         //produces or produces more then once
                         match &mut tokens {
-                            Some(tokens) => {
-                                tokens.retain(|this_token, (num, _token)| {
-                                    let found = pattern.tokens.get(this_token);
-                                    if let Some((found_num, _token)) = found {
-                                        *num = (*num).max(*found_num);
-                                    }
-                                    found.is_some()
-                                })
-                            }
+                            Some(tokens) => tokens.retain(|this_token, num| {
+                                let found = pattern.tokens.get(this_token);
+                                if let Some(found_num) = found {
+                                    *num = (*num).max(*found_num);
+                                }
+                                found.is_some()
+                            }),
                             None => tokens = Some(pattern.tokens.clone()),
                         }
                         //remove all token this sub_pattern, don't produces
@@ -318,17 +344,17 @@ impl BlockBase {
         //all tables produced should be included on the final tables list,
         //but mark always=true only tables produced in all branches
         let mut tables_iter = branches.iter();
-        let mut tables: IndexMap<*const Table, ProducedTable> =
+        let mut tables: HashMap<TableId, ProducedTable> =
             match tables_iter.next().expect("LOGIC_ERROR: empty OR pattern") {
                 //no tables in branch/no_branch
                 Verification::ContextCheck { .. }
-                | Verification::TokenFieldCheck { .. } => IndexMap::new(),
+                | Verification::TokenFieldCheck { .. } => HashMap::new(),
                 //branch produces only one table, add this table
                 Verification::TableBuild {
                     produced_table,
                     verification: _,
-                } => IndexMap::from([(
-                    produced_table.table.element_ptr(),
+                } => HashMap::from([(
+                    produced_table.table,
                     produced_table.clone(),
                 )]),
                 Verification::SubPattern {
@@ -350,10 +376,10 @@ impl BlockBase {
                     produced_table,
                     verification: _,
                 } => {
-                    let ptr = produced_table.table.element_ptr();
+                    let table = produced_table.table;
                     //if this table don't exists, add it and mark it
                     //not_always produce
-                    tables.entry(ptr).or_insert_with(|| {
+                    tables.entry(table).or_insert_with(|| {
                         let mut produced_table = produced_table.clone();
                         produced_table.always = false;
                         produced_table
@@ -361,7 +387,7 @@ impl BlockBase {
                     //mark all other tables as not always produce
                     tables
                         .iter_mut()
-                        .filter(|(k, _v)| **k != ptr)
+                        .filter(|(k, _v)| **k != table)
                         .for_each(|(_k, v)| v.always = false);
                 }
                 //this branch can produce 0..n tables
@@ -390,26 +416,24 @@ impl BlockBase {
         //tokens that are present in all branches of the or can produce
         //fields,
         let mut tokens_iter = branches.iter();
-        let mut tokens: IndexMap<
-            *const Token,
-            (usize, GlobalAnonReference<Token>),
-        > = match tokens_iter.next().expect("LOGIC_ERROR: empty OR pattern") {
-            //no fields exported
-            Verification::ContextCheck { .. }
-            | Verification::TableBuild { .. } => IndexMap::new(),
-            //TODO: sub_pattern export tokens?
-            Verification::SubPattern { .. } => IndexMap::new(),
-            //one fields exported
-            Verification::TokenFieldCheck {
-                field,
-                op: _,
-                value: _,
-            } => {
-                let token_field = field.element();
-                let token = &token_field.token;
-                IndexMap::from([(token.element_ptr(), (1, token.reference()))])
-            }
-        };
+        let mut tokens: HashMap<TokenId, usize> =
+            match tokens_iter.next().expect("LOGIC_ERROR: empty OR pattern") {
+                //no fields exported
+                Verification::ContextCheck { .. }
+                | Verification::TableBuild { .. } => HashMap::new(),
+                //TODO: sub_pattern export tokens?
+                Verification::SubPattern { .. } => HashMap::new(),
+                //one fields exported
+                Verification::TokenFieldCheck {
+                    field,
+                    op: _,
+                    value: _,
+                } => {
+                    let token_field = sleigh.token_field(*field);
+                    let token = token_field.token;
+                    HashMap::from([(token, 1)])
+                }
+            };
         for verification in tokens_iter {
             match verification {
                 //no fields, just clean it
@@ -425,10 +449,8 @@ impl BlockBase {
                     op: _,
                     value: _,
                 } => {
-                    let token_field = field.element();
-                    tokens.retain(|ptr, _token| {
-                        *ptr == token_field.token.element_ptr()
-                    })
+                    let token_field = sleigh.token_field(*field);
+                    tokens.retain(|ptr, _token| *ptr == token_field.token)
                 }
             }
             if tokens.is_empty() {
@@ -439,14 +461,14 @@ impl BlockBase {
         //fields explicitly produced by all branches, are produced by the or
         //pattern
         let mut fields_iter = branches.iter();
-        let mut fields: IndexMap<*const TokenField, ProducedTokenField> =
+        let mut fields: HashMap<TokenFieldId, ProducedTokenField> =
             match fields_iter.next().expect("LOGIC_ERROR: empty OR pattern") {
                 //no fields exported
                 Verification::ContextCheck { .. }
                 | Verification::TokenFieldCheck { .. }
-                | Verification::TableBuild { .. } => IndexMap::new(),
+                | Verification::TableBuild { .. } => HashMap::new(),
                 //TODO: sub_pattern export tokens?
-                Verification::SubPattern { .. } => IndexMap::new(),
+                Verification::SubPattern { .. } => HashMap::new(),
                 //one fields exported
             };
         for verification in fields_iter {
@@ -460,8 +482,11 @@ impl BlockBase {
                 Verification::SubPattern {
                     location: _,
                     pattern,
-                } => fields.retain(|ptr, _token| {
-                    pattern.token_fields.keys().any(|sub_ptr| sub_ptr == ptr)
+                } => fields.retain(|token_field, _prod| {
+                    pattern
+                        .token_fields
+                        .keys()
+                        .any(|sub_field| sub_field == token_field)
                 }),
             }
             if fields.is_empty() {
@@ -472,7 +497,7 @@ impl BlockBase {
         fields.values_mut().for_each(|prod| prod.local = false);
 
         Ok(Self {
-            op: Op::Or,
+            op: syntax::block::pattern::Op::Or,
             location,
             tokens,
             token_fields: token_fields.unwrap_or_default(),
@@ -485,22 +510,24 @@ impl BlockBase {
     fn new_and<'a>(
         sleigh: &Sleigh,
         location: Span,
-        elements: impl Iterator<Item = block::pattern::Element>,
-        this_table: *const Table,
+        elements: impl Iterator<Item = syntax::block::pattern::Element>,
+        this_table: TableId,
     ) -> Result<Self, PatternError> {
         //convert into Verifications, also capturing the explicit fields
-        let mut token_fields = IndexMap::new();
-        use indexmap::map::Entry::*;
+        let mut token_fields = HashMap::new();
+        use std::collections::hash_map::Entry::*;
         //closure for identation sake
         let mut add_explicit_token_field =
             |token_field: ProducedTokenField| match token_fields
-                .entry(token_field.field.element_ptr())
+                .entry(token_field.field)
             {
                 Occupied(entry) => {
                     let field_old: &ProducedTokenField = entry.get();
+                    let field_old = sleigh.token_field(field_old.field);
+                    let token_field = sleigh.token_field(token_field.field);
                     Err(PatternError::MultipleProduction(
-                        field_old.field.location().clone(),
-                        token_field.field.location().clone(),
+                        field_old.location.clone(),
+                        token_field.location.clone(),
                     ))
                 }
                 Vacant(entry) => {
@@ -510,19 +537,23 @@ impl BlockBase {
             };
         let mut verifications = vec![];
         for element in elements {
-            let block::pattern::Element { field, ellipsis } = element;
+            let syntax::block::pattern::Element { field, ellipsis } = element;
             if matches!(ellipsis, Some(Ellipsis::Left)) {
                 todo!("Ellispsis on the Left")
             }
             match field {
-                block::pattern::Field::Field {
+                syntax::block::pattern::Field::Field {
                     field,
                     constraint: Some(constraint),
                     src,
                 } => {
-                    let block::pattern::Constraint { op: cmp_op, value } =
-                        constraint;
-                    let value = ConstraintValue::new(sleigh, value)?;
+                    let syntax::block::pattern::Constraint {
+                        op: cmp_op,
+                        value,
+                    } = constraint;
+                    let value =
+                        DisassemblyBuilder::parse_expr(sleigh, value.expr)?;
+                    let value = ConstraintValue::new(value);
                     let field = sleigh
                         .get_global(&field)
                         .ok_or(PatternError::MissingRef(src.clone()))?;
@@ -548,14 +579,14 @@ impl BlockBase {
                     };
                 }
 
-                block::pattern::Field::Field {
+                syntax::block::pattern::Field::Field {
                     field,
                     constraint: None,
                     src,
                 } => {
                     let field = sleigh
                         .get_global(&field)
-                        .ok_or(PatternError::MissingRef(src.clone()))?;
+                        .ok_or_else(|| PatternError::MissingRef(src.clone()))?;
                     match field {
                         //could be explicitly defined, usually for display,
                         //but is not required
@@ -566,9 +597,9 @@ impl BlockBase {
                         //token_field exported
                         GlobalScope::TokenField(token_field) => {
                             add_explicit_token_field(ProducedTokenField {
-                                explicit: true,
+                                source: Some(src),
                                 local: true,
-                                field: token_field.reference_from(src),
+                                field: token_field,
                             })?
                         }
                         GlobalScope::Table(table) => {
@@ -580,7 +611,7 @@ impl BlockBase {
                     }
                 }
 
-                block::pattern::Field::SubPattern(sub) => {
+                syntax::block::pattern::Field::SubPattern(sub) => {
                     let pattern =
                         Pattern::new(sleigh, sub.clone(), this_table)?;
                     //add/verify all token fields
@@ -604,33 +635,25 @@ impl BlockBase {
 
         //tokens (that can produce implicit fields) are only taken from local,
         //sub_patterns can't produce implicit token_fields
-        let fields_from_verifications =
-            verifications
-                .iter()
-                .filter_map(
-                    |verification: &Verification| match &verification {
-                        Verification::TokenFieldCheck { field, .. } => {
-                            Some(field.element())
-                        }
-                        Verification::ContextCheck { .. }
-                        | Verification::TableBuild { .. }
-                        | Verification::SubPattern { .. } => None,
-                    },
-                );
+        let fields_from_verifications = verifications.iter().filter_map(
+            |verification| match verification {
+                Verification::TokenFieldCheck { field, .. } => {
+                    Some(sleigh.token_field(*field))
+                }
+                Verification::ContextCheck { .. }
+                | Verification::TableBuild { .. }
+                | Verification::SubPattern { .. } => None,
+            },
+        );
         let fields_from_explicit_fields = token_fields
             .values()
-            .map(|token_fields| token_fields.field.element());
+            .map(|token_fields| sleigh.token_field(token_fields.field));
         let token_from_pattern = fields_from_explicit_fields
             .chain(fields_from_verifications)
-            .map(|field| field.token.reference());
-        let mut tokens = IndexMap::new();
+            .map(|field| field.token);
+        let mut tokens = HashMap::new();
         for token in token_from_pattern {
-            tokens
-                .entry(token.element_ptr())
-                .and_modify(|(num, _token)| {
-                    *num += 1;
-                })
-                .or_insert_with(|| (1, token));
+            *tokens.entry(token).or_insert(0) += 1;
         }
 
         let tables = verifications
@@ -638,12 +661,12 @@ impl BlockBase {
             .filter_map(Verification::tables)
             .flatten()
             .map(|produced_table| {
-                (produced_table.table.element_ptr(), produced_table.clone())
+                (produced_table.table, produced_table.clone())
             })
             .collect();
 
         Ok(Self {
-            op: Op::And,
+            op: syntax::block::pattern::Op::And,
             location,
             token_fields,
             tokens,
@@ -657,13 +680,13 @@ impl BlockBase {
     //itself
     pub fn unresolved_token_fields(
         &self,
-    ) -> IndexMap<*const TokenField, GlobalReference<TokenField>> {
+        sleigh: &Sleigh,
+    ) -> HashMap<TokenFieldId, Span> {
         let mut this_unresolved = FindValues::search(self.verifications.iter());
         //remove all token_fields that can be produced locally
-        this_unresolved.retain(|_key, token_field| {
-            let token_field = token_field.element();
-            let token = &token_field.token;
-            !self.tokens.contains_key(&token.element_ptr())
+        this_unresolved.retain(|token_field, _location| {
+            let token_field = sleigh.token_field(*token_field);
+            !self.tokens.contains_key(&token_field.token)
         });
         //for each sub_pattern, find unresolved token_fields
         this_unresolved.extend(
@@ -671,7 +694,7 @@ impl BlockBase {
                 .iter()
                 .map(Verification::sub_pattern)
                 .flatten()
-                .map(|pattern| pattern.unresolved_token_fields())
+                .map(|pattern| pattern.unresolved_token_fields(sleigh))
                 .flatten(),
         );
         ////remove all token_fields that is produced locally
@@ -680,56 +703,53 @@ impl BlockBase {
         //});
         this_unresolved
     }
-    pub fn is_token_field_produced(
-        &self,
-        search_field: &GlobalReference<TokenField>,
-    ) -> bool {
-        self.token_fields.get(&search_field.element_ptr()).is_some()
+    pub fn is_token_field_produced(&self, search_field: TokenFieldId) -> bool {
+        self.token_fields.get(&search_field).is_some()
     }
-    pub fn is_table_produced(
-        &self,
-        token_field: &GlobalReference<Table>,
-    ) -> bool {
-        self.tables.get(&token_field.element_ptr()).is_some()
+    pub fn is_table_produced(&self, token_field: TableId) -> bool {
+        self.tables.get(&token_field).is_some()
     }
+
+    // return true if this block can produce this token field
     pub fn produce_token_field(
         &mut self,
-        token_field: &GlobalReference<TokenField>,
+        sleigh: &Sleigh,
+        token_field_id: TokenFieldId,
     ) -> bool {
-        if self.is_token_field_produced(token_field) {
+        // field is already produced
+        if self.is_token_field_produced(token_field_id) {
             return true;
         }
-        let token_field_element = token_field.element();
-        let token = &token_field_element.token;
-        let token_num_used = self
-            .tokens
-            .get(&token.element_ptr())
-            .map(|(num, _)| *num)
-            .unwrap_or(0);
-        if token_num_used == 1 {
-            self.token_fields.insert(
-                token_field.element_ptr(),
-                ProducedTokenField {
-                    explicit: false,
-                    field: token_field.clone(),
-                    local: true,
-                },
-            );
-            true
-        } else {
-            false
+        // check if we can produce it implicitly
+        let token_field = sleigh.token_field(token_field_id);
+        let token_num_used =
+            self.tokens.get(&token_field.token).copied().unwrap_or(0);
+        // we can only implicitly produce a field if the token happen only
+        // once in this pattern
+        if token_num_used > 1 {
+            return false;
         }
+        //implifitly produce this token field
+        self.token_fields.insert(
+            token_field_id,
+            ProducedTokenField {
+                source: None,
+                field: token_field_id.clone(),
+                local: true,
+            },
+        );
+        true
     }
     /// len of the pattern block, except for tables
-    pub fn root_len(&self) -> usize {
+    pub fn root_len(&self, sleigh: &Sleigh) -> usize {
         match self.op {
-            Op::And => {
+            syntax::block::pattern::Op::And => {
                 //get the biggest token, from all token_field verifications and
                 //explicit/implicit token_fields
                 let biggest_token_bytes = self
                     .tokens
-                    .values()
-                    .map(|(_num, token)| token.element().len_bytes().get())
+                    .keys()
+                    .map(|token| sleigh.token(*token).len_bytes.get())
                     .max()
                     .unwrap_or(0);
                 let biggest_token =
@@ -739,82 +759,20 @@ impl BlockBase {
                     .verifications
                     .iter()
                     .filter_map(Verification::sub_pattern)
-                    .map(|pattern| pattern.root_len())
+                    .map(|pattern| pattern.root_len(sleigh))
                     .max()
                     .unwrap_or(0);
                 //return the biggest one
                 biggest_token.max(biggest_sub_pattern)
             }
-            Op::Or => {
+            syntax::block::pattern::Op::Or => {
                 //get the biggest of all branches
                 self.verifications
                     .iter()
-                    .map(Verification::root_len)
+                    .map(|v| v.root_len(sleigh))
                     .max()
                     .unwrap_or(0)
             }
-        }
-    }
-}
-impl From<Block> for FinalBlock {
-    fn from(value: Block) -> Self {
-        let Block{base, phase: BlockPhase::Phase2(ph2)} = value else {
-            unreachable!()
-        };
-        let exported_token_fields =
-            base.token_fields.values().map(|prod| &prod.field);
-        let verified_token_fields =
-            base.verifications.iter().filter_map(|ver| match ver {
-                Verification::ContextCheck { .. }
-                | Verification::TableBuild { .. }
-                | Verification::SubPattern { .. } => None,
-                Verification::TokenFieldCheck {
-                    field,
-                    op: _,
-                    value: _,
-                } => Some(field),
-            });
-        let token_len = exported_token_fields
-            .chain(verified_token_fields)
-            .map(|token_field| token_field.element().token.len_bytes().get())
-            .max();
-        let token_fields = base
-            .token_fields
-            .into_iter()
-            .map(|(_, k)| k.into())
-            .collect();
-        let tables = base.tables.into_iter().map(|(_, k)| k.into()).collect();
-        let verifications = base
-            .verifications
-            .into_iter()
-            .map(|k| k.try_into().unwrap())
-            .collect();
-        match base.op {
-            Op::And => FinalBlock::And {
-                len: ph2.len,
-                token_len: token_len.unwrap_or(0),
-                token_fields,
-                tables,
-                verifications,
-                pre: base.pre.into_iter().map(|x| x.convert()).collect(),
-                pos: base.pos.into_iter().map(|x| x.convert()).collect(),
-                variants_prior: ph2.variants_prior,
-                variants_number: ph2.variants_number,
-            },
-            Op::Or => FinalBlock::Or {
-                len: ph2.len,
-                token_fields,
-                tables,
-                branches: verifications,
-                pos: base
-                    .pre
-                    .into_iter()
-                    .chain(base.pos.into_iter())
-                    .map(|x| x.convert())
-                    .collect(),
-                variants_prior: ph2.variants_prior,
-                variants_number: ph2.variants_number,
-            },
         }
     }
 }
@@ -830,6 +788,7 @@ impl BlockPhase1 {
     }
     pub fn solve_or<T: SolverStatus>(
         &mut self,
+        sleigh: &Sleigh,
         solved: &mut T,
         base: &mut BlockBase,
     ) -> Result<(), PatternError> {
@@ -838,18 +797,17 @@ impl BlockPhase1 {
             Recursive, //recursive in `OR` is not allowed
             Unknown,   //at least one branch len is not known
         }
-        let mut branch_len_iter = base
-            .verifications
-            .iter()
-            .map(Verification::pattern_len)
-            .map(|len| match len {
-                Some(ConstructorPatternLen::Basic(len)) => Ok(len),
-                Some(
-                    ConstructorPatternLen::NonGrowingRecursive(_)
-                    | ConstructorPatternLen::GrowingRecursive { .. },
-                ) => Err(OrLenPossible::Recursive),
-                None => Err(OrLenPossible::Unknown),
-            });
+        let mut branch_len_iter =
+            base.verifications
+                .iter()
+                .map(|v| match v.pattern_len(sleigh) {
+                    Some(ConstructorPatternLen::Basic(len)) => Ok(len),
+                    Some(
+                        ConstructorPatternLen::NonGrowingRecursive(_)
+                        | ConstructorPatternLen::GrowingRecursive { .. },
+                    ) => Err(OrLenPossible::Recursive),
+                    None => Err(OrLenPossible::Unknown),
+                });
         //unwrap never happen because empty pattern default to `Op::And`
         let first = branch_len_iter.next().unwrap();
         let new_len = first.and_then(|first| {
@@ -879,6 +837,7 @@ impl BlockPhase1 {
     }
     pub fn solve_and<T: SolverStatus>(
         &mut self,
+        sleigh: &Sleigh,
         solved: &mut T,
         base: &mut BlockBase,
     ) -> Result<(), PatternError> {
@@ -886,8 +845,8 @@ impl BlockPhase1 {
         //and all tables in the pattern
         let tokens_len = base
             .tokens
-            .values()
-            .map(|(_num, token)| token.element().len_bytes())
+            .keys()
+            .map(|token| sleigh.token(*token).len_bytes)
             .max()
             .map(|token_len| {
                 ConstructorPatternLen::Basic(PatternLen::Defined(
@@ -895,7 +854,7 @@ impl BlockPhase1 {
                 ))
             });
         let mut verifications_len =
-            base.verifications.iter().map(Verification::pattern_len);
+            base.verifications.iter().map(|v| v.pattern_len(sleigh));
         let first = tokens_len.unwrap_or(PatternLen::Defined(0).into());
         let final_len =
             verifications_len.try_fold(first, |acc, x| acc.greater(x?));
@@ -922,6 +881,7 @@ impl BlockPhase1 {
     }
     pub fn solve<T: SolverStatus>(
         &mut self,
+        sleigh: &Sleigh,
         solved: &mut T,
         base: &mut BlockBase,
     ) -> Result<bool, PatternError> {
@@ -934,12 +894,16 @@ impl BlockPhase1 {
         base.verifications
             .iter_mut()
             .filter_map(Verification::sub_pattern_mut)
-            .map(|sub| sub.calculate_len(solved).map(|_| ()))
+            .map(|sub| sub.calculate_len(sleigh, solved).map(|_| ()))
             .collect::<Result<_, _>>()?;
         //TODO check all table value verifications export a const value
         match base.op {
-            Op::And => self.solve_and(solved, base)?,
-            Op::Or => self.solve_or(solved, base)?,
+            syntax::block::pattern::Op::And => {
+                self.solve_and(sleigh, solved, base)?
+            }
+            syntax::block::pattern::Op::Or => {
+                self.solve_or(sleigh, solved, base)?
+            }
         }
         let finished =
             matches!(&self.len, Some(ConstructorPatternLen::Basic(_)));
@@ -957,8 +921,12 @@ impl BlockPhase2 {
         variants_prior: usize,
     ) -> Self {
         match base.op {
-            Op::And => Self::new_and(base, len, variants_prior),
-            Op::Or => Self::new_or(base, len, variants_prior),
+            syntax::block::pattern::Op::And => {
+                Self::new_and(base, len, variants_prior)
+            }
+            syntax::block::pattern::Op::Or => {
+                Self::new_or(base, len, variants_prior)
+            }
         }
     }
     fn new_and(

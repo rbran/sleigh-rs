@@ -1,71 +1,10 @@
-use std::rc::Rc;
+use crate::pattern::BitConstraint;
+use crate::semantic::display::Display;
+use crate::semantic::execution::Execution;
+use crate::semantic::pattern::{Pattern, PatternLen};
+use crate::{NumberNonZeroUnsigned, Span};
 
-use thiserror::Error;
-
-use crate::{from_error, NumberNonZeroUnsigned, Span};
-
-pub use super::disassembly::DisassemblyError;
-pub use super::display::{Display, DisplayError};
-use super::execution::Execution;
-pub use super::execution::ExecutionError;
-use super::pattern::PatternLen;
-pub use super::pattern::{Pattern, PatternError};
-
-//pub mod disassembly;
-//pub mod execution;
-
-//TODO not all table errors have a location
-#[derive(Clone, Debug, Error)]
-#[error("at {table_pos}\n{sub}")]
-pub struct TableError {
-    pub table_pos: Span,
-    pub sub: TableErrorSub,
-}
-
-pub trait ToTableError<X> {
-    fn to_table(self, table_pos: Span) -> Result<X, TableError>;
-}
-impl<X, T> ToTableError<X> for Result<X, T>
-where
-    T: Into<TableErrorSub>,
-{
-    fn to_table(self, table_pos: Span) -> Result<X, TableError> {
-        self.map_err(|e| TableError {
-            table_pos,
-            sub: e.into(),
-        })
-    }
-}
-
-#[derive(Clone, Debug, Error)]
-pub enum TableErrorSub {
-    #[error("Table Constructor can't be inserted in invalid Table name")]
-    TableNameInvalid,
-
-    #[error("Table Constructor have invalid Export size")]
-    TableConstructorExportSizeInvalid,
-
-    #[error("Pattern Error: {0}")]
-    Pattern(PatternError),
-    #[error("Disassembly Error: {0}")]
-    Disassembly(DisassemblyError),
-    #[error("Display Error: {0}")]
-    Display(DisplayError),
-    #[error("Execution Error: {0}")]
-    Execution(ExecutionError),
-}
-impl TableErrorSub {
-    pub fn to_table(self, table_pos: Span) -> TableError {
-        TableError {
-            table_pos,
-            sub: self,
-        }
-    }
-}
-from_error!(TableErrorSub, DisassemblyError, Disassembly);
-from_error!(TableErrorSub, PatternError, Pattern);
-from_error!(TableErrorSub, DisplayError, Display);
-from_error!(TableErrorSub, ExecutionError, Execution);
+use super::inner::pattern::SinglePatternOrdering;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub enum ExecutionExport {
@@ -95,38 +34,119 @@ impl ExecutionExport {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConstructorId(pub usize);
+
 #[derive(Clone, Debug)]
 pub struct Constructor {
     pub pattern: Pattern,
     pub display: Display,
     pub execution: Option<Execution>,
-    pub src: Span,
+    pub location: Span,
+    // the bit pattern for all possible variants in the pattern,
+    // impossible variants are simply not present here
+    pub(crate) variants_bits:
+        Box<[(usize, (Box<[BitConstraint]>, Box<[BitConstraint]>))]>,
+    // the bit pattern for the union of all patterns
+    pub(crate) context_bits: Box<[BitConstraint]>,
+    pub(crate) pattern_bits: Box<[BitConstraint]>,
+}
+
+impl Constructor {
+    /// the union off all variants into a single generic bit pattern,
+    /// NOTE: context have no configurable endianes, the bit order is always
+    /// from msb (index 0) to lsb (index len - 1)
+    pub fn context_bits(&self) -> &[BitConstraint] {
+        &self.context_bits
+    }
+
+    /// all variants of this pattern, NOTE: context have not endianes, is always
+    /// from the msb to the lsb
+    pub fn context_variants(
+        &self,
+    ) -> impl Iterator<Item = (usize, &[BitConstraint])> {
+        self.variants_bits
+            .iter()
+            .map(|(i, (c, _v))| (*i, c.as_ref()))
+    }
+
+    pub fn pattern_bits(&self) -> &[BitConstraint] {
+        &self.pattern_bits
+    }
+
+    pub fn pattern_variants(
+        &self,
+    ) -> impl Iterator<Item = (usize, &[BitConstraint])> {
+        self.variants_bits
+            .iter()
+            .map(|(i, (_c, v))| (*i, v.as_ref()))
+    }
+
+    ////7.8.1. Matching
+    ////one pattern contains the other if all the cases that match the contained,
+    ////also match the pattern.
+    ////eg: `a` contains `b` if all cases that match `b` also match `a`. In other
+    ////words `a` is a special case of `b`.
+    ////NOTE the opose don't need to be true.
+    pub(crate) fn ordering(&self, other: &Self) -> SinglePatternOrdering {
+        use BitConstraint::*;
+        use SinglePatternOrdering::*;
+        let self_pattern_len = self.pattern.bits_produced();
+        let other_pattern_len = other.pattern.bits_produced();
+        let max_pattern_len = self_pattern_len.max(other_pattern_len);
+        let self_extend = max_pattern_len - self_pattern_len;
+        let other_extend = max_pattern_len - other_pattern_len;
+
+        fn produce_iter<'a>(
+            constructor: &'a Constructor,
+            extend: usize,
+        ) -> impl Iterator<Item = BitConstraint> + 'a {
+            constructor
+                .context_bits()
+                .iter()
+                .chain(constructor.pattern_bits().iter())
+                .cloned()
+                .chain(
+                    (0..extend)
+                        .into_iter()
+                        .map(|_| BitConstraint::Unrestrained),
+                )
+        }
+        let self_bits = produce_iter(self, self_extend);
+        let other_bits = produce_iter(other, other_extend);
+
+        self_bits
+            .zip(other_bits)
+            .map(|(self_bit, other_bit)| match (self_bit, other_bit) {
+                (Defined(_) | Restrained, Defined(_) | Restrained)
+                | (Unrestrained, Unrestrained) => Eq,
+                (Unrestrained, _) => Contained,
+                (_, Unrestrained) => Contains,
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct Table {
-    is_root: bool,
-    pub constructors: Box<[Rc<Constructor>]>,
+    pub(crate) name: Box<str>,
+    pub(crate) is_root: bool,
+    pub(crate) constructors: Box<[Constructor]>,
     pub export: ExecutionExport,
-    pub(crate) pattern_len: PatternLen,
+    pub pattern_len: PatternLen,
 }
 
 impl Table {
-    pub(crate) fn new_dummy(is_root: bool) -> Self {
-        Self {
-            is_root,
-            constructors: Box::new([]),
-            export: ExecutionExport::None,
-            pattern_len: PatternLen::Defined(0 /*TODO*/),
-        }
-    }
-    pub fn export(&self) -> &ExecutionExport {
-        &self.export
-    }
     pub fn is_root(&self) -> bool {
         self.is_root
     }
-    pub fn pattern_len(&self) -> &PatternLen {
-        &self.pattern_len
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn constructors(&self) -> &[Constructor] {
+        &self.constructors
+    }
+    pub fn constructor(&self, id: ConstructorId) -> &Constructor {
+        &self.constructors[id.0]
     }
 }

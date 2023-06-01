@@ -10,4 +10,3 @@ description = "Ghidra Sleigh parser"
 [dependencies]
 nom = "7"
 thiserror = "1"
-indexmap = "1.9"

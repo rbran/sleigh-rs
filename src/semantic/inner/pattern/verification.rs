@@ -1,20 +1,18 @@
-use crate::pattern::CmpOp;
-use crate::semantic::inner::table::Table;
-use crate::semantic::inner::token::TokenField;
-use crate::semantic::inner::varnode::Context;
-use crate::semantic::inner::{GlobalScope, Sleigh};
-use crate::semantic::pattern::{PatternError, PatternLen};
-use crate::semantic::GlobalReference;
-use crate::syntax;
-use crate::{GlobalElement, Span};
+use crate::semantic::pattern::{
+    CmpOp, PatternLen, Verification as FinalVerification,
+};
+use crate::semantic::{ContextId, GlobalScope, TableId, TokenFieldId};
+use crate::{syntax, PatternError, Span};
 
-use super::{ConstraintValue, ConstructorPatternLen, Pattern, ProducedTable};
+use super::{
+    ConstraintValue, ConstructorPatternLen, DisassemblyBuilder, Pattern,
+    ProducedTable, Sleigh,
+};
 
-pub type FinalVerification = crate::semantic::pattern::Verification;
 #[derive(Clone, Debug)]
 pub enum Verification {
     ContextCheck {
-        context: GlobalReference<Context>,
+        context: ContextId,
         op: CmpOp,
         value: ConstraintValue,
     },
@@ -23,7 +21,7 @@ pub enum Verification {
         verification: Option<(CmpOp, ConstraintValue)>,
     },
     TokenFieldCheck {
-        field: GlobalReference<TokenField>,
+        field: TokenFieldId,
         op: CmpOp,
         value: ConstraintValue,
     },
@@ -35,38 +33,41 @@ pub enum Verification {
 impl Verification {
     pub fn from_constraint(
         sleigh: &Sleigh,
-        field: &str,
-        src: &Span,
+        field: String,
+        src: Span,
         constraint: syntax::block::pattern::Constraint,
-        this_table: *const Table,
+        this_table: TableId,
     ) -> Result<Self, PatternError> {
         let syntax::block::pattern::Constraint { op: cmp_op, value } =
             constraint;
-        let value = ConstraintValue::new(sleigh, value)?;
+        let value = ConstraintValue::new(DisassemblyBuilder::parse_expr(
+            sleigh, value.expr,
+        )?);
         let field = sleigh
-            .get_global(field)
+            .get_global(&field)
             .ok_or(PatternError::MissingRef(src.clone()))?;
         match field {
             GlobalScope::TokenField(x) => Ok(Self::TokenFieldCheck {
-                field: x.reference_from(src.clone()),
+                field: x,
                 op: cmp_op,
                 value,
             }),
             //TODO create InstStart? Does start_start exists?
             GlobalScope::Context(x) => Ok(Self::ContextCheck {
-                context: x.reference_from(src.clone()),
+                context: x,
                 op: cmp_op,
                 value,
             }),
             GlobalScope::Table(x) => Ok({
                 let verification = Some((cmp_op, value));
-                let recursive = x.element_ptr() == this_table;
-                let table = x.reference_from(src.clone());
+                let recursive = x == this_table;
+                let table = x;
                 Self::TableBuild {
                     produced_table: ProducedTable {
                         table,
                         always: true,
                         recursive,
+                        location: src.clone(),
                     },
                     verification,
                 }
@@ -75,47 +76,39 @@ impl Verification {
         }
     }
     pub fn new_context(
-        context: &GlobalElement<Context>,
-        src: Span,
+        context: ContextId,
+        _src: Span,
         op: CmpOp,
         value: ConstraintValue,
     ) -> Self {
-        Self::ContextCheck {
-            context: context.reference_from(src),
-            op,
-            value,
-        }
+        Self::ContextCheck { context, op, value }
     }
     pub fn new_table(
-        this_table: *const Table,
-        table: &GlobalElement<Table>,
-        src: Span,
+        this_table: TableId,
+        table: TableId,
+        location: Span,
         verification: Option<(CmpOp, ConstraintValue)>,
     ) -> Self {
-        let recursive = table.element_ptr() == this_table;
-        let table = table.reference_from(src);
+        let recursive = table == this_table;
         Self::TableBuild {
             produced_table: ProducedTable {
                 table,
                 always: true,
                 recursive,
+                location,
             },
             verification,
         }
     }
     pub fn new_token_field(
-        field: &GlobalElement<TokenField>,
-        src: Span,
+        field: TokenFieldId,
+        _src: Span,
         op: CmpOp,
         value: ConstraintValue,
     ) -> Self {
-        Self::TokenFieldCheck {
-            field: field.reference_from(src),
-            op,
-            value,
-        }
+        Self::TokenFieldCheck { field, op, value }
     }
-    pub fn root_len(&self) -> usize {
+    pub fn root_len(&self, sleigh: &Sleigh) -> usize {
         match self {
             Verification::ContextCheck { .. }
             | Verification::TableBuild { .. } => 0,
@@ -124,14 +117,15 @@ impl Verification {
                 op: _,
                 value: _,
             } => {
-                let bytes: usize =
-                    field.element().token.len_bytes().get().try_into().unwrap();
+                let field = sleigh.token_field(*field);
+                let token = sleigh.token(field.token);
+                let bytes: usize = token.len_bytes.get().try_into().unwrap();
                 bytes * 8usize
             }
             Verification::SubPattern {
                 location: _,
                 pattern,
-            } => pattern.root_len(),
+            } => pattern.root_len(sleigh),
         }
     }
     pub fn tables<'a>(
@@ -162,9 +156,9 @@ impl Verification {
             }
         }
     }
-    pub fn token_field_check(&self) -> Option<&GlobalReference<TokenField>> {
+    pub fn token_field_check(&self) -> Option<TokenFieldId> {
         match self {
-            Self::TokenFieldCheck { field, .. } => Some(field),
+            Self::TokenFieldCheck { field, .. } => Some(*field),
             Self::ContextCheck { .. }
             | Self::TableBuild { .. }
             | Self::SubPattern { .. } => None,
@@ -192,7 +186,10 @@ impl Verification {
             } => Some(pattern),
         }
     }
-    pub fn pattern_len(&self) -> Option<ConstructorPatternLen> {
+    pub fn pattern_len(
+        &self,
+        sleigh: &Sleigh,
+    ) -> Option<ConstructorPatternLen> {
         match self {
             Self::ContextCheck { .. } => {
                 Some(ConstructorPatternLen::Basic(PatternLen::Defined(0)))
@@ -201,11 +198,12 @@ impl Verification {
                 produced_table:
                     ProducedTable {
                         table,
+                        location: _,
                         always: _,
                         recursive: true,
                     },
                 verification: _,
-            } => match table.element().pattern_len() {
+            } => match sleigh.table(*table).pattern_len() {
                 //if the table len is known, return it
                 Some(table_len) => Some(table_len.into()),
                 //otherwise the indication that this is a recursive
@@ -217,21 +215,26 @@ impl Verification {
                 produced_table:
                     ProducedTable {
                         table,
+                        location: _,
                         always: _,
                         recursive: false,
                     },
                 verification: _,
-            } => table
-                .element()
+            } => sleigh
+                .table(*table)
                 .pattern_len()
                 .map(ConstructorPatternLen::Basic),
             Self::TokenFieldCheck {
                 field,
                 op: _,
                 value: _,
-            } => Some(ConstructorPatternLen::Basic(PatternLen::Defined(
-                field.element().token.len_bytes().get(),
-            ))),
+            } => {
+                let field = sleigh.token_field(*field);
+                let token = sleigh.token(field.token);
+                Some(ConstructorPatternLen::Basic(PatternLen::Defined(
+                    token.len_bytes.get(),
+                )))
+            }
             Self::SubPattern {
                 location: _,
                 pattern,
@@ -244,14 +247,11 @@ impl Verification {
             _ => 1,
         }
     }
-}
-
-impl From<Verification> for FinalVerification {
-    fn from(value: Verification) -> Self {
-        match value {
+    pub fn convert(self) -> FinalVerification {
+        match self {
             Verification::ContextCheck { context, op, value } => {
-                Self::ContextCheck {
-                    context: context.convert_reference(),
+                FinalVerification::ContextCheck {
+                    context,
                     op,
                     value: value.into(),
                 }
@@ -259,20 +259,20 @@ impl From<Verification> for FinalVerification {
             Verification::TableBuild {
                 produced_table,
                 verification,
-            } => Self::TableBuild {
+            } => FinalVerification::TableBuild {
                 produced_table: produced_table.into(),
                 verification: verification
                     .map(|(op, value)| (op, value.into())),
             },
             Verification::TokenFieldCheck { field, op, value } => {
-                Self::TokenFieldCheck {
-                    field: field.convert_reference(),
+                FinalVerification::TokenFieldCheck {
+                    field,
                     op,
                     value: value.into(),
                 }
             }
             Verification::SubPattern { location, pattern } => {
-                Self::SubPattern {
+                FinalVerification::SubPattern {
                     location,
                     pattern: pattern.convert(),
                 }

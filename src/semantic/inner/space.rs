@@ -1,62 +1,57 @@
-use std::rc::Rc;
-
-use crate::semantic::inner;
 use crate::semantic::space::SpaceType;
-use crate::semantic::GlobalElement;
-use crate::semantic::SemanticError;
-use crate::syntax::define;
+use crate::semantic::{GlobalScope, Space, SpaceId};
+use crate::{syntax, SleighError};
 
-use super::FieldSize;
 use super::Sleigh;
 
 impl Sleigh {
     pub fn create_space(
         &mut self,
-        space: define::Space,
-    ) -> Result<(), SemanticError> {
-        let src = space.src;
+        input: syntax::define::Space,
+    ) -> Result<(), SleighError> {
+        let src = input.src;
         let (mut default, mut addr_size, mut wordsize, mut space_type) =
             (false, None, None, None);
-        for att in space.attributes.into_iter() {
-            use define::Attribute::*;
+        for att in input.attributes.into_iter() {
+            use syntax::define::Attribute::*;
             match att {
                 Type(x) if space_type.is_none() => space_type = Some(x),
                 Size(x) if addr_size.is_none() => addr_size = Some(x),
                 WordSize(x) if wordsize.is_none() => wordsize = Some(x),
                 Default if !default => default = true,
-                _ => return Err(SemanticError::SpaceInvalidAtt),
+                _ => return Err(SleighError::SpaceInvalidAtt(src)),
             }
         }
         let word_size = wordsize
             .unwrap_or(1)
             .try_into()
-            .map_err(|_| SemanticError::SpaceMissingSize)?;
+            .map_err(|_| SleighError::SpaceMissingSize(src.clone()))?;
         let addr_size = match addr_size
-            .ok_or(SemanticError::SpaceMissingSize)?
+            .ok_or_else(|| SleighError::SpaceMissingSize(src.clone()))?
         {
-            0 => return Err(SemanticError::SpaceInvalidSize),
-            x => x.try_into().map_err(|_| SemanticError::SpaceMissingSize)?,
+            0 => return Err(SleighError::SpaceInvalidSize(src.clone())),
+            x => x
+                .try_into()
+                .map_err(|_| SleighError::SpaceInvalidSize(src.clone()))?,
         };
         let space_type = space_type.unwrap_or(SpaceType::Register);
-        let space = GlobalElement::new_space(
-            &space.name,
+        let space = Space {
             src,
             space_type,
-            word_size,
-            addr_size,
-        );
+            wordsize: word_size,
+            addr_bytes: addr_size,
+        };
+        self.spaces.push(space);
+        let space_id = SpaceId(self.spaces.len() - 1);
         if default {
             self.default_space
-                .replace(space.clone())
-                .map(|_| Err(SemanticError::SpaceMultipleDefault))
+                .replace(space_id)
+                .map(|_| Err(SleighError::SpaceMultipleDefault))
                 .unwrap_or(Ok(()))?;
-            //set the exec addr size
-            self.exec_addr_size =
-                Some(FieldSize::new_bytes(space.addr_bytes()));
         }
-        self.idents
-            .insert(Rc::clone(&space.name), inner::GlobalScope::Space(space))
-            .map(|_| Err(SemanticError::NameDuplicated))
+        self.global_scope
+            .insert(input.name, GlobalScope::Space(space_id))
+            .map(|_| Err(SleighError::NameDuplicated))
             .unwrap_or(Ok(()))
     }
 }

@@ -30,7 +30,7 @@ impl Constructor {
         input: &mut FilePreProcessor,
         buf: &mut Vec<Token>,
     ) -> Result<Self, SleighError> {
-        input.parse_until(buf, |x| &x.token_type == &token_type!(":"))?;
+        input.parse_until(buf, |x| x.token_type == token_type!(":"))?;
         let (_eof, ((table_name, table_src), _, _)) =
             tuple((ident, tag!(":"), eof))(buf)?;
         let table_src = table_src.clone();

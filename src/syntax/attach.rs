@@ -12,6 +12,7 @@ use super::parser::{
 
 #[derive(Clone, Debug)]
 pub struct Attach {
+    pub src: Span,
     pub fields: Vec<(String, Span)>,
     pub meaning: Meaning,
 }
@@ -24,7 +25,7 @@ pub enum Meaning {
 }
 impl Attach {
     pub fn parse(input: &[Token]) -> Result<Attach, SleighError> {
-        let (_eof, (fields, meaning)) = preceded(
+        let (_eof, (src, (fields, meaning))) = pair(
             this_ident("attach"),
             cut(terminated(
                 alt((
@@ -44,7 +45,11 @@ impl Attach {
                 pair(tag!(";"), eof),
             )),
         )(input)?;
-        Ok(Attach { fields, meaning })
+        Ok(Attach {
+            src: src.clone(),
+            fields,
+            meaning,
+        })
     }
     fn attach_lists<'a, Output>(
         name: &'a str,
