@@ -755,25 +755,29 @@ impl std::fmt::Display for FileLocation {
 
 /// bit in Little endian constraint
 /// in 4 bytes, bit 0 => bit 0, bit 1 => bit 1, bit 8 => bit 8
-fn bit_in_le(value_bit: u32, _field_bits: u32) -> u32 {
+fn field_in_le(value_bit: usize, _field_bits: usize) -> usize {
     value_bit
 }
 
 /// bit in Big endian constraint
 /// in 4 bytes, bit 0 => bit 8, bit 1 => bit 9, bit 8 => bit 0
 /// AKA invert the byte order, but bit order is bit 0 => lsb, bit N => msb
-fn bit_in_be(value_bit: u32, field_bits: u32) -> u32 {
+fn field_in_be(value_bit: usize, field_bits: usize) -> usize {
     let field_bytes = (field_bits + 7) / 8;
     let value_byte = value_bit / 8;
     let bit_in_byte = value_bit % 8;
     (((field_bytes - 1) - value_byte) * 8) + bit_in_byte
 }
 
+fn value_in_token(value_bit: usize, _field_bits: usize) -> usize {
+    value_bit
+}
+
 // bit in context constraint
 // in context, the byte order don't mater, but the bit order is bit 0 => msb
 // bit N => lsb.
 /// in 4 bytes, bit 0 => bit 31, bit 1 => bit 30, bit 8 => bit 23
-fn bit_in_context(value_bit: u32, field_bits: u32) -> u32 {
+fn value_in_context(value_bit: usize, field_bits: usize) -> usize {
     (field_bits - 1) - value_bit
 }
 

@@ -2,7 +2,10 @@ use crate::disassembly::VariableId;
 use crate::semantic::{
     ContextId, Sleigh as FinalSleigh, TableId, TokenFieldId,
 };
-use crate::{bit_in_be, bit_in_context, bit_in_le, NumberUnsigned, Span};
+use crate::{
+    field_in_be, field_in_le, value_in_context, value_in_token, NumberUnsigned,
+    Span,
+};
 
 use super::disassembly::{Assertation, Expr, Variable};
 use super::InstStart;
@@ -371,7 +374,8 @@ fn apply_verification(
             let bits = sleigh.context_memory.context(*context);
             super::inner::pattern::apply_value(
                 context_bits,
-                bit_in_context,
+                field_in_le,
+                value_in_context,
                 bits,
                 *op,
                 value,
@@ -382,12 +386,13 @@ fn apply_verification(
             let token = sleigh.token(token_field.token);
             let token_len: usize = token.len_bytes.get().try_into().unwrap();
             let bit_order = match token.endian {
-                crate::Endian::Little => bit_in_le,
-                crate::Endian::Big => bit_in_be,
+                crate::Endian::Little => field_in_le,
+                crate::Endian::Big => field_in_be,
             };
             super::inner::pattern::apply_value(
                 &mut constraint_bits[0..token_len * 8],
                 bit_order,
+                value_in_token,
                 token_field.bits.clone(),
                 *op,
                 value,

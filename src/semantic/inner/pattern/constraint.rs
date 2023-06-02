@@ -89,9 +89,10 @@ impl BitConstraint {
 }
 
 pub fn apply_value(
-    field: &mut [BitConstraint],
-    bit_order: fn(u32, u32) -> u32,
-    value_bits: FieldBits,
+    constraint: &mut [BitConstraint],
+    field_order: fn(usize, usize) -> usize,
+    value_order: fn(usize, usize) -> usize,
+    field_bits: FieldBits,
     op: CmpOp,
     value: &ConstraintValue,
 ) -> Option<()> {
@@ -108,57 +109,19 @@ pub fn apply_value(
         _ => None,
     };
 
-    for (input_value_bit, field_bit) in value_bits.0.into_iter().enumerate() {
-        let field_bits: u32 = field.len().try_into().unwrap();
-        let field_bit = bit_order(field_bit.try_into().unwrap(), field_bits);
-        let bit = &mut field[field_bit as usize];
+    let field_bits_len = field_bits.len().get().try_into().unwrap();
+    for (value_bit, field_bit) in field_bits.0.into_iter().enumerate() {
+        let field_bit = field_bit.try_into().unwrap();
+        let field_bit = field_order(field_bit, constraint.len());
+        let bit = &mut constraint[field_bit as usize];
         if let Some(value) = value {
-            *bit = bit.define((value >> input_value_bit) & 1 != 0)?;
+            let value_bit = value_order(value_bit, field_bits_len);
+            let value_bit = (value >> value_bit) & 1 != 0;
+            *bit = bit.define(value_bit)?;
         } else {
             //error never happen with `BitConstraint::Restrained`
             *bit = bit.most_restrictive(BitConstraint::Restrained).unwrap();
         }
     }
     Some(())
-}
-
-#[cfg(test)]
-mod test {
-    #[test]
-    fn test_apply_value() {
-        let mut field = vec![super::BitConstraint::default(); 64];
-        let dummy_location = crate::Span::File(crate::FileSpan {
-            start: crate::FileLocation {
-                file: std::rc::Rc::from(std::path::Path::new("")),
-                line: 0,
-                column: 0,
-            },
-            end_line: 0,
-            end_column: 0,
-        });
-        super::apply_value(
-            &mut field,
-            crate::Endian::Big,
-            crate::FieldBits(35..37),
-            crate::semantic::pattern::CmpOp::Eq,
-            &crate::semantic::pattern::ConstraintValue::new(
-                crate::semantic::disassembly::Expr {
-                    rpn: Box::from([
-                        crate::semantic::disassembly::ExprElement::Value{
-                            value: crate::semantic::disassembly::ReadScope::Integer(
-                                crate::Number::Positive(2),
-                            ),
-                            location: dummy_location,
-                        },
-                    ]),
-                },
-            ),
-        )
-        .unwrap();
-        for (i, bit) in field.iter().enumerate() {
-            dbg!(&i);
-            dbg!(&bit);
-        }
-        todo!();
-    }
 }
