@@ -229,11 +229,11 @@ impl Pattern {
         let context_bits =
             usize::try_from(sleigh.context_memory.memory_bits).unwrap();
         let pattern_bits = self.bits_produced();
-        let mut context_buf = Vec::with_capacity(context_bits);
-        let mut pattern_buf = Vec::with_capacity(pattern_bits);
+        let mut context_buf = vec![BitConstraint::default(); context_bits];
+        let mut pattern_buf = vec![BitConstraint::default(); pattern_bits];
         (0..self.variants_num()).into_iter().filter_map(move |i| {
-            context_buf.resize_with(context_bits, BitConstraint::default);
-            pattern_buf.resize_with(pattern_bits, BitConstraint::default);
+            context_buf.fill(BitConstraint::default());
+            pattern_buf.fill(BitConstraint::default());
             self.constraint(sleigh, i, &mut context_buf, &mut pattern_buf)?;
             Some((i, (context_buf.clone(), pattern_buf.clone())))
         })
