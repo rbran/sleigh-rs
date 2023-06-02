@@ -51,7 +51,7 @@ pub struct BlockBase {
     /// disassembly after the block is match
     pub pos: Vec<Assertation>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct BlockPhase1 {
     ///len that will be gradually be calculated
     pub len: Option<ConstructorPatternLen>,
@@ -79,7 +79,7 @@ impl Block {
     ) -> Result<Self, PatternError> {
         let base = BlockBase::new(sleigh, input, this_table)?;
         // no verification the block is len 0
-        let phase = BlockPhase::Phase1(BlockPhase1::new(&base));
+        let phase = BlockPhase::Phase1(BlockPhase1::default());
         Ok(Self { base, phase })
     }
     pub fn len(&self) -> Option<ConstructorPatternLen> {
@@ -778,14 +778,6 @@ impl BlockBase {
 }
 
 impl BlockPhase1 {
-    pub fn new(base: &BlockBase) -> Self {
-        // if the pattern is empty, the final len, is known
-        let len = base
-            .verifications
-            .is_empty()
-            .then_some(ConstructorPatternLen::Basic(PatternLen::Defined(0)));
-        Self { len }
-    }
     pub fn solve_or<T: SolverStatus>(
         &mut self,
         sleigh: &Sleigh,
