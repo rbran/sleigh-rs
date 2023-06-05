@@ -15,11 +15,11 @@ pub enum Op {
     Sub,
     Mul,
     Div,
-    Asr,
-    Lsl,
     And,
     Or,
     Xor,
+    Asr,
+    Lsl,
 }
 
 #[derive(Clone, Debug)]
