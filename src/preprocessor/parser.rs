@@ -2,7 +2,9 @@ use std::borrow::Borrow;
 
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_while, take_while1};
-use nom::character::complete::{digit1, hex_digit1, not_line_ending, space0};
+use nom::character::complete::{
+    digit1, hex_digit1, not_line_ending, satisfy, space0,
+};
 use nom::combinator::{eof, map, map_res, opt, recognize, value};
 use nom::sequence::{delimited, pair, preceded, tuple};
 use nom::{AsChar, IResult, InputIter, InputTake};
@@ -102,6 +104,7 @@ pub enum Display {
     End,
     Concat,
     Ident(String),
+    Other(char),
     Literal(String),
 }
 //Never fails, IResult only for convenience
@@ -113,13 +116,10 @@ pub fn display_token(input: &str) -> IResult<&str, Option<Display>> {
             "is" => Some(Display::End),
             x => Some(Display::Ident(x.to_owned())),
         }),
-        //if something else, just consume it until a possible ident is found
+        // if something else, just consume it until a possible ident is found
         map(
-            take_while1(|c| c != '^' && c != '"' && !is_ident_first(c)),
-            |x: &str| {
-                assert!(!x.is_empty());
-                Some(Display::Literal(x.to_owned()))
-            },
+            satisfy(|c| !c.is_ascii_control() || c.is_whitespace()),
+            |x| Some(Display::Other(x)),
         ),
         value(None, eof),
     ))(input)

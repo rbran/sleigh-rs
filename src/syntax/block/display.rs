@@ -1,13 +1,14 @@
+use crate::Span;
 use crate::preprocessor::DisplayToken;
 use crate::preprocessor::FilePreProcessor;
 use crate::SleighError;
-use crate::Span;
 
 #[derive(Clone, Debug)]
 pub enum DisplayElement {
     Concat,
     Ident(Span, String),
-    Literal(Span, String),
+    Literal(String),
+    Other(char),
 }
 
 #[derive(Clone, Debug)]
@@ -24,8 +25,11 @@ impl Display {
                 DisplayToken::Ident(src, ident) => {
                     display.push(DisplayElement::Ident(src, ident))
                 }
-                DisplayToken::Literal(src, lit) => {
-                    display.push(DisplayElement::Literal(src, lit))
+                DisplayToken::Literal(lit) => {
+                    display.push(DisplayElement::Literal(lit))
+                }
+                DisplayToken::Other(c) => {
+                    display.push(DisplayElement::Other(c))
                 }
             }
         }

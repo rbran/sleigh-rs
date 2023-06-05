@@ -169,8 +169,9 @@ impl DrainingMacro {
                 parser::Display::Ident(ident) => {
                     Some(DisplayToken::Ident(span, ident))
                 }
+                parser::Display::Other(c) => Some(DisplayToken::Other(c)),
                 parser::Display::Literal(lit) => {
-                    Some(DisplayToken::Literal(span, lit))
+                    Some(DisplayToken::Literal(lit))
                 }
             })
     }
@@ -392,8 +393,9 @@ impl DrainingFile {
                 parser::Display::Ident(ident) => {
                     Some(DisplayToken::Ident(Span::File(span), ident))
                 }
+                parser::Display::Other(c) => Some(DisplayToken::Other(c)),
                 parser::Display::Literal(lit) => {
-                    Some(DisplayToken::Literal(Span::File(span), lit))
+                    Some(DisplayToken::Literal(lit))
                 }
             })
     }
@@ -577,7 +579,8 @@ pub enum DisplayToken {
     End,
     Concat,
     Ident(Span, String),
-    Literal(Span, String),
+    Literal(String),
+    Other(char),
 }
 
 #[derive(Debug)]
