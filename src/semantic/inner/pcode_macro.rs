@@ -11,8 +11,8 @@ use crate::semantic::pcode_macro::{
 };
 use crate::semantic::{GlobalScope, PcodeMacroId};
 use crate::{
-    syntax, ExecutionError, NumberNonZeroUnsigned, PcodeMacroError,
-    SleighError, Span,
+    disassembly, syntax, ExecutionError, NumberNonZeroUnsigned,
+    PcodeMacroError, SleighError, Span,
 };
 
 use super::execution::{Execution, ExecutionBuilder, ReadValue, Statement};
@@ -177,6 +177,12 @@ impl<'a, 'b> Builder<'a, 'b> {
 impl ExecutionBuilder for Builder<'_, '_> {
     fn sleigh(&self) -> &Sleigh {
         self.sleigh
+    }
+    fn disassembly_var(
+        &mut self,
+        _id: disassembly::VariableId,
+    ) -> &mut disassembly::Variable {
+        unreachable!()
     }
     fn execution(&self) -> &Execution {
         &self.execution

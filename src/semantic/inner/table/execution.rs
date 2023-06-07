@@ -8,19 +8,23 @@ use crate::semantic::inner::execution::{
 use crate::semantic::inner::pattern::Pattern;
 use crate::semantic::inner::Sleigh;
 use crate::semantic::token::TokenFieldAttach;
-use crate::{ExecutionError, Span};
+use crate::{disassembly, ExecutionError, Span};
 
-#[derive(Clone, Debug)]
-pub struct Builder<'b, 'c> {
+#[derive(Debug)]
+pub struct Builder<'a> {
     execution: Execution,
     current_block: BlockId,
 
-    sleigh: &'b Sleigh,
-    pattern: &'c Pattern,
+    sleigh: &'a Sleigh,
+    pattern: &'a mut Pattern,
 }
 
-impl<'b, 'c> Builder<'b, 'c> {
-    pub fn new(sleigh: &'b Sleigh, pattern: &'c Pattern, src: Span) -> Self {
+impl<'a> Builder<'a> {
+    pub fn new(
+        sleigh: &'a Sleigh,
+        pattern: &'a mut Pattern,
+        src: Span,
+    ) -> Self {
         let execution = Execution::new_empty(src);
         let current_block = execution.entry_block;
         Self {
@@ -32,13 +36,13 @@ impl<'b, 'c> Builder<'b, 'c> {
     }
 }
 
-impl<'b, 'c> From<Builder<'b, 'c>> for Execution {
-    fn from(input: Builder<'b, 'c>) -> Self {
+impl<'a> From<Builder<'a>> for Execution {
+    fn from(input: Builder<'a>) -> Self {
         input.execution
     }
 }
 
-impl<'b, 'c> ExecutionBuilder for Builder<'b, 'c> {
+impl ExecutionBuilder for Builder<'_> {
     fn sleigh(&self) -> &Sleigh {
         self.sleigh
     }
@@ -48,6 +52,14 @@ impl<'b, 'c> ExecutionBuilder for Builder<'b, 'c> {
     fn execution_mut(&mut self) -> &mut Execution {
         &mut self.execution
     }
+
+    fn disassembly_var(
+        &mut self,
+        id: disassembly::VariableId,
+    ) -> &mut disassembly::Variable {
+        self.pattern.variable_mut(id)
+    }
+
     fn read_scope(
         &mut self,
         name: &str,

@@ -1,7 +1,7 @@
 use crate::semantic::{
     ContextId, InstNext, InstStart, Span, TableId, TokenFieldId,
 };
-use crate::{Number, NumberNonZeroUnsigned, NumberUnsigned};
+use crate::{Number, NumberNonZeroUnsigned, NumberUnsigned, SpaceId};
 
 #[derive(Clone, Debug, Copy)]
 pub enum OpUnary {
@@ -54,14 +54,40 @@ pub enum AddrScope {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct VariableId(pub usize);
 
+#[derive(Clone, Copy, Debug)]
+pub enum VariableType {
+    Reference(SpaceId),
+    Value(Option<NumberNonZeroUnsigned>),
+}
+
+impl VariableType {
+    pub(crate) fn set_len(self, len: NumberNonZeroUnsigned) -> Option<Self> {
+        match self {
+            VariableType::Reference(_) => None,
+            VariableType::Value(None) => Some(Self::Value(Some(len))),
+            VariableType::Value(Some(current_len)) if current_len == len => {
+                Some(self)
+            }
+            VariableType::Value(Some(_)) => None,
+        }
+    }
+    pub(crate) fn set_space(self, id: SpaceId) -> Option<Self> {
+        match self {
+            VariableType::Reference(current_id) if current_id == id => {
+                Some(self)
+            }
+            VariableType::Value(None) => Some(Self::Reference(id)),
+            VariableType::Reference(_) | VariableType::Value(Some(_)) => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Variable {
     pub(crate) name: Box<str>,
     pub location: Span,
-    /// a disassembly variable could have a defined len, usually defined by the
-    /// export statement in the execution
-    pub len_bits: Option<NumberNonZeroUnsigned>,
-    //TODO
+    /// a disassembly variable could have a defined len, defined by the export
+    pub value_type: VariableType,
 }
 
 impl Variable {

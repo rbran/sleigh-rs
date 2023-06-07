@@ -5,7 +5,9 @@ use crate::semantic::execution::{
 use crate::semantic::inner::execution::ExprNumber;
 use crate::semantic::inner::Sleigh;
 use crate::semantic::{GlobalScope, SpaceId, TableId};
-use crate::{syntax, Number, NumberNonZeroUnsigned, NumberUnsigned, Span};
+use crate::{
+    disassembly, syntax, Number, NumberNonZeroUnsigned, NumberUnsigned, Span,
+};
 
 use super::{
     Assignment, BranchCall, CpuBranch, Execution, ExecutionError, Export,
@@ -16,6 +18,10 @@ use super::{
 
 pub trait ExecutionBuilder {
     fn sleigh(&self) -> &Sleigh;
+    fn disassembly_var(
+        &mut self,
+        id: disassembly::VariableId,
+    ) -> &mut disassembly::Variable;
     fn execution(&self) -> &Execution;
     fn execution_mut(&mut self) -> &mut Execution;
     fn read_scope(
@@ -255,8 +261,8 @@ pub trait ExecutionBuilder {
         match input {
             RawExport::Value(value) => {
                 let value = self.new_expr(value)?;
-                //if the value is just an varnode, then is actually a reference
-                match value {
+                match &value {
+                    //if the value is just an varnode, then is actually a reference
                     Expr::Value(ExprElement::Value(ReadValue::Varnode(
                         varnode_expr,
                     ))) => {
@@ -283,6 +289,20 @@ pub trait ExecutionBuilder {
             RawExport::Reference { space, addr } => {
                 let addr = self.new_expr(addr)?;
                 let deref = self.new_addr_derefence(&space)?;
+                // if the addr is a single Disassembly variable, it affects
+                // how it's printed
+                match &addr {
+                    Expr::Value(ExprElement::Value(ReadValue::DisVar(
+                        variable,
+                    ))) => {
+                        let variable = self.disassembly_var(variable.id);
+                        variable.value_type = variable
+                            .value_type
+                            .set_space(deref.space)
+                            .ok_or(ExecutionError::InvalidExport)?;
+                    }
+                    _ => {}
+                }
                 Ok(Export::new_reference(
                     self.sleigh(),
                     self.execution(),
@@ -294,6 +314,17 @@ pub trait ExecutionBuilder {
                 let value = self.new_export_const(&value, &src)?;
                 let size =
                     NumberNonZeroUnsigned::new(size.value).unwrap(/*TODO*/);
+                // if the value is a disassembly variable, we define it's len
+                match value {
+                    ExportConst::DisVar(id) => {
+                        let variable = self.disassembly_var(id);
+                        variable.value_type = variable
+                            .value_type
+                            .set_len(size)
+                            .ok_or(ExecutionError::InvalidExport)?;
+                    }
+                    _ => {}
+                }
                 let size = FieldSize::new_bytes(size);
                 Ok(Export::new_const(size, src, value))
             }

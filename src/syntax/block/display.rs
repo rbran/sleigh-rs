@@ -1,7 +1,7 @@
-use crate::Span;
 use crate::preprocessor::DisplayToken;
 use crate::preprocessor::FilePreProcessor;
 use crate::SleighError;
+use crate::Span;
 
 #[derive(Clone, Debug)]
 pub enum DisplayElement {

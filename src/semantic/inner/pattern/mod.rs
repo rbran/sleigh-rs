@@ -289,6 +289,10 @@ impl Pattern {
     pub fn variable(&self, id: VariableId) -> &Variable {
         &self.disassembly_variables[id.0]
     }
+
+    pub fn variable_mut(&mut self, id: VariableId) -> &mut Variable {
+        &mut self.disassembly_variables[id.0]
+    }
     //token fields required by value comparisons that this pattern can't produce
     //itself
     pub fn unresolved_token_fields(
