@@ -623,6 +623,7 @@ impl ExprElement {
                 let error = || ExecutionError::VarSize(src.clone());
                 let mut input_len = input.size_mut(sleigh, execution);
                 let output_len = &mut truncate.size;
+
                 // input len need to be (output_len truncate.lsb) or bigger
                 modified |= input_len
                     .update_action(|input_len| {
@@ -648,18 +649,20 @@ impl ExprElement {
                     })
                     .ok_or_else(error)?;
 
-                // the output len is always possible to be the remaining input
-                // len
-                if let Some(input_len) = input_len.get().final_value() {
-                    modified |= output_len
-                        .update_action(|output_len| {
-                            output_len.set_possible_value(
-                                (input_len.get() - truncate.lsb)
-                                    .try_into()
-                                    .unwrap(),
-                            )
-                        })
-                        .ok_or_else(error)?;
+                // if the output len is known it auto ajusts to the remaining
+                // of the input
+                if output_len.final_value().is_none() {
+                    if let Some(input_len) = input_len.get().final_value() {
+                        modified |= output_len
+                            .update_action(|len| {
+                                len.set_possible_value(
+                                    (input_len.get() - truncate.lsb)
+                                        .try_into()
+                                        .unwrap(),
+                                )
+                            })
+                            .ok_or_else(error)?;
+                    }
                 }
                 // if the input or output len are not possible, we are not done
                 if !input_len.get().is_possible() || !output_len.is_possible() {

@@ -431,7 +431,6 @@ impl Assignment {
     ) -> Result<(), ExecutionError> {
         let error_src = self.right.src().clone();
         let error = || ExecutionError::VarSize(error_src.clone());
-
         self.right.solve(sleigh, execution, solved)?;
 
         //exception in case the right result is 1 bit and the left is
