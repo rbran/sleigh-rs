@@ -602,11 +602,11 @@ impl MacroCall {
         //otherwise try to specialize the macro call
         //update the param expected size with the macro expected param size
         //and solved it
-        let params_iter = sleigh
-            .pcode_macro(self.instance.macro_id)
+        let pcode_macro = sleigh.pcode_macro(self.instance.macro_id);
+        let params_iter = pcode_macro
             .params
             .iter()
-            .map(|param| execution.variable(param.variable_id));
+            .map(|param| pcode_macro.execution.variable(param.variable_id));
         for (param, macro_param) in self.params.iter_mut().zip(params_iter) {
             let src = param.src().clone();
             if param

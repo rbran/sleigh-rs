@@ -978,7 +978,7 @@ impl ReadValue {
             }
             Self::InstStart(_) | Self::InstNext(_) => sleigh
                 .addr_bytes()
-                .map(FieldSize::Value)
+                .map(FieldSize::new_bytes)
                 .unwrap_or_default(),
             Self::Varnode(x) => {
                 FieldSize::new_bytes(sleigh.varnode(x.id).len_bytes)
