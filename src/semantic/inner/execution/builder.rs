@@ -2,7 +2,7 @@ use crate::semantic::execution::{
     BlockId, Build, ExprExeVar, ExprTable, ReferencedValue, Unary, VariableId,
     WriteValue,
 };
-use crate::semantic::inner::execution::ExprNumber;
+use crate::semantic::inner::execution::{ExprNumber, ExprUnaryOp};
 use crate::semantic::inner::Sleigh;
 use crate::semantic::{GlobalScope, SpaceId, TableId};
 use crate::{
@@ -234,7 +234,8 @@ pub trait ExecutionBuilder {
     ) -> Result<ExportConst, ExecutionError> {
         use ReadValue::*;
         match self.read_scope(input, src)? {
-            DisVar(dis) => Ok(ExportConst::DisVar(dis.id)),
+            ExeVar(var) => Ok(ExportConst::ExeVar(var.id)),
+            DisVar(var) => Ok(ExportConst::DisVar(var.id)),
             TokenField(ass) => Ok(ExportConst::TokenField(ass.id)),
             Context(cont) => Ok(ExportConst::Context(cont.id)),
             Table(expr_table) => {
@@ -577,7 +578,38 @@ pub trait ExecutionBuilder {
                 ExprElement::Value(ReadValue::Int(ExprNumber::new(src, value))),
             ),
             RawExprElement::Value(syntax::Value::Ident(src, value)) => {
-                self.read_scope(&value, &src).map(ExprElement::Value)
+                // some values have hidden properties
+                let value = match self.read_scope(&value, &src)? {
+                    ReadValue::TokenField(tf) => {
+                        // token_field and bitrange auto expand to the size required
+                        let field = self.sleigh().token_field(tf.id);
+                        return Ok(ExprElement::Op(ExprUnaryOp {
+                            location: tf.location.clone(),
+                            output_size: FieldSize::new_unsized()
+                                .set_min(field.bits.len())
+                                .unwrap(),
+                            op: Unary::Zext,
+                            input: Box::new(Expr::Value(ExprElement::Value(
+                                ReadValue::TokenField(tf),
+                            ))),
+                        }));
+                    }
+                    ReadValue::Bitrange(bt) => {
+                        let bitrange = self.sleigh().bitrange(bt.id);
+                        return Ok(ExprElement::Op(ExprUnaryOp {
+                            location: bt.location.clone(),
+                            output_size: FieldSize::new_unsized()
+                                .set_min(bitrange.bits.len())
+                                .unwrap(),
+                            op: Unary::Zext,
+                            input: Box::new(Expr::Value(ExprElement::Value(
+                                ReadValue::Bitrange(bt),
+                            ))),
+                        }));
+                    },
+                    value => value,
+                };
+                Ok(ExprElement::Value(value))
             }
             RawExprElement::Reference(src, size, value) => {
                 let ref_bytes = size

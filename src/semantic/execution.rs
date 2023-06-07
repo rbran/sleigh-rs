@@ -267,6 +267,7 @@ pub enum ExportConst {
     Context(ContextId),
     /// only if also export Const
     Table(TableId),
+    ExeVar(VariableId),
 }
 
 #[derive(Clone, Debug)]

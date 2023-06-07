@@ -91,8 +91,7 @@ impl Table {
                 )?;
             } else {
                 //first constructor will define the table export type
-                *self.export.borrow_mut() =
-                    Some(execution.return_type().clone());
+                *export = Some(execution.return_type().clone());
             }
         }
         self.constructors.borrow_mut().push(constructor);
