@@ -78,8 +78,8 @@ pub trait ExecutionBuilder {
     }
     fn insert_statement(&mut self, statement: Statement) {
         let current_block_id = self.current_block();
-        let current_block =
-            &mut self.execution_mut().block_mut(current_block_id);
+        let mut current_block =
+            self.execution_mut().block_mut(current_block_id);
         current_block.statements.push(statement);
     }
     fn extend(
@@ -606,7 +606,7 @@ pub trait ExecutionBuilder {
                                 ReadValue::Bitrange(bt),
                             ))),
                         }));
-                    },
+                    }
                     value => value,
                 };
                 Ok(ExprElement::Value(value))

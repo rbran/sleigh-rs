@@ -278,10 +278,6 @@ impl ExecutionBuilder for Builder<'_, '_> {
         self.current_block = block
     }
 
-    fn insert_statement(&mut self, statement: Statement) {
-        let mut current_block = self.execution.block_mut(self.current_block);
-        current_block.statements.push(statement);
-    }
     //macro have no build statement, so if try to parse it, is always error
     fn new_build(
         &mut self,
