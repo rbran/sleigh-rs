@@ -14,11 +14,6 @@ designed to facilitate the reverse-engineering and and emulate cpu architectures
 
 ## TODO
 
-* Implement token parsing, instead of parsing the syntax directly from string.
-* Preprocessor should output tokens instead of strings.
-* Implement the ordering or table constructors.
-* Verification of the Assembly pattern matching blocks.
 * Unit tests.
-* Discover: how to bit-constrain the table pattern for ordering in a expansive
-block that have ellipsis on the left and right.
+* Implement the final version of the instruction execution parser.
 
