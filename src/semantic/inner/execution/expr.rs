@@ -971,13 +971,13 @@ impl ReadValue {
             Self::Int(x) => x.size,
             Self::DisVar(x) => x.size,
             Self::Context(x) => {
-                FieldSize::new_bits(sleigh.context(x.id).bitrange.bits.len())
+                sleigh.context(x.id).exec_out_value_bits(sleigh)
             }
             Self::Bitrange(x) => {
                 FieldSize::new_bits(sleigh.bitrange(x.id).bits.len())
             }
             Self::TokenField(x) => {
-                FieldSize::new_bits(sleigh.token_field(x.id).bits.len())
+                sleigh.token_field(x.id).exec_value_len(sleigh)
             }
             Self::InstStart(_) | Self::InstNext(_) => sleigh
                 .addr_bytes()

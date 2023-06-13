@@ -131,21 +131,21 @@ pub struct Variable {
     pub src: Option<Span>,
 }
 
+/// Changes allowed:
+/// Const -> Value -> Reference -> Multiple
 #[derive(Clone, Copy, Debug, Default)]
 pub enum ExportLen {
     //don't return
     #[default]
     None,
-    //type can't be defined yet.
-    //Undefined(FieldSize),
-    //value that is known at Dissassembly time
+    // value that is known at Dissassembly time
     Const(FieldSize),
-    //value that can be know at execution time
+    // value that can be know at execution time
     Value(FieldSize),
-    //References/registers and other mem locations, all with the same size
+    // References/registers and other mem locations, all with the same size
     Reference(FieldSize),
-    //multiple source, can by any kind of return, value or address,
-    //but all with the same size
+    // multiple source, can by any kind of return, value or address,
+    // but all with the same size
     Multiple(FieldSize),
 }
 
@@ -913,41 +913,38 @@ impl ExportLen {
             | Self::Multiple(size) => Some(size),
         }
     }
+    fn set_len(self, other_len: FieldSize) -> Option<Self> {
+        match self {
+            Self::None => None,
+            Self::Const(len) => Some(Self::Const(len.intersection(other_len)?)),
+            Self::Value(len) => Some(Self::Value(len.intersection(other_len)?)),
+            Self::Reference(len) => {
+                Some(Self::Reference(len.intersection(other_len)?))
+            }
+            Self::Multiple(len) => {
+                Some(Self::Multiple(len.intersection(other_len)?))
+            }
+        }
+    }
     pub fn combine(self, other: Self) -> Option<Self> {
         match (self, other) {
             //if both return nothing, the result is to return nothing
             (Self::None, Self::None) => Some(Self::None),
-            //two const values, keep the type
-            (Self::Const(one), Self::Const(other)) => {
-                one.intersection(other).map(Self::Const)
-            }
-            //const and value, become value
-            (Self::Const(con), Self::Value(value))
-            | (Self::Value(value), Self::Const(con)) => {
-                con.intersection(value).map(Self::Value)
-            }
-            //const can't be combined with anything else
-            (Self::Const(_), _) | (_, Self::Const(_)) => None,
-            //one return nothing and the other return something is invalid
             (Self::None, _) | (_, Self::None) => None,
-            //if one is multiple, it consumes any other value type
-            (Self::Multiple(one), other) | (other, Self::Multiple(one)) => {
-                one.intersection(*other.size().unwrap()).map(Self::Multiple)
+            // const can be transformed into anything else, as long its the
+            // same len
+            (Self::Const(len_a), type_b) | (type_b, Self::Const(len_a)) => {
+                type_b.set_len(len_a)
             }
-            //two values, keep the same type
-            (Self::Value(one), Self::Value(other)) => {
-                one.intersection(other).map(Self::Value)
+            // Value can be anything but Const
+            (Self::Value(len_a), type_b) | (type_b, Self::Value(len_a)) => {
+                type_b.set_len(len_a)
             }
-            //two references from the same address space, keep the same type
-            (Self::Reference(one), Self::Reference(other)) => {
-                one.intersection(other).map(Self::Reference)
+            (Self::Reference(len_a), type_b)
+            | (type_b, Self::Reference(len_a)) => type_b.set_len(len_a),
+            (Self::Multiple(len_a), Self::Multiple(len_b)) => {
+                Some(Self::Multiple(len_a.intersection(len_b)?))
             }
-            //any other combination is is just multiple
-            (one, other) => one
-                .size()
-                .unwrap()
-                .intersection(*other.size().unwrap())
-                .map(Self::Multiple),
         }
     }
     //TODO from Option into a Result
@@ -1008,11 +1005,12 @@ impl Execution {
             .collect::<Result<(), _>>()?;
 
         //get the export sizes, otherwise we are finished
-        let mut return_size = if let Some(size) = self.return_size().cloned() {
-            size
-        } else {
-            return Ok(());
-        };
+        let mut return_size =
+            if let Some(size) = self.return_value.size().cloned() {
+                size
+            } else {
+                return Ok(());
+            };
         //find and combine all the output sizes
         let mut modified = self
             .blocks
@@ -1049,7 +1047,8 @@ impl Execution {
                 }
             });
         modified |= self
-            .return_size_mut()
+            .return_value
+            .size_mut()
             .unwrap()
             .update_action(|size| size.intersection(return_size))
             .unwrap();
@@ -1068,18 +1067,6 @@ impl Execution {
             variables: self.vars.into_iter().map(|var| var.convert()).collect(),
             entry_block: self.entry_block,
         }
-    }
-    pub fn return_size(&self) -> Option<&FieldSize> {
-        self.return_value.size()
-    }
-    pub fn return_size_mut(&mut self) -> Option<&mut FieldSize> {
-        self.return_value.size_mut()
-    }
-    pub fn return_type(&self) -> &ExportLen {
-        &self.return_value
-    }
-    pub fn return_type_mut(&mut self) -> &mut ExportLen {
-        &mut self.return_value
     }
     pub fn block(&self, id: BlockId) -> Ref<Block> {
         Ref::map(self.blocks.borrow(), |x| &x[id.0])

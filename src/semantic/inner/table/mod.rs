@@ -81,7 +81,7 @@ impl Table {
             if let Some(export) = export.as_mut() {
                 //if this table exports, the new constructor need to be
                 //compatible
-                *export = export.combine(*execution.return_type()).ok_or_else(
+                *export = export.combine(execution.return_value).ok_or_else(
                     || {
                         SleighError::new_table(
                             constructor.src.clone(),
@@ -91,7 +91,7 @@ impl Table {
                 )?;
             } else {
                 //first constructor will define the table export type
-                *export = Some(execution.return_type().clone());
+                *export = Some(execution.return_value);
             }
         }
         self.constructors.borrow_mut().push(constructor);
@@ -262,7 +262,7 @@ impl Table {
         for con in self.constructors.borrow().iter() {
             //if the execution is unimpl, ignore this constructor
             let (src, size) = if let Some(exe) = con.execution() {
-                (&con.src, exe.return_type().size().unwrap(/*unreachable*/))
+                (&con.src, exe.return_value.size().unwrap(/*unreachable*/))
             } else {
                 continue;
             };
@@ -281,8 +281,7 @@ impl Table {
             let src = con.src.clone();
             //if the execution is unimpl, ignore this constructor
             let (src, size) = if let Some(exe) = con.execution_mut() {
-                let size =
-                    exe.return_type_mut().size_mut().unwrap(/*unreachable*/);
+                let size = exe.return_value.size_mut().unwrap(/*unreachable*/);
                 (src, size)
             } else {
                 continue;
