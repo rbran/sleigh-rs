@@ -60,6 +60,7 @@ pub enum TokenType {
     OpNan,
     ReturnKey,
     OpPopcount,
+    OpLzcount,
     OpRound,
     OpSrem,
     OpSdiv,
@@ -218,6 +219,7 @@ impl TokenType {
             "borrow"      => OpBorrow,
             "sborrow"     => OpSborrow,
             "popcount"    => OpPopcount,
+            "lzcount"    => OpLzcount,
             "int2float"   => OpInt2float,
             "float2float" => OpFloat2float,
             //Generic Ident

@@ -725,7 +725,7 @@ impl ExprElement {
             Self::Op(ExprUnaryOp {
                 location: src,
                 output_size: size,
-                op: Unary::Popcount,
+                op: Unary::Popcount | Unary::Lzcount,
                 input,
             }) => {
                 //the output min size is: log2(bit_len(input) + 1)

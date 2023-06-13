@@ -211,6 +211,7 @@ macro_rules! token_type {
     ("sborrow") =>     { crate::preprocessor::token::TokenType::OpSborrow };
     ("epsilon") =>     { crate::preprocessor::token::TokenType::Epsilon };
     ("popcount") =>    { crate::preprocessor::token::TokenType::OpPopcount };
+    ("lzcount") =>    { crate::preprocessor::token::TokenType::OpLzcount };
     ("int2float") =>   { crate::preprocessor::token::TokenType::OpInt2float };
     ("float2float") => { crate::preprocessor::token::TokenType::OpFloat2float };
 }

@@ -852,6 +852,7 @@ pub trait ExecutionBuilder {
             Op::Negative => Unary::Negative,
             Op::FloatNegative => Unary::FloatNegative,
             Op::Popcount => Unary::Popcount,
+            Op::Lzcount => Unary::Lzcount,
             Op::Zext => Unary::Zext,
             Op::Sext => Unary::Sext,
             Op::FloatNan => Unary::FloatNan,

@@ -15,7 +15,7 @@ use crate::{
     PcodeMacroError, SleighError, Span,
 };
 
-use super::execution::{Execution, ExecutionBuilder, ReadValue, Statement};
+use super::execution::{Execution, ExecutionBuilder, ReadValue};
 use super::{Sleigh, SolverStatus};
 
 #[derive(Debug, Clone, Copy)]

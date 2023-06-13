@@ -311,6 +311,7 @@ pub enum Unary {
     Negative,
     FloatNegative,
     Popcount,
+    Lzcount,
     Zext,
     Sext,
     FloatNan,

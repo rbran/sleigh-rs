@@ -57,6 +57,7 @@ pub enum Unary {
     Negative,
     FloatNegative,
     Popcount,
+    Lzcount,
     Zext,
     Sext,
     FloatNan,
@@ -97,6 +98,7 @@ impl Unary {
             Negative,
             FloatNegative,
             Popcount,
+            Lzcount,
             Zext,
             Sext,
             FloatNan,
@@ -147,6 +149,7 @@ impl Unary {
     ) -> IResult<&[Token], (Self, &Span), SleighError> {
         alt((
             map(tag!("popcount"), |span| (Self::Popcount, span)),
+            map(tag!("lzcount"), |span| (Self::Lzcount, span)),
             map(tag!("zext"), |span| (Self::Zext, span)),
             map(tag!("sext"), |span| (Self::Sext, span)),
             map(tag!("nan"), |span| (Self::FloatNan, span)),
