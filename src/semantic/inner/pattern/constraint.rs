@@ -2,41 +2,6 @@ use crate::pattern::BitConstraint;
 use crate::semantic::pattern::{CmpOp, ConstraintValue};
 use crate::FieldBits;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SinglePatternOrdering {
-    Eq,
-    Conflict,
-    Contains,
-    Contained,
-}
-
-impl SinglePatternOrdering {
-    pub fn combine(self, other: Self) -> Self {
-        use SinglePatternOrdering::*;
-        match (self, other) {
-            (Conflict, _) | (_, Conflict) => Conflict,
-            (Eq, other) | (other, Eq) => other,
-            (Contains, Contains) | (Contained, Contained) => self,
-            (Contains, Contained) | (Contained, Contains) => Conflict,
-        }
-    }
-}
-impl std::iter::FromIterator<SinglePatternOrdering> for SinglePatternOrdering {
-    fn from_iter<T: IntoIterator<Item = SinglePatternOrdering>>(
-        iter: T,
-    ) -> Self {
-        use SinglePatternOrdering::*;
-        let mut acc = Eq;
-        for i in iter {
-            acc = acc.combine(i);
-            if acc == Conflict {
-                return Conflict;
-            }
-        }
-        acc
-    }
-}
-
 impl BitConstraint {
     pub fn define(self, bit: bool) -> Option<Self> {
         match self {

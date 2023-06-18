@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::cmp::Ordering;
 use std::ops::ControlFlow;
 
 use crate::pattern::BitConstraint;
@@ -314,16 +315,9 @@ impl Table {
                     //first variant of self contains the second variant of other
                     //AND
                     //second variant of self contains the first variant of other
-                    use super::pattern::SinglePatternOrdering as Ord;
                     match constructor.ordering(&con) {
-                        //new pattern is contained at least once, just skip it
-                        Ord::Contained => None,
-                        //new pattern contains at least once, insert it first
-                        Ord::Contains => Some(i),
-                        Ord::Eq => None,
-                        //TODO verify if a pattern solve this conflict, like is
-                        //decribed by the documentation
-                        Ord::Conflict => None,
+                        ConstructorOrdering::Greater => Some(i),
+                        _ => None,
                     }
                 });
             //insert constructors in the correct order accordingly with the
@@ -360,6 +354,79 @@ impl FieldSizeMut for &Table {
         }
         Some(modify)
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConstructorOrdering {
+    /// The pattern values differ
+    Diferent,
+    /// The patterns could differ based on the complex constraints
+    MaybeDiferent,
+    /// A hypotetical token could match both constructors
+    Conflict,
+    Equal,
+    Less,
+    Greater,
+}
+
+impl std::iter::FromIterator<(BitConstraint, BitConstraint)>
+    for ConstructorOrdering
+{
+    fn from_iter<T: IntoIterator<Item = (BitConstraint, BitConstraint)>>(
+        iter: T,
+    ) -> Self {
+        use BitConstraint::*;
+        use Ordering::*;
+        let mut simple_acc = Some(Equal);
+        let mut complex_acc = Some(Equal);
+        for (x, y) in iter {
+            match (x, y) {
+                (Unrestrained, Unrestrained) => {}
+                (Defined(x), Defined(y)) if x == y => {}
+                (Defined(_), Defined(_)) => {
+                    return ConstructorOrdering::Diferent
+                }
+                (Defined(_), Restrained)
+                | (Restrained, Defined(_))
+                | (Restrained, Restrained) => {
+                    return ConstructorOrdering::MaybeDiferent
+                }
+                (Unrestrained, Defined(_)) => {
+                    combine_constructor_order(&mut simple_acc, Some(Less));
+                }
+                (Defined(_), Unrestrained) => {
+                    combine_constructor_order(&mut simple_acc, Some(Greater));
+                }
+                (Unrestrained, Restrained) => {
+                    combine_constructor_order(&mut complex_acc, Some(Less))
+                }
+                (Restrained, Unrestrained) => {
+                    combine_constructor_order(&mut complex_acc, Some(Greater))
+                }
+            }
+        }
+        match simple_acc {
+            None => return ConstructorOrdering::Conflict,
+            Some(Equal) => ConstructorOrdering::Equal,
+            Some(Less) => ConstructorOrdering::Less,
+            Some(Greater) => ConstructorOrdering::Greater,
+        }
+    }
+}
+
+
+pub fn combine_constructor_order(
+    acc: &mut Option<Ordering>,
+    new: Option<Ordering>,
+) {
+    use Ordering::*;
+    let combine = acc.zip(new).and_then(|(acc, new)| match (acc, new) {
+        (Equal, other) | (other, Equal) => Some(other),
+        (Less, Less) => Some(Less),
+        (Greater, Greater) => Some(Greater),
+        _ => None,
+    });
+    *acc = combine;
 }
 
 #[derive(Clone, Debug)]

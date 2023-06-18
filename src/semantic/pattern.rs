@@ -11,7 +11,7 @@ use super::disassembly::{Assertation, Expr, Variable};
 use super::InstStart;
 
 /// Represent how a bit is limited in a pattern
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default)]
 pub enum BitConstraint {
     //can have any value
     #[default]

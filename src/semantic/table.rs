@@ -4,7 +4,7 @@ use crate::semantic::execution::Execution;
 use crate::semantic::pattern::{Pattern, PatternLen};
 use crate::{NumberNonZeroUnsigned, Span};
 
-use super::inner::pattern::SinglePatternOrdering;
+use super::inner::table::ConstructorOrdering;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub enum ExecutionExport {
@@ -88,9 +88,7 @@ impl Constructor {
     ////eg: `a` contains `b` if all cases that match `b` also match `a`. In other
     ////words `a` is a special case of `b`.
     ////NOTE the opose don't need to be true.
-    pub(crate) fn ordering(&self, other: &Self) -> SinglePatternOrdering {
-        use BitConstraint::*;
-        use SinglePatternOrdering::*;
+    pub(crate) fn ordering(&self, other: &Self) -> ConstructorOrdering {
         let self_pattern_len = self.pattern.bits_produced();
         let other_pattern_len = other.pattern.bits_produced();
         let max_pattern_len = self_pattern_len.max(other_pattern_len);
@@ -115,15 +113,7 @@ impl Constructor {
         let self_bits = produce_iter(self, self_extend);
         let other_bits = produce_iter(other, other_extend);
 
-        self_bits
-            .zip(other_bits)
-            .map(|(self_bit, other_bit)| match (self_bit, other_bit) {
-                (Defined(_) | Restrained, Defined(_) | Restrained)
-                | (Unrestrained, Unrestrained) => Eq,
-                (Unrestrained, _) => Contained,
-                (_, Unrestrained) => Contains,
-            })
-            .collect()
+        self_bits.zip(other_bits).collect()
     }
 }
 
