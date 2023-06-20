@@ -1,5 +1,4 @@
 use std::cell::{Cell, RefCell};
-use std::cmp::Ordering;
 use std::ops::ControlFlow;
 
 use crate::pattern::BitConstraint;
@@ -10,6 +9,7 @@ use crate::semantic::table::Constructor as FinalConstructor;
 use crate::semantic::{
     GlobalScope, Sleigh as FinalSleigh, Table as FinalTable, TableId,
 };
+use crate::table::{ConstructorId, Matcher, VariantId};
 use crate::{
     syntax, ExecutionError, PatternError, SleighError, Span, TableError,
 };
@@ -52,6 +52,64 @@ impl std::fmt::Debug for Table {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Table returning: {:?}", self.export)
     }
+}
+
+////7.8.1. Matching
+////one pattern contains the other if all the cases that match the contained,
+////also match the pattern.
+////eg: `a` contains `b` if all cases that match `b` also match `a`. In other
+////words `a` is a special case of `b`.
+////NOTE the opose don't need to be true.
+fn is_first_then(
+    constructors: &[FinalConstructor],
+    matcher_a: Matcher,
+    matcher_b: Matcher,
+) -> bool {
+    let constructor_a = &constructors[matcher_a.constructor.0];
+    let constructor_b = &constructors[matcher_b.constructor.0];
+    let pattern_len_a = constructor_a.pattern.bits_produced();
+    let pattern_len_b = constructor_a.pattern.bits_produced();
+    let pattern_len_max = pattern_len_a.max(pattern_len_b);
+    let extend_len_a = pattern_len_max - pattern_len_a;
+    let extend_len_b = pattern_len_max - pattern_len_b;
+
+    fn produce_iter<'a>(
+        constructor: &'a FinalConstructor,
+        variant: VariantId,
+        extend: usize,
+    ) -> impl Iterator<Item = BitConstraint> + 'a {
+        let context_bits = &constructor.variants_bits[variant.0].1;
+        let token_bits = &constructor.variants_bits[variant.0].2;
+        context_bits
+            .iter()
+            .chain(token_bits.iter())
+            .cloned()
+            .chain((0..extend).into_iter().map(|_| BitConstraint::Unrestrained))
+    }
+    let bits_a =
+        produce_iter(constructor_a, matcher_a.variant_id, extend_len_a);
+    let bits_b =
+        produce_iter(constructor_b, matcher_b.variant_id, extend_len_b);
+    use BitConstraint::*;
+    bits_a.zip(bits_b).all(|(x, y)| {
+        match (x, y) {
+            // matcher_a is equal to b, or is tighter, so continue testing
+            (Defined(x), Defined(y)) if x == y => true,
+            (Unrestrained, Unrestrained)
+            | (Defined(_), Unrestrained)
+            | (Restrained, Unrestrained) => true,
+            // diferent, a can't contain b
+            (Defined(_), Defined(_)) => false,
+            // verify that this complex restraint is equal in both
+            // TODO: deep test, checking if the complex constraint can be
+            // compatible. For now, just assume they are different.
+            (Defined(_), Restrained)
+            | (Restrained, Defined(_))
+            | (Restrained, Restrained) => false,
+            // matcher_a don't constraint something in b.
+            (Unrestrained, Restrained) | (Unrestrained, Defined(_)) => false,
+        }
+    })
 }
 
 impl Table {
@@ -301,40 +359,47 @@ impl Table {
         Ok(())
     }
     pub fn convert(self, sleigh: &FinalSleigh) -> FinalTable {
-        let constructors: Vec<_> = self.constructors.take();
-        let mut new_constructors: Vec<FinalConstructor> =
-            Vec::with_capacity(constructors.len());
-        let constructor_iter = constructors
+        let constructors: Box<[_]> = self
+            .constructors
+            .take()
             .into_iter()
-            .map(|constructor| constructor.convert(sleigh));
-        for constructor in constructor_iter {
+            .map(|constructor| constructor.convert(sleigh))
+            .collect();
+        let matchers_num =
+            constructors.iter().map(|c| c.variants_bits.len()).sum();
+        let mut matcher_order = Vec::with_capacity(matchers_num);
+
+        let matcher_a_iter = constructors
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                c.variants().map(move |x| Matcher {
+                    constructor: ConstructorId(i),
+                    variant_id: x.0,
+                })
+            })
+            .flatten();
+        for matcher_a in matcher_a_iter {
             //TODO detect conflicting instead of just looking for contains
-            let pos =
-                new_constructors.iter().enumerate().find_map(|(i, con)| {
-                    //TODO how to handle inter-intersections? such:
-                    //first variant of self contains the second variant of other
-                    //AND
-                    //second variant of self contains the first variant of other
-                    match constructor.ordering(&con) {
-                        ConstructorOrdering::Greater => Some(i),
-                        _ => None,
-                    }
-                });
+            let pos = matcher_order.iter().position(|matcher_b| {
+                is_first_then(&constructors, matcher_a, *matcher_b)
+            });
             //insert constructors in the correct order accordingly with the
             //rules of `7.8.1. Matching`
             if let Some(pos) = pos {
-                new_constructors.insert(pos, constructor);
+                matcher_order.insert(pos, matcher_a);
             } else {
-                new_constructors.push(constructor);
+                matcher_order.push(matcher_a);
             }
         }
 
         FinalTable {
             is_root: self.is_root,
-            constructors: new_constructors.into(),
+            constructors,
             export: self.export.borrow().unwrap_or_default().convert(),
             pattern_len: self.pattern_len.get().unwrap(),
             name: self.name.into(),
+            matcher_order: matcher_order.into(),
         }
     }
 }
@@ -354,79 +419,6 @@ impl FieldSizeMut for &Table {
         }
         Some(modify)
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConstructorOrdering {
-    /// The pattern values differ
-    Diferent,
-    /// The patterns could differ based on the complex constraints
-    MaybeDiferent,
-    /// A hypotetical token could match both constructors
-    Conflict,
-    Equal,
-    Less,
-    Greater,
-}
-
-impl std::iter::FromIterator<(BitConstraint, BitConstraint)>
-    for ConstructorOrdering
-{
-    fn from_iter<T: IntoIterator<Item = (BitConstraint, BitConstraint)>>(
-        iter: T,
-    ) -> Self {
-        use BitConstraint::*;
-        use Ordering::*;
-        let mut simple_acc = Some(Equal);
-        let mut complex_acc = Some(Equal);
-        for (x, y) in iter {
-            match (x, y) {
-                (Unrestrained, Unrestrained) => {}
-                (Defined(x), Defined(y)) if x == y => {}
-                (Defined(_), Defined(_)) => {
-                    return ConstructorOrdering::Diferent
-                }
-                (Defined(_), Restrained)
-                | (Restrained, Defined(_))
-                | (Restrained, Restrained) => {
-                    return ConstructorOrdering::MaybeDiferent
-                }
-                (Unrestrained, Defined(_)) => {
-                    combine_constructor_order(&mut simple_acc, Some(Less));
-                }
-                (Defined(_), Unrestrained) => {
-                    combine_constructor_order(&mut simple_acc, Some(Greater));
-                }
-                (Unrestrained, Restrained) => {
-                    combine_constructor_order(&mut complex_acc, Some(Less))
-                }
-                (Restrained, Unrestrained) => {
-                    combine_constructor_order(&mut complex_acc, Some(Greater))
-                }
-            }
-        }
-        match simple_acc {
-            None => return ConstructorOrdering::Conflict,
-            Some(Equal) => ConstructorOrdering::Equal,
-            Some(Less) => ConstructorOrdering::Less,
-            Some(Greater) => ConstructorOrdering::Greater,
-        }
-    }
-}
-
-
-pub fn combine_constructor_order(
-    acc: &mut Option<Ordering>,
-    new: Option<Ordering>,
-) {
-    use Ordering::*;
-    let combine = acc.zip(new).and_then(|(acc, new)| match (acc, new) {
-        (Equal, other) | (other, Equal) => Some(other),
-        (Less, Less) => Some(Less),
-        (Greater, Greater) => Some(Greater),
-        _ => None,
-    });
-    *acc = combine;
 }
 
 #[derive(Clone, Debug)]
@@ -506,42 +498,17 @@ impl Constructor {
             _ => (),
         }
 
-        let variants_bits: Vec<(usize, (Box<[_]>, Box<[_]>))> = pattern
+        let variants_bits = pattern
             .pattern_bits_variants(sleigh)
-            .map(|(i, (c, v))| (i, (c.into(), v.into())))
+            .map(|(i, c, v)| (VariantId(i), c.into(), v.into()))
             .collect();
-
-        fn union_bit_variants<'a>(
-            mut variants_iter: impl Iterator<Item = &'a [BitConstraint]>,
-        ) -> Box<[BitConstraint]> {
-            let Some(first_variant) = variants_iter.next() else {
-                return Box::new([]);
-            };
-            let mut final_pattern: Box<[_]> = Box::from(first_variant);
-            for variant in variants_iter {
-                final_pattern
-                    .iter_mut()
-                    .zip(variant.iter())
-                    .for_each(|(x, y)| *x = x.least_restrictive(*y));
-            }
-            final_pattern
-        }
-
-        let context_bits = union_bit_variants(
-            variants_bits.iter().map(|(_, (c, _p))| c.as_ref()),
-        );
-        let pattern_bits = union_bit_variants(
-            variants_bits.iter().map(|(_, (_c, p))| p.as_ref()),
-        );
 
         FinalConstructor {
             pattern,
             display,
             execution,
             location: src,
-            context_bits,
-            pattern_bits,
-            variants_bits: variants_bits.into(),
+            variants_bits,
         }
     }
 }

@@ -227,7 +227,7 @@ impl Pattern {
     pub(crate) fn pattern_bits_variants<'a>(
         &'a self,
         sleigh: &'a FinalSleigh,
-    ) -> impl Iterator<Item = (usize, (Vec<BitConstraint>, Vec<BitConstraint>))> + 'a
+    ) -> impl Iterator<Item = (usize, Vec<BitConstraint>, Vec<BitConstraint>)> + 'a
     {
         let context_bits =
             usize::try_from(sleigh.context_memory.memory_bits).unwrap();
@@ -238,7 +238,7 @@ impl Pattern {
             context_buf.fill(BitConstraint::default());
             pattern_buf.fill(BitConstraint::default());
             self.constraint(sleigh, i, &mut context_buf, &mut pattern_buf)?;
-            Some((i, (context_buf.clone(), pattern_buf.clone())))
+            Some((i, context_buf.clone(), pattern_buf.clone()))
         })
     }
 }
