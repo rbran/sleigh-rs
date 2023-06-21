@@ -87,9 +87,9 @@ fn is_first_then(
             .chain((0..extend).into_iter().map(|_| BitConstraint::Unrestrained))
     }
     let bits_a =
-        produce_iter(constructor_a, matcher_a.variant_id, extend_len_a);
+        produce_iter(constructor_a, matcher_a.variant, extend_len_a);
     let bits_b =
-        produce_iter(constructor_b, matcher_b.variant_id, extend_len_b);
+        produce_iter(constructor_b, matcher_b.variant, extend_len_b);
     use BitConstraint::*;
     bits_a.zip(bits_b).all(|(x, y)| {
         match (x, y) {
@@ -375,7 +375,7 @@ impl Table {
             .map(|(i, c)| {
                 c.variants().map(move |x| Matcher {
                     constructor: ConstructorId(i),
-                    variant_id: x.0,
+                    variant: x.0,
                 })
             })
             .flatten();

@@ -46,7 +46,7 @@ pub type NonZeroTypeU = NumberNonZeroUnsigned;
 pub type NonZeroTypeS = NumberNonZeroSigned;
 
 //constants used only for debug purposes, don't commit with a diferent value
-pub(crate) const DISABLE_EXECUTION_PARSING: bool = false;
+pub(crate) const DISABLE_EXECUTION_PARSING: bool = true;
 
 pub(crate) const IDENT_INSTRUCTION: &str = "instruction";
 pub(crate) const IDENT_INST_START: &str = "inst_start";
@@ -379,8 +379,6 @@ pub enum PatternError {
     MultipleProduction(Span, Span),
     #[error("Field produced is implicit and abiguous")]
     AmbiguousProduction(Span),
-    #[error("Pattern in Or statement without constraint")]
-    UnrestrictedOr(Span),
 
     #[error("Invalid assignment Error")]
     ConstraintExpr(#[from] DisassemblyError),

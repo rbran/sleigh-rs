@@ -1,13 +1,15 @@
 use std::collections::HashMap;
 use std::convert::TryFrom;
 
+use crate::disassembly::{Expr, ExprElement, ReadScope};
+use crate::pattern::CmpOp;
 use crate::semantic::disassembly::Assertation;
 use crate::semantic::inner::{GlobalScope, Sleigh, SolverStatus};
 use crate::semantic::pattern::{
     Block as FinalBlock, ConstraintValue, Ellipsis, PatternLen,
 };
 use crate::semantic::{TableId, TokenFieldId, TokenId};
-use crate::{syntax, PatternError, Span};
+use crate::{syntax, Number, PatternError, Span};
 
 use super::pattern_len::ConstructorPatternLen;
 use super::{
@@ -246,7 +248,39 @@ impl BlockBase {
                                     this_table, table, src, None,
                                 ))
                             }
-                            _ => Err(PatternError::UnrestrictedOr(src)),
+                            GlobalScope::TokenField(tf) => {
+                                Ok(Verification::new_token_field(
+                                    tf,
+                                    src.clone(),
+                                    CmpOp::Eq,
+                                    ConstraintValue::new(Expr {
+                                        rpn: vec![ExprElement::Value {
+                                            location: src.clone(),
+                                            value: ReadScope::Integer(
+                                                Number::Positive(0),
+                                            ),
+                                        }]
+                                        .into(),
+                                    }),
+                                ))
+                            }
+                            GlobalScope::Context(ctx) => {
+                                Ok(Verification::new_context(
+                                    ctx,
+                                    src.clone(),
+                                    CmpOp::Eq,
+                                    ConstraintValue::new(Expr {
+                                        rpn: vec![ExprElement::Value {
+                                            location: src.clone(),
+                                            value: ReadScope::Integer(
+                                                Number::Positive(0),
+                                            ),
+                                        }]
+                                        .into(),
+                                    }),
+                                ))
+                            }
+                            _ => Err(PatternError::InvalidRef(src)),
                         }
                     }
                     syntax::block::pattern::Field::Field {
