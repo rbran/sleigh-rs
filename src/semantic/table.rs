@@ -74,8 +74,8 @@ impl Constructor {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Matcher {
-    pub constructor: ConstructorId,
-    pub variant: VariantId,
+    pub(crate) constructor: ConstructorId,
+    pub(crate) variant_id: VariantId,
 }
 
 #[derive(Clone, Debug)]
