@@ -107,7 +107,7 @@ impl<'a> DisassemblyBuilder<'a> {
     pub fn parse_expr(
         sleigh: &'a Sleigh,
         expr: syntax::block::disassembly::Expr,
-    ) -> Result<Expr, DisassemblyError> {
+    ) -> Result<Expr, Box<DisassemblyError>> {
         let mut builder = Self { sleigh };
         builder.new_expr(expr)
     }
@@ -118,16 +118,14 @@ impl<'a> ExprBuilder for DisassemblyBuilder<'a> {
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<ReadScope, DisassemblyError> {
+    ) -> Result<ReadScope, Box<DisassemblyError>> {
         use super::GlobalScope::*;
-        match self
-            .sleigh
-            .get_global(name)
-            .ok_or(DisassemblyError::MissingRef(src.clone()))?
-        {
+        match self.sleigh.get_global(name).ok_or_else(|| {
+            Box::new(DisassemblyError::MissingRef(src.clone()))
+        })? {
             TokenField(x) => Ok(ReadScope::TokenField(x)),
             Context(x) => Ok(ReadScope::Context(x)),
-            _ => Err(DisassemblyError::InvalidRef(src.clone())),
+            _ => Err(Box::new(DisassemblyError::InvalidRef(src.clone()))),
         }
     }
 }
@@ -214,7 +212,7 @@ impl Pattern {
         sleigh: &Sleigh,
         input: syntax::block::pattern::Pattern,
         this_table: TableId,
-    ) -> Result<Self, PatternError> {
+    ) -> Result<Self, Box<PatternError>> {
         let blocks = input
             .blocks
             .into_iter()
@@ -233,10 +231,10 @@ impl Pattern {
                 Occupied(entry) => {
                     // implicit fields where not found yet, so unwrap here
                     // dont panic
-                    return Err(PatternError::MultipleProduction(
+                    return Err(Box::new(PatternError::MultipleProduction(
                         entry.get().source.as_ref().unwrap().clone(),
                         produced_field.source.as_ref().unwrap().clone(),
-                    ));
+                    )));
                 }
                 Vacant(entry) => {
                     entry.insert(produced_field.clone());
@@ -250,10 +248,10 @@ impl Pattern {
         {
             match tables.entry(*k) {
                 Occupied(entry) => {
-                    return Err(PatternError::MultipleProduction(
+                    return Err(Box::new(PatternError::MultipleProduction(
                         entry.get().location.clone(),
                         produced_table.location.clone(),
-                    ));
+                    )));
                 }
                 Vacant(entry) => {
                     entry.insert(produced_table.clone());
@@ -261,10 +259,8 @@ impl Pattern {
             }
         }
         let mut tokens = HashMap::new();
-        let tokens_iter = blocks
-            .iter()
-            .map(|block| block.base.tokens.iter())
-            .flatten();
+        let tokens_iter =
+            blocks.iter().flat_map(|block| block.base.tokens.iter());
         for (token, num) in tokens_iter {
             tokens
                 .entry(*token)
@@ -306,7 +302,7 @@ impl Pattern {
             //remove unresolveds already produced by previous blocks
             block_unresolved.retain(|unresolved, _location| {
                 self.blocks[..index].iter().any(|block| {
-                    block.base.token_fields.contains_key(&unresolved)
+                    block.base.token_fields.contains_key(unresolved)
                 })
             });
             all_unresolved.extend(block_unresolved);
@@ -322,7 +318,7 @@ impl Pattern {
         &mut self,
         sleigh: &Sleigh,
         token_field_id: TokenFieldId,
-    ) -> Result<Option<usize>, PatternError> {
+    ) -> Result<Option<usize>, Box<PatternError>> {
         //check if we already produces it, if so do nothing
         if self.token_fields.contains_key(&token_field_id) {
             let block_num = self.blocks.iter().position(|block| {
@@ -343,9 +339,9 @@ impl Pattern {
                 (None, true) => found = Some(block_num),
                 //found the second block that is able to add the token_field
                 (Some(_), true) => {
-                    return Err(PatternError::AmbiguousProduction(
+                    return Err(Box::new(PatternError::AmbiguousProduction(
                         sleigh.token_field(token_field_id).location.clone(),
-                    ))
+                    )))
                 }
             }
         }
@@ -354,7 +350,7 @@ impl Pattern {
             ProducedTokenField {
                 local: true,
                 source: None,
-                field: token_field_id.clone(),
+                field: token_field_id,
             },
         );
         Ok(found)
@@ -372,7 +368,7 @@ impl Pattern {
         &mut self,
         sleigh: &Sleigh,
         solved: &mut impl SolverStatus,
-    ) -> Result<bool, PatternError> {
+    ) -> Result<bool, Box<PatternError>> {
         //if fully solved, do nothing
         if let Some(ConstructorPatternLen::Basic(_)) = self.len {
             return Ok(true);
@@ -381,12 +377,15 @@ impl Pattern {
             .blocks
             .iter_mut()
             .map(|block| block.solve(sleigh, solved))
-            .try_fold(true, |acc, finished| -> Result<_, PatternError> {
-                Ok(acc & finished?)
-            })?;
+            .try_fold(
+                true,
+                |acc, finished| -> Result<_, Box<PatternError>> {
+                    Ok(acc & finished?)
+                },
+            )?;
         //FUTURE replace with try_reduce
         let mut lens = self.blocks.iter().map(|block| block.len());
-        let first = ConstructorPatternLen::Basic(PatternLen::Defined(0).into());
+        let first = ConstructorPatternLen::Basic(PatternLen::Defined(0));
         let final_len = lens.try_fold(first, |acc, len| acc.add(len?));
 
         let finished_len =
@@ -414,7 +413,7 @@ impl Pattern {
         //we are ready to convert all blocks into phase2
         for block in self.blocks.iter_mut() {
             //create the block and update the variants_counter
-            let block = block.into_phase2(variants_before_counter);
+            let block = block.build_phase2(variants_before_counter);
             variants_before_counter *= block.variants_number;
 
             //reset the before counter if a disjointed pattern is found

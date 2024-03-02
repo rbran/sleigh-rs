@@ -18,7 +18,7 @@ pub struct Context {
 }
 
 impl Context {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             preceded(
                 this_ident("context"),
@@ -42,7 +42,7 @@ pub struct ContextField {
 }
 
 impl ContextField {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             tuple((
                 terminated(ident, tag!("=")),
@@ -74,12 +74,12 @@ impl ContextFieldAttribute {
                 _ => None,
             })
     }
-    fn parse(input_ori: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    fn parse(input_ori: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         let (input, (att, location)) = ident(input_ori)?;
         Self::from_str(&att)
             .map(|att| (input, att))
-            .ok_or(nom::Err::Error(SleighError::StatementInvalid(
+            .ok_or(nom::Err::Error(Box::new(SleighError::StatementInvalid(
                 location.clone(),
-            )))
+            ))))
     }
 }

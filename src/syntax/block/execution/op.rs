@@ -19,7 +19,7 @@ pub struct ByteRangeMsb {
 impl ByteRangeMsb {
     pub fn parse(
         input: &[Token],
-    ) -> IResult<&[Token], ByteRangeMsb, SleighError> {
+    ) -> IResult<&[Token], ByteRangeMsb, Box<SleighError>> {
         map(delimited(tag!("("), number, tag!(")")), |(value, src)| {
             Self {
                 src: src.clone(),
@@ -36,7 +36,7 @@ pub struct ByteRangeLsb {
 impl ByteRangeLsb {
     pub fn parse(
         input: &[Token],
-    ) -> IResult<&[Token], ByteRangeLsb, SleighError> {
+    ) -> IResult<&[Token], ByteRangeLsb, Box<SleighError>> {
         map(preceded(tag!(":"), number), |(value, src)| Self {
             src: src.clone(),
             value,
@@ -44,6 +44,7 @@ impl ByteRangeLsb {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum Unary {
     //NOTE: ByteRangeMsb is part of the expr::ExprElement::Ambiguous1
@@ -114,7 +115,7 @@ impl Unary {
     }
     pub fn parse_after(
         input: &[Token],
-    ) -> IResult<&[Token], (Self, Span), SleighError> {
+    ) -> IResult<&[Token], (Self, Span), Box<SleighError>> {
         alt((
             map(BitRangeLsbLen::parse, |x| {
                 let location = x.src.clone();
@@ -132,7 +133,7 @@ impl Unary {
     }
     pub fn parse_before(
         input: &[Token],
-    ) -> IResult<&[Token], (Self, Span), SleighError> {
+    ) -> IResult<&[Token], (Self, Span), Box<SleighError>> {
         alt((
             map(tag!("!"), |span| (Self::Negation, span.clone())),
             map(tag!("~"), |span| (Self::BitNegation, span.clone())),
@@ -146,7 +147,7 @@ impl Unary {
     }
     pub fn parse_call_name(
         input_ori: &[Token],
-    ) -> IResult<&[Token], (Self, &Span), SleighError> {
+    ) -> IResult<&[Token], (Self, &Span), Box<SleighError>> {
         alt((
             map(tag!("popcount"), |span| (Self::Popcount, span)),
             map(tag!("lzcount"), |span| (Self::Lzcount, span)),
@@ -169,7 +170,7 @@ macro_rules! op_parser {
     ($name:ident, $op:ident, $tag:tt) => {
         pub fn $name(
             input: &[Token],
-        ) -> IResult<&[Token], (Self, &Span), SleighError> {
+        ) -> IResult<&[Token], (Self, &Span), Box<SleighError>> {
             map(tag!($tag), |span| (Self::$op, span))(input)
         }
     };
@@ -178,7 +179,7 @@ macro_rules! op_parser {
 macro_rules! op_parser_levels {
     ($level:ident, $(($name:ident, $op:ident, $tag:tt)),* $(,)? ) => {
         $(op_parser!($name, $op, $tag);)*
-        pub fn $level(input: &[Token]) -> IResult<&[Token], (Self, &Span), SleighError> {
+        pub fn $level(input: &[Token]) -> IResult<&[Token], (Self, &Span), Box<SleighError>> {
             alt(($(Self::$name),*))(input)
         }
     };
@@ -248,7 +249,7 @@ impl Binary {
     );
     pub fn parse_call_name(
         input_ori: &[Token],
-    ) -> IResult<&[Token], (Self, &Span), SleighError> {
+    ) -> IResult<&[Token], (Self, &Span), Box<SleighError>> {
         alt((
             map(tag!("carry"), |src| (Self::Carry, src)),
             map(tag!("scarry"), |src| (Self::SCarry, src)),
@@ -263,7 +264,7 @@ pub struct SpaceReference {
     pub name: String,
 }
 impl SpaceReference {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             delimited(tag!("["), ident, tag!("]")),
             |(name, name_src)| Self {
@@ -282,7 +283,7 @@ pub struct AddrDereference {
 }
 
 impl AddrDereference {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             tuple((
                 tag!("*"),

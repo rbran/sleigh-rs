@@ -16,7 +16,7 @@ pub struct Varnode {
 }
 
 impl Varnode {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             tuple((
                 ident,

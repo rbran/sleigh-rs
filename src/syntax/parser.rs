@@ -10,10 +10,9 @@ use crate::{Number, NumberUnsigned, SleighError, Span};
 
 pub trait TokenHelper {
     fn location(&self) -> Span;
-    fn expect(&self, value: TokenType) -> Result<(), SleighError>;
-    fn ident(&self) -> Result<&str, SleighError>;
-    fn string(&self) -> Result<&str, SleighError>;
-    fn number(&self) -> Result<NumberUnsigned, SleighError>;
+    fn ident(&self) -> Result<&str, Box<SleighError>>;
+    fn string(&self) -> Result<&str, Box<SleighError>>;
+    fn number(&self) -> Result<NumberUnsigned, Box<SleighError>>;
 }
 
 pub trait Parser {
@@ -21,8 +20,7 @@ pub trait Parser {
         &mut self,
         token_stream: &mut Vec<Token>,
         find: fn(&Token) -> bool,
-    ) -> Result<(), SleighError>;
-    fn token(&mut self) -> Result<Token, SleighError>;
+    ) -> Result<(), Box<SleighError>>;
 }
 
 impl<'a> nom::error::ParseError<&'a [Token]> for SleighError {
@@ -45,24 +43,26 @@ impl<'a> nom::error::ParseError<&'a [Token]> for SleighError {
         other
     }
 }
-impl From<SleighError> for nom::Err<SleighError> {
-    fn from(value: SleighError) -> Self {
+impl From<Box<SleighError>> for nom::Err<Box<SleighError>> {
+    fn from(value: Box<SleighError>) -> Self {
         nom::Err::Error(value)
     }
 }
-impl From<nom::Err<SleighError>> for SleighError {
-    fn from(value: nom::Err<SleighError>) -> Self {
+impl From<nom::Err<Box<SleighError>>> for Box<SleighError> {
+    fn from(value: nom::Err<Box<SleighError>>) -> Self {
         match value {
             nom::Err::Incomplete(_) => unreachable!(),
             nom::Err::Error(e) | nom::Err::Failure(e) => e,
         }
     }
 }
-impl nom::error::FromExternalError<&[Token], SleighError> for SleighError {
+impl nom::error::FromExternalError<&[Token], Box<SleighError>>
+    for Box<SleighError>
+{
     fn from_external_error(
         _input: &[Token],
         _kind: nom::error::ErrorKind,
-        e: SleighError,
+        e: Box<SleighError>,
     ) -> Self {
         e
     }
@@ -72,27 +72,22 @@ impl TokenHelper for Token {
     fn location(&self) -> Span {
         self.location.clone()
     }
-    fn expect(&self, value: TokenType) -> Result<(), SleighError> {
-        (self.token_type == value)
-            .then_some(())
-            .ok_or_else(|| SleighError::StatementInvalid(self.location()))
-    }
-    fn ident(&self) -> Result<&str, SleighError> {
+    fn ident(&self) -> Result<&str, Box<SleighError>> {
         match &self.token_type {
             TokenType::Ident(value) => Ok(value),
-            _ => Err(SleighError::StatementInvalid(self.location())),
+            _ => Err(Box::new(SleighError::StatementInvalid(self.location()))),
         }
     }
-    fn string(&self) -> Result<&str, SleighError> {
+    fn string(&self) -> Result<&str, Box<SleighError>> {
         match &self.token_type {
             TokenType::String(value) => Ok(value),
-            _ => Err(SleighError::StatementInvalid(self.location())),
+            _ => Err(Box::new(SleighError::StatementInvalid(self.location()))),
         }
     }
-    fn number(&self) -> Result<NumberUnsigned, SleighError> {
+    fn number(&self) -> Result<NumberUnsigned, Box<SleighError>> {
         match &self.token_type {
             TokenType::Number(value) => Ok(*value),
-            _ => Err(SleighError::StatementInvalid(self.location())),
+            _ => Err(Box::new(SleighError::StatementInvalid(self.location()))),
         }
     }
 }
@@ -103,7 +98,7 @@ impl Parser for FilePreProcessor {
         &mut self,
         token_stream: &mut Vec<Token>,
         find: fn(&Token) -> bool,
-    ) -> Result<(), SleighError> {
+    ) -> Result<(), Box<SleighError>> {
         while let Some(token) = self.parse()? {
             let found_end = find(&token);
             token_stream.push(token);
@@ -111,23 +106,22 @@ impl Parser for FilePreProcessor {
                 return Ok(());
             }
         }
-        Err(SleighError::UnexpectedEof)
-    }
-    fn token(&mut self) -> Result<Token, SleighError> {
-        self.parse()?.ok_or(SleighError::UnexpectedEof)
+        Err(Box::new(SleighError::UnexpectedEof))
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn this_ident<'a, 'b>(
     value: &'b str,
-) -> impl FnMut(&'a [Token]) -> IResult<&'a [Token], &'a Span, SleighError> + 'b
+) -> impl FnMut(&'a [Token]) -> IResult<&'a [Token], &'a Span, Box<SleighError>> + 'b
 {
     move |input: &'a [Token]| {
-        let (first, rest) =
-            input.split_first().ok_or(SleighError::UnexpectedEof)?;
+        let (first, rest) = input
+            .split_first()
+            .ok_or_else(|| Box::new(SleighError::UnexpectedEof))?;
         if first.ident()? != value {
-            return Err(nom::Err::Error(SleighError::StatementInvalid(
-                first.location.clone(),
+            return Err(nom::Err::Error(Box::new(
+                SleighError::StatementInvalid(first.location.clone()),
             )));
         }
         Ok((rest, &first.location))
@@ -221,29 +215,36 @@ macro_rules! tag {
     ($x:tt) => { crate::syntax::parser::tag_token_type(token_type!($x)) };
 }
 
+#[allow(clippy::type_complexity)]
 pub fn tag_token_type(
     value: TokenType,
-) -> impl FnMut(&[Token]) -> IResult<&[Token], &Span, SleighError> {
+) -> impl FnMut(&[Token]) -> IResult<&[Token], &Span, Box<SleighError>> {
     move |input| {
-        let (first, rest) =
-            input.split_first().ok_or(SleighError::UnexpectedEof)?;
+        let (first, rest) = input
+            .split_first()
+            .ok_or_else(|| Box::new(SleighError::UnexpectedEof))?;
         if first.token_type != value {
-            return Err(nom::Err::Error(SleighError::StatementInvalid(
-                first.location.clone(),
+            return Err(nom::Err::Error(Box::new(
+                SleighError::StatementInvalid(first.location.clone()),
             )));
         }
         Ok((rest, &first.location))
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn option<'a, O, F>(
     mut parser: F,
 ) -> impl FnMut(
     &'a [Token],
-) -> IResult<&'a [Token], (Option<O>, &'a Span), SleighError>
+) -> IResult<&'a [Token], (Option<O>, &'a Span), Box<SleighError>>
 where
-    F: FnMut(&'a [Token]) -> IResult<&'a [Token], (O, &'a Span), SleighError>,
+    F: FnMut(
+        &'a [Token],
+    ) -> IResult<&'a [Token], (O, &'a Span), Box<SleighError>>,
 {
+    // can't delete parser call without trouble
+    #[allow(clippy::redundant_closure)]
     move |input| {
         alt((
             map(tag!("_"), |span| (None, span)),
@@ -252,46 +253,55 @@ where
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn ident_ref(
     input: &[Token],
-) -> IResult<&[Token], (&str, &Span), SleighError> {
-    let (first, rest) =
-        input.split_first().ok_or(SleighError::UnexpectedEof)?;
+) -> IResult<&[Token], (&str, &Span), Box<SleighError>> {
+    let (first, rest) = input
+        .split_first()
+        .ok_or_else(|| Box::new(SleighError::UnexpectedEof))?;
     let name = first.ident()?;
     Ok((rest, (name, &first.location)))
 }
+#[allow(clippy::type_complexity)]
 pub fn ident(
     input: &[Token],
-) -> IResult<&[Token], (String, &Span), SleighError> {
+) -> IResult<&[Token], (String, &Span), Box<SleighError>> {
     let (rest, (ident, span)) = ident_ref(input)?;
     Ok((rest, (ident.to_owned(), span)))
 }
 
+#[allow(clippy::type_complexity)]
 pub fn string(
     input: &[Token],
-) -> IResult<&[Token], (String, &Span), SleighError> {
-    let (first, rest) =
-        input.split_first().ok_or(SleighError::UnexpectedEof)?;
+) -> IResult<&[Token], (String, &Span), Box<SleighError>> {
+    let (first, rest) = input
+        .split_first()
+        .ok_or_else(|| Box::new(SleighError::UnexpectedEof))?;
     let name = first.string()?;
     Ok((rest, (name.to_owned(), &first.location)))
 }
 
+#[allow(clippy::type_complexity)]
 pub fn number(
     input: &[Token],
-) -> IResult<&[Token], (NumberUnsigned, &Span), SleighError> {
-    let (first, rest) =
-        input.split_first().ok_or(SleighError::UnexpectedEof)?;
+) -> IResult<&[Token], (NumberUnsigned, &Span), Box<SleighError>> {
+    let (first, rest) = input
+        .split_first()
+        .ok_or_else(|| Box::new(SleighError::UnexpectedEof))?;
     let number = first.number()?;
     Ok((rest, (number, &first.location)))
 }
+#[allow(clippy::type_complexity)]
 pub fn number_unsigned(
     input: &[Token],
-) -> IResult<&[Token], (Number, &Span), SleighError> {
+) -> IResult<&[Token], (Number, &Span), Box<SleighError>> {
     map(number, |(number, span)| (Number::Positive(number), span))(input)
 }
+#[allow(clippy::type_complexity)]
 pub fn number_signed(
     input: &[Token],
-) -> IResult<&[Token], (Number, &Span), SleighError> {
+) -> IResult<&[Token], (Number, &Span), Box<SleighError>> {
     let (rest, (is_neg, (number, location))) =
         pair(opt(tag!("-")), number)(input)?;
     let number = if is_neg.is_some() {
@@ -303,15 +313,17 @@ pub fn number_signed(
 }
 
 //matches both X and "X"
+#[allow(clippy::type_complexity)]
 fn string_inline(
     input: &[Token],
-) -> IResult<&[Token], (String, &Span), SleighError> {
+) -> IResult<&[Token], (String, &Span), Box<SleighError>> {
     alt((string, ident))(input)
 }
 
+#[allow(clippy::type_complexity)]
 pub fn fieldlist(
     input: &[Token],
-) -> IResult<&[Token], Vec<(String, Span)>, SleighError> {
+) -> IResult<&[Token], Vec<(String, Span)>, Box<SleighError>> {
     alt((
         map(ident, |(x, span)| vec![(x, span.clone())]),
         delimited(
@@ -322,9 +334,10 @@ pub fn fieldlist(
     ))(input)
 }
 
+#[allow(clippy::type_complexity)]
 pub fn registerlist(
     input: &[Token],
-) -> IResult<&[Token], Vec<(Option<String>, Span)>, SleighError> {
+) -> IResult<&[Token], Vec<(Option<String>, Span)>, Box<SleighError>> {
     alt((
         map(ident, |(x, span)| vec![(Some(x), span.clone())]),
         delimited(
@@ -335,9 +348,10 @@ pub fn registerlist(
     ))(input)
 }
 
+#[allow(clippy::type_complexity)]
 pub fn numberlist(
     input: &[Token],
-) -> IResult<&[Token], Vec<(Option<Number>, Span)>, SleighError> {
+) -> IResult<&[Token], Vec<(Option<Number>, Span)>, Box<SleighError>> {
     alt((
         map(number_signed, |(x, span)| vec![(Some(x), span.clone())]),
         delimited(
@@ -347,9 +361,10 @@ pub fn numberlist(
         ),
     ))(input)
 }
+#[allow(clippy::type_complexity)]
 pub fn stringlist(
     input: &[Token],
-) -> IResult<&[Token], Vec<(Option<String>, Span)>, SleighError> {
+) -> IResult<&[Token], Vec<(Option<String>, Span)>, Box<SleighError>> {
     alt((
         map(string_inline, |(x, span)| vec![(Some(x), span.clone())]),
         delimited(

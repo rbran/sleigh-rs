@@ -20,15 +20,12 @@ pub struct WithBlock {
 
 impl WithBlock {
     pub fn table_name(&self) -> &str {
-        self.table_name
-            .as_ref()
-            .map(String::as_str)
-            .unwrap_or(IDENT_INSTRUCTION)
+        self.table_name.as_deref().unwrap_or(IDENT_INSTRUCTION)
     }
     pub fn parse(
         input: &mut FilePreProcessor,
         buf: &mut Vec<Token>,
-    ) -> Result<Self, SleighError> {
+    ) -> Result<Self, Box<SleighError>> {
         input.parse_until(buf, |x| x.token_type == token_type!("{"))?;
         let (_eof, (table, pattern, disassembly)) = terminated(
             tuple((

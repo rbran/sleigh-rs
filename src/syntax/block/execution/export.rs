@@ -28,18 +28,22 @@ pub enum Export {
 }
 
 impl Export {
-    fn parse_value(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
-        map(expr::Expr::parse, |value| Self::Value(value))(input)
+    fn parse_value(
+        input: &[Token],
+    ) -> IResult<&[Token], Self, Box<SleighError>> {
+        map(expr::Expr::parse, Self::Value)(input)
     }
     fn parse_reference(
         input: &[Token],
-    ) -> IResult<&[Token], Self, SleighError> {
+    ) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             pair(op::AddrDereference::parse, expr::Expr::parse),
             |(space, addr)| Self::Reference { space, addr },
         )(input)
     }
-    fn parse_const(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    fn parse_const(
+        input: &[Token],
+    ) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             preceded(
                 tuple((tag!("*"), tag!("["), tag!("const"), tag!("]"))),
@@ -52,7 +56,9 @@ impl Export {
             },
         )(input)
     }
-    fn parse_unique(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    fn parse_unique(
+        input: &[Token],
+    ) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             preceded(
                 tuple((tag!("*"), tag!("["), tag!("unique"), tag!("]"))),
@@ -61,7 +67,7 @@ impl Export {
             |_| todo!(),
         )(input)
     }
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         delimited(
             this_ident("export"),
             //NOTE order is important

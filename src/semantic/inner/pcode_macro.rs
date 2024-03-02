@@ -50,7 +50,7 @@ impl PcodeMacroInstance {
         &mut self,
         sleigh: &Sleigh,
         solved: &mut T,
-    ) -> Result<(), ExecutionError>
+    ) -> Result<(), Box<ExecutionError>>
     where
         T: SolverStatus + Default,
     {
@@ -93,7 +93,7 @@ impl PcodeMacro {
     pub fn specialize(
         &self,
         param_sizes: &[NumberNonZeroUnsigned],
-    ) -> Result<PcodeMacroInstanceId, PcodeMacroError> {
+    ) -> Result<PcodeMacroInstanceId, Box<PcodeMacroError>> {
         //check if this instance already exists
         if let Some(id) = self
             .instances
@@ -111,9 +111,9 @@ impl PcodeMacro {
             let var = execution.variable_mut(param.variable_id);
             let new_var =
                 var.size.get().set_final_value(*size).ok_or_else(|| {
-                    PcodeMacroError::InvalidSpecialization(
+                    Box::new(PcodeMacroError::InvalidSpecialization(
                         param.location.clone(),
-                    )
+                    ))
                 })?;
             var.size.set(new_var);
         }
@@ -125,13 +125,16 @@ impl PcodeMacro {
         &mut self,
         sleigh: &Sleigh,
         solved: &mut T,
-    ) -> Result<(), SleighError>
+    ) -> Result<(), Box<SleighError>>
     where
         T: SolverStatus + Default,
     {
         for instance in self.instances.borrow_mut().iter_mut() {
             instance.solve(sleigh, solved).map_err(|e| {
-                SleighError::new_pcode_macro(self.location.clone(), e)
+                Box::new(SleighError::new_pcode_macro(
+                    self.location.clone(),
+                    *e,
+                ))
             })?;
         }
         Ok(())
@@ -162,7 +165,7 @@ impl<'a, 'b> Builder<'a, 'b> {
         sleigh: &'a Sleigh,
         execution: &'b mut Execution,
         body: syntax::block::execution::Execution,
-    ) -> Result<(), PcodeMacroError> {
+    ) -> Result<(), Box<PcodeMacroError>> {
         let current_block = execution.entry_block;
         let mut builder = Self {
             execution,
@@ -185,16 +188,16 @@ impl ExecutionBuilder for Builder<'_, '_> {
         unreachable!()
     }
     fn execution(&self) -> &Execution {
-        &self.execution
+        self.execution
     }
     fn execution_mut(&mut self) -> &mut Execution {
-        &mut self.execution
+        self.execution
     }
     fn read_scope(
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<ReadValue, ExecutionError> {
+    ) -> Result<ReadValue, Box<ExecutionError>> {
         //check local scope
         if let Some(var) = self.execution().variable_by_name(name) {
             return Ok(ReadValue::ExeVar(ExprExeVar {
@@ -208,7 +211,7 @@ impl ExecutionBuilder for Builder<'_, '_> {
         match self
             .sleigh
             .get_global(name)
-            .ok_or(ExecutionError::MissingRef(src.clone()))?
+            .ok_or_else(|| Box::new(ExecutionError::MissingRef(src.clone())))?
         {
             TokenField(x) => Ok(ReadValue::TokenField(ExprTokenField {
                 location: src.clone(),
@@ -234,7 +237,7 @@ impl ExecutionBuilder for Builder<'_, '_> {
                 location: src.clone(),
                 id: x,
             })),
-            _ => Err(ExecutionError::InvalidRef(src.clone())),
+            _ => Err(Box::new(ExecutionError::InvalidRef(src.clone()))),
         }
     }
 
@@ -242,7 +245,7 @@ impl ExecutionBuilder for Builder<'_, '_> {
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<WriteValue, ExecutionError> {
+    ) -> Result<WriteValue, Box<ExecutionError>> {
         //check local scope
         if let Some(var) = self.execution().variable_by_name(name) {
             return Ok(WriteValue::Local(ExprExeVar {
@@ -256,7 +259,7 @@ impl ExecutionBuilder for Builder<'_, '_> {
         match self
             .sleigh
             .get_global(name)
-            .ok_or(ExecutionError::MissingRef(src.clone()))?
+            .ok_or_else(|| Box::new(ExecutionError::MissingRef(src.clone())))?
         {
             Varnode(x) => Ok(WriteValue::Varnode(ExprVarnode {
                 location: src.clone(),
@@ -266,7 +269,7 @@ impl ExecutionBuilder for Builder<'_, '_> {
                 location: src.clone(),
                 id: x,
             })),
-            _ => Err(ExecutionError::InvalidRef(src.clone())),
+            _ => Err(Box::new(ExecutionError::InvalidRef(src.clone()))),
         }
     }
 
@@ -282,8 +285,8 @@ impl ExecutionBuilder for Builder<'_, '_> {
     fn new_build(
         &mut self,
         _input: syntax::block::execution::Build,
-    ) -> Result<Build, ExecutionError> {
-        Err(ExecutionError::MacroBuildInvalid)
+    ) -> Result<Build, Box<ExecutionError>> {
+        Err(Box::new(ExecutionError::MacroBuildInvalid))
     }
 
     fn inner_set_curent_block(&mut self, block: BlockId) {
@@ -295,13 +298,13 @@ impl Sleigh {
     pub fn create_pcode_macro(
         &mut self,
         pcode: syntax::block::pcode_macro::PcodeMacro,
-    ) -> Result<(), SleighError> {
+    ) -> Result<(), Box<SleighError>> {
         let mut execution = Execution::new_empty(pcode.src.clone());
         //create variables for each param
         let params = pcode
             .params
             .into_iter()
-            .map(|(name, src)| -> Result<_, ExecutionError> {
+            .map(|(name, src)| -> Result<_, Box<ExecutionError>> {
                 Ok(Parameter {
                     variable_id: execution.create_variable(
                         name,
@@ -312,9 +315,12 @@ impl Sleigh {
                 })
             })
             .collect::<Result<_, _>>()
-            .map_err(|e| SleighError::new_pcode_macro(pcode.src.clone(), e))?;
-        Builder::parse(self, &mut execution, pcode.body)
-            .map_err(|e| SleighError::new_pcode_macro(pcode.src.clone(), e))?;
+            .map_err(|e| {
+                Box::new(SleighError::new_pcode_macro(pcode.src.clone(), *e))
+            })?;
+        Builder::parse(self, &mut execution, pcode.body).map_err(|e| {
+            Box::new(SleighError::new_pcode_macro(pcode.src.clone(), *e))
+        })?;
         let pcode_macro = PcodeMacro::new(
             pcode.name.clone(),
             pcode.src.clone(),
@@ -325,7 +331,7 @@ impl Sleigh {
         let pcode_macro_id = PcodeMacroId(self.pcode_macros.len() - 1);
         self.global_scope
             .insert(pcode.name, GlobalScope::PcodeMacro(pcode_macro_id))
-            .map(|_| Err(SleighError::NameDuplicated))
+            .map(|_| Err(Box::new(SleighError::NameDuplicated)))
             .unwrap_or(Ok(()))
     }
 }

@@ -39,7 +39,7 @@ impl WithBlockCurrent {
         //Inside such a block, the rule regarding mnemonic literals is restored.
 
         //if the name is specified, use it.
-        if current_table_name != "" {
+        if !current_table_name.is_empty() {
             return current_table_name;
         }
 
@@ -56,8 +56,7 @@ impl WithBlockCurrent {
     }
     fn pattern_iter(
         &self,
-    ) -> impl Iterator<Item = &syntax::block::pattern::Pattern> + ExactSizeIterator
-    {
+    ) -> impl ExactSizeIterator<Item = &syntax::block::pattern::Pattern> {
         self.0
             .iter()
             .map(|(_table_name, pattern, _disassembly)| pattern)
@@ -134,7 +133,7 @@ impl WithBlockCurrent {
             .iter()
             .filter_map(|x| x.2.as_ref())
             .cloned()
-            .chain([current_pattern].into_iter().filter_map(|x| x))
+            .chain([current_pattern].into_iter().flatten())
             .reduce(|mut acc, x| {
                 acc.assertations.extend(x.assertations);
                 acc

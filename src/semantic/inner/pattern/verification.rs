@@ -37,7 +37,7 @@ impl Verification {
         src: Span,
         constraint: syntax::block::pattern::Constraint,
         this_table: TableId,
-    ) -> Result<Self, PatternError> {
+    ) -> Result<Self, Box<PatternError>> {
         let syntax::block::pattern::Constraint { op: cmp_op, value } =
             constraint;
         let value = ConstraintValue::new(DisassemblyBuilder::parse_expr(
@@ -45,7 +45,7 @@ impl Verification {
         )?);
         let field = sleigh
             .get_global(&field)
-            .ok_or(PatternError::MissingRef(src.clone()))?;
+            .ok_or_else(|| Box::new(PatternError::MissingRef(src.clone())))?;
         match field {
             GlobalScope::TokenField(x) => Ok(Self::TokenFieldCheck {
                 field: x,
@@ -72,7 +72,7 @@ impl Verification {
                     verification,
                 }
             }),
-            _ => return Err(PatternError::InvalidRef(src.clone())),
+            _ => Err(Box::new(PatternError::InvalidRef(src))),
         }
     }
     pub fn new_context(
@@ -149,8 +149,7 @@ impl Verification {
                     pattern
                         .blocks
                         .iter()
-                        .map(|block| block.base.tables.values())
-                        .flatten(),
+                        .flat_map(|block| block.base.tables.values()),
                 );
                 Some(iter)
             }
@@ -250,26 +249,17 @@ impl Verification {
     pub fn convert(self) -> FinalVerification {
         match self {
             Verification::ContextCheck { context, op, value } => {
-                FinalVerification::ContextCheck {
-                    context,
-                    op,
-                    value: value.into(),
-                }
+                FinalVerification::ContextCheck { context, op, value }
             }
             Verification::TableBuild {
                 produced_table,
                 verification,
             } => FinalVerification::TableBuild {
-                produced_table: produced_table.into(),
-                verification: verification
-                    .map(|(op, value)| (op, value.into())),
+                produced_table,
+                verification,
             },
             Verification::TokenFieldCheck { field, op, value } => {
-                FinalVerification::TokenFieldCheck {
-                    field,
-                    op,
-                    value: value.into(),
-                }
+                FinalVerification::TokenFieldCheck { field, op, value }
             }
             Verification::SubPattern { location, pattern } => {
                 FinalVerification::SubPattern {

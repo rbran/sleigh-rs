@@ -14,7 +14,7 @@ pub struct BitRangeDef {
 }
 
 impl BitRangeDef {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             preceded(this_ident("bitrange"), cut(many0(VarnodeField::parse))),
             |ranges| BitRangeDef { ranges },
@@ -41,7 +41,7 @@ pub struct VarnodeField {
 }
 
 impl VarnodeField {
-    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             tuple((terminated(ident, tag!("=")), ident, BitRangeLsbLen::parse)),
             |((name, name_span), (varnode_name, varnode_name_span), range)| {

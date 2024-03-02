@@ -13,7 +13,7 @@ pub struct UserFunction {
 }
 
 impl UserFunction {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             preceded(this_ident("pcodeop"), cut(ident)),
             |(name, name_src)| Self {

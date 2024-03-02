@@ -24,7 +24,7 @@ pub struct Declare {
     pub size: Option<ByteRangeLsb>,
 }
 impl Declare {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             delimited(
                 tag!("local"),
@@ -48,7 +48,7 @@ pub struct MemWrite {
     pub right: expr::Expr,
 }
 impl MemWrite {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             tuple((
                 op::AddrDereference::parse,
@@ -76,7 +76,7 @@ pub struct Assignment {
     pub right: expr::Expr,
 }
 impl Assignment {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             terminated(
                 tuple((
@@ -108,7 +108,7 @@ pub enum OpLeft {
 }
 
 impl OpLeft {
-    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         alt((
             map(BitRangeLsbLen::parse, Self::BitRange),
             map(ByteRangeMsb::parse, |_x| {

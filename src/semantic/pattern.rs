@@ -234,7 +234,7 @@ impl Pattern {
         let pattern_bits = self.bits_produced();
         let mut context_buf = vec![BitConstraint::default(); context_bits];
         let mut pattern_buf = vec![BitConstraint::default(); pattern_bits];
-        (0..self.variants_num()).into_iter().filter_map(move |i| {
+        (0..self.variants_num()).filter_map(move |i| {
             context_buf.fill(BitConstraint::default());
             pattern_buf.fill(BitConstraint::default());
             self.constraint(sleigh, i, &mut context_buf, &mut pattern_buf)?;

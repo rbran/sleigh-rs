@@ -36,7 +36,7 @@ impl Value {
     }
     pub fn parse_unsigned(
         input: &[Token],
-    ) -> IResult<&[Token], Self, SleighError> {
+    ) -> IResult<&[Token], Self, Box<SleighError>> {
         alt((
             map(number_unsigned, |(x, span)| Self::Number(span.clone(), x)),
             map(ident, |(x, span)| Self::Ident(span.clone(), x)),
@@ -44,7 +44,7 @@ impl Value {
     }
     pub fn parse_signed(
         input: &[Token],
-    ) -> IResult<&[Token], Self, SleighError> {
+    ) -> IResult<&[Token], Self, Box<SleighError>> {
         alt((
             map(number_signed, |(x, span)| Self::Number(span.clone(), x)),
             map(ident, |(x, span)| Self::Ident(span.clone(), x)),
@@ -60,7 +60,7 @@ pub struct BitRangeLsbMsb {
     pub msb_bit: NumberUnsigned,
 }
 impl BitRangeLsbMsb {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             tuple((
                 tag!("("),
@@ -82,7 +82,7 @@ pub struct BitRangeLsbLen {
     pub n_bits: NumberUnsigned,
 }
 impl BitRangeLsbLen {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             tuple((
                 tag!("["),
@@ -111,7 +111,7 @@ impl Assertation {
         input: &mut FilePreProcessor,
         buf: &mut Vec<Token>,
         inside_with_block: bool,
-    ) -> Result<Option<Self>, SleighError> {
+    ) -> Result<Option<Self>, Box<SleighError>> {
         assert!(buf.is_empty());
         let token = match input.parse() {
             Ok(Some(token)) => token,
@@ -150,9 +150,9 @@ impl Assertation {
             //close with_block
             TokenType::DeliCloseCurly if inside_with_block => return Ok(None),
             _ => {
-                return Err(SleighError::StatementInvalid(
+                return Err(Box::new(SleighError::StatementInvalid(
                     token_ref.location.clone(),
-                ))
+                )))
             }
         };
         Ok(Some(assertation))
@@ -168,13 +168,14 @@ impl Sleigh {
         input: &mut FilePreProcessor,
         buf: &mut Vec<Token>,
         inside_with_block: bool,
-    ) -> Result<Self, nom::Err<SleighError>> {
+    ) -> Result<Self, nom::Err<Box<SleighError>>> {
         let mut assertations = vec![];
         loop {
             buf.clear();
-            let Some(ass) = Assertation::parse(input, buf, inside_with_block)? else {
-            break
-        };
+            let Some(ass) = Assertation::parse(input, buf, inside_with_block)?
+            else {
+                break;
+            };
             assertations.push(ass);
         }
         Ok(Self { assertations })

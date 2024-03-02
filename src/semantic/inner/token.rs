@@ -23,10 +23,12 @@ impl std::fmt::Debug for TokenField {
 }
 
 impl TokenField {
-    pub fn attach(&mut self, meaning: Meaning) -> Result<(), SleighError> {
+    pub fn attach(&mut self, meaning: Meaning) -> Result<(), Box<SleighError>> {
         if self.attach.is_some() {
             //once attached, can't attach again
-            return Err(SleighError::AttachMultiple(self.location.clone()));
+            return Err(Box::new(SleighError::AttachMultiple(
+                self.location.clone(),
+            )));
         }
         if self.print_flags.signed_set {
             todo!("Is allowed to attach to signed value?");
@@ -89,7 +91,7 @@ impl Sleigh {
     pub fn create_token(
         &mut self,
         input: syntax::define::Token,
-    ) -> Result<(), SleighError> {
+    ) -> Result<(), Box<SleighError>> {
         let size = input
             .size
             .checked_div(8)

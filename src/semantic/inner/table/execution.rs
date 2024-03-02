@@ -64,7 +64,7 @@ impl ExecutionBuilder for Builder<'_> {
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<ReadValue, ExecutionError> {
+    ) -> Result<ReadValue, Box<ExecutionError>> {
         //check local scope
         if let Some(var) = self.execution().variable_by_name(name) {
             return Ok(ReadValue::ExeVar(ExprExeVar {
@@ -87,7 +87,7 @@ impl ExecutionBuilder for Builder<'_> {
         match self
             .sleigh
             .get_global(name)
-            .ok_or(ExecutionError::MissingRef(src.clone()))?
+            .ok_or_else(|| Box::new(ExecutionError::MissingRef(src.clone())))?
         {
             //TODO make sure all fields used on execution can be
             //produced by the pattern
@@ -131,7 +131,7 @@ impl ExecutionBuilder for Builder<'_> {
                     id: table,
                 }))
             }
-            _ => Err(ExecutionError::InvalidRef(src.clone())),
+            _ => Err(Box::new(ExecutionError::InvalidRef(src.clone()))),
         }
     }
 
@@ -139,7 +139,7 @@ impl ExecutionBuilder for Builder<'_> {
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<WriteValue, ExecutionError> {
+    ) -> Result<WriteValue, Box<ExecutionError>> {
         self.execution()
             .variable_by_name(name)
             .map(|var| {
@@ -150,11 +150,9 @@ impl ExecutionBuilder for Builder<'_> {
             })
             .unwrap_or_else(|| {
                 use super::GlobalScope;
-                match self
-                    .sleigh
-                    .get_global(name)
-                    .ok_or(ExecutionError::MissingRef(src.clone()))?
-                {
+                match self.sleigh.get_global(name).ok_or_else(|| {
+                    Box::new(ExecutionError::MissingRef(src.clone()))
+                })? {
                     GlobalScope::Varnode(varnode) => {
                         Ok(WriteValue::Varnode(ExprVarnode {
                             location: src.clone(),
@@ -168,9 +166,9 @@ impl ExecutionBuilder for Builder<'_> {
                             meaning.as_ref(),
                             Some(TokenFieldAttach::Varnode(_))
                         ) {
-                            return Err(ExecutionError::InvalidRef(
+                            return Err(Box::new(ExecutionError::InvalidRef(
                                 src.clone(),
-                            ));
+                            )));
                         }
                         Ok(WriteValue::TokenField(ExprTokenField {
                             location: src.clone(),
@@ -183,7 +181,7 @@ impl ExecutionBuilder for Builder<'_> {
                             id: table,
                         }))
                     }
-                    _ => Err(ExecutionError::InvalidRef(src.clone())),
+                    _ => Err(Box::new(ExecutionError::InvalidRef(src.clone()))),
                 }
             })
     }

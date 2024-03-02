@@ -33,7 +33,7 @@ pub enum Statement {
 }
 
 impl Statement {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         alt((
             //Move label out of statement?
             map(Label::parse, Self::Label),
@@ -53,7 +53,7 @@ impl Statement {
 pub struct Delayslot(pub NumberUnsigned);
 
 impl Delayslot {
-    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             terminated(
                 delimited(
@@ -75,7 +75,7 @@ pub struct Label {
 }
 
 impl Label {
-    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             delimited(tag!("<"), ident, tag!(">")),
             |(name, name_src)| Self {
@@ -92,7 +92,7 @@ pub struct Build {
     pub table_name: String,
 }
 impl Build {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             delimited(this_ident("build"), ident, tag!(";")),
             |(table_name, name_src)| Self {
@@ -121,10 +121,12 @@ impl UserCall {
     }
     pub fn parse_statement(
         input: &[Token],
-    ) -> IResult<&[Token], Self, SleighError> {
+    ) -> IResult<&[Token], Self, Box<SleighError>> {
         terminated(UserCall::parse_expr, tag!(";"))(input)
     }
-    pub fn parse_expr(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse_expr(
+        input: &[Token],
+    ) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             pair(
                 ident,
@@ -149,7 +151,7 @@ pub struct Execution {
 }
 
 impl Execution {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(many0(Statement::parse), |statements| Self { statements })(input)
     }
 }

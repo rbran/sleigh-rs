@@ -18,7 +18,7 @@ pub struct PcodeMacro {
 }
 
 impl PcodeMacro {
-    pub fn parse(input: &[Token]) -> Result<Self, SleighError> {
+    pub fn parse(input: &[Token]) -> Result<Self, Box<SleighError>> {
         let (_eof, (_, (name, src), params, body)) = terminated(
             tuple((
                 this_ident("macro"),

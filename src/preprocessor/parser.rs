@@ -1,5 +1,3 @@
-use std::borrow::Borrow;
-
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_while, take_while1};
 use nom::character::complete::{
@@ -44,7 +42,7 @@ pub(crate) fn ident(input: &str) -> IResult<&str, &str> {
     ))(input)
 }
 //TODO octal, hex and unicode code escape
-fn in_quotes<'a>(buf: &str) -> IResult<&str, String> {
+fn in_quotes(buf: &str) -> IResult<&str, String> {
     let mut ret = String::new();
     let mut skip_delimiter = false;
     for (i, ch) in buf.iter_indices() {
@@ -70,7 +68,7 @@ pub(crate) fn string(input: &str) -> IResult<&str, String> {
 
 fn number_unsig_hex(input: &str) -> IResult<&str, NumberUnsigned> {
     map_res(preceded(tag("0x"), hex_digit1), |x: &str| {
-        NumberUnsigned::from_str_radix(x.borrow(), 16)
+        NumberUnsigned::from_str_radix(x, 16)
     })(input)
 }
 fn number_unsig_bin(input: &str) -> IResult<&str, NumberUnsigned> {

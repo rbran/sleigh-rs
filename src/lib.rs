@@ -227,7 +227,7 @@ impl RangeBounds<NumberUnsigned> for FieldBits {
 #[derive(Error, Debug)]
 pub enum SleighError {
     #[error("Unable during the pre-processor phase {0}")]
-    PreProcessor(#[from] PreprocessorError),
+    PreProcessor(PreprocessorError),
 
     #[error("Missing global endian definition")]
     EndianMissing,
@@ -340,6 +340,31 @@ pub enum SleighError {
     },
 }
 
+impl nom::error::ParseError<&[preprocessor::token::Token]>
+    for Box<SleighError>
+{
+    fn from_error_kind(
+        input: &[preprocessor::token::Token],
+        kind: nom::error::ErrorKind,
+    ) -> Self {
+        Box::new(SleighError::from_error_kind(input, kind))
+    }
+
+    fn append(
+        input: &[preprocessor::token::Token],
+        kind: nom::error::ErrorKind,
+        other: Self,
+    ) -> Self {
+        Box::new(SleighError::append(input, kind, *other))
+    }
+}
+
+impl From<Box<PreprocessorError>> for Box<SleighError> {
+    fn from(value: Box<PreprocessorError>) -> Self {
+        Box::new(SleighError::PreProcessor(*value))
+    }
+}
+
 #[derive(Clone, Debug, Error)]
 pub enum TableError {
     #[error("Table Constructor can't be inserted in invalid Table name")]
@@ -356,6 +381,27 @@ pub enum TableError {
     Display(#[from] DisplayError),
     #[error("Execution Error: {0}")]
     Execution(#[from] ExecutionError),
+}
+
+impl From<Box<PatternError>> for Box<TableError> {
+    fn from(value: Box<PatternError>) -> Self {
+        Box::new(TableError::Pattern(*value))
+    }
+}
+impl From<Box<DisassemblyError>> for Box<TableError> {
+    fn from(value: Box<DisassemblyError>) -> Self {
+        Box::new(TableError::Disassembly(*value))
+    }
+}
+impl From<Box<DisplayError>> for Box<TableError> {
+    fn from(value: Box<DisplayError>) -> Self {
+        Box::new(TableError::Display(*value))
+    }
+}
+impl From<Box<ExecutionError>> for Box<TableError> {
+    fn from(value: Box<ExecutionError>) -> Self {
+        Box::new(TableError::Execution(*value))
+    }
 }
 
 #[derive(Clone, Debug, Error)]
@@ -384,6 +430,11 @@ pub enum PatternError {
 
     #[error("Invalid assignment Error")]
     ConstraintExpr(#[from] DisassemblyError),
+}
+impl From<Box<DisassemblyError>> for Box<PatternError> {
+    fn from(value: Box<DisassemblyError>) -> Self {
+        Box::new(PatternError::ConstraintExpr(*value))
+    }
 }
 
 #[derive(Clone, Debug, Error)]
@@ -466,6 +517,11 @@ pub enum PcodeMacroError {
 
     #[error("Execution Error")]
     Execution(#[from] ExecutionError),
+}
+impl From<Box<ExecutionError>> for Box<PcodeMacroError> {
+    fn from(value: Box<ExecutionError>) -> Self {
+        Box::new(PcodeMacroError::Execution(*value))
+    }
 }
 
 #[derive(Clone, Debug, Error)]
@@ -573,12 +629,10 @@ pub enum Location {
 }
 
 impl Location {
-    pub fn into_span(&self, end_line: u64, end_column: u64) -> Span {
+    pub fn end_span(&self, end_line: u64, end_column: u64) -> Span {
         match self {
-            Location::Macro(x) => {
-                Span::Macro(x.into_span(end_line, end_column))
-            }
-            Location::File(x) => Span::File(x.into_span(end_line, end_column)),
+            Location::Macro(x) => Span::Macro(x.end_span(end_line, end_column)),
+            Location::File(x) => Span::File(x.end_span(end_line, end_column)),
         }
     }
 }
@@ -603,7 +657,7 @@ pub struct MacroLocation {
 }
 
 impl MacroLocation {
-    fn into_span(&self, end_line: u64, end_column: u64) -> MacroSpan {
+    fn end_span(&self, end_line: u64, end_column: u64) -> MacroSpan {
         MacroSpan {
             start: self.clone(),
             end_line,
@@ -732,7 +786,7 @@ pub struct FileLocation {
 }
 
 impl FileLocation {
-    fn into_span(&self, end_line: u64, end_column: u64) -> FileSpan {
+    fn end_span(&self, end_line: u64, end_column: u64) -> FileSpan {
         FileSpan {
             start: self.clone(),
             end_line,
@@ -781,8 +835,8 @@ fn value_in_context(value_bit: usize, field_bits: usize) -> usize {
     (field_bits - 1) - value_bit
 }
 
-pub fn file_to_sleigh(filename: &Path) -> Result<Sleigh, SleighError> {
-    let mut pro = FilePreProcessor::new(&filename)?;
+pub fn file_to_sleigh(filename: &Path) -> Result<Sleigh, Box<SleighError>> {
+    let mut pro = FilePreProcessor::new(filename)?;
     let mut buf = vec![];
     let syntax = crate::syntax::Sleigh::parse(&mut pro, &mut buf, false)?;
     let sleigh = crate::semantic::Sleigh::new(syntax)?;

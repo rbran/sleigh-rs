@@ -270,10 +270,10 @@ impl<'a: 'b, 'b> FieldSizeIntersectIter
         S: FnMut(&'b mut dyn FieldSizeMut, &FieldSize) -> Option<bool>,
     {
         let final_len = self
-            .into_iter()
+            .iter_mut()
             .map(|x| x.get())
             .try_fold(FieldSize::default(), reduce)?;
-        self.into_iter()
+        self.iter_mut()
             .map(|size_mut| set(*size_mut, &final_len))
             .try_fold(false, |acc, x| Some(acc | x?))
     }
@@ -346,7 +346,7 @@ impl FieldSizeMut for FieldSizeMutOwned {
         (self.0 == size).then_some(false)
     }
 }
-impl<'a> From<FieldSize> for FieldSizeMutOwned {
+impl From<FieldSize> for FieldSizeMutOwned {
     fn from(input: FieldSize) -> Self {
         Self(input)
     }

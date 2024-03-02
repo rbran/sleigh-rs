@@ -28,25 +28,33 @@ pub trait ExecutionBuilder {
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<ReadValue, ExecutionError>;
+    ) -> Result<ReadValue, Box<ExecutionError>>;
     fn write_scope(
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<WriteValue, ExecutionError>;
-    fn table(&self, name: &str, src: &Span) -> Result<TableId, ExecutionError> {
+    ) -> Result<WriteValue, Box<ExecutionError>>;
+    fn table(
+        &self,
+        name: &str,
+        src: &Span,
+    ) -> Result<TableId, Box<ExecutionError>> {
         self.sleigh()
             .get_global(name)
-            .ok_or_else(|| ExecutionError::MissingRef(src.clone()))?
+            .ok_or_else(|| Box::new(ExecutionError::MissingRef(src.clone())))?
             .table()
-            .ok_or_else(|| ExecutionError::InvalidRef(src.clone()))
+            .ok_or_else(|| Box::new(ExecutionError::InvalidRef(src.clone())))
     }
-    fn space(&self, name: &str, src: &Span) -> Result<SpaceId, ExecutionError> {
+    fn space(
+        &self,
+        name: &str,
+        src: &Span,
+    ) -> Result<SpaceId, Box<ExecutionError>> {
         self.sleigh()
             .get_global(name)
-            .ok_or_else(|| ExecutionError::MissingRef(src.clone()))?
+            .ok_or_else(|| Box::new(ExecutionError::MissingRef(src.clone())))?
             .space()
-            .ok_or_else(|| ExecutionError::InvalidRef(src.clone()))
+            .ok_or_else(|| Box::new(ExecutionError::InvalidRef(src.clone())))
     }
     fn current_block(&self) -> BlockId;
     //TODO rename this
@@ -58,7 +66,7 @@ pub trait ExecutionBuilder {
             current
                 .next
                 .replace(block)
-                .map_or((), |_| panic!("multiple next"));
+                .map_or((), |_| panic!("multiple next"))
         }
         self.inner_set_curent_block(block)
     }
@@ -67,7 +75,7 @@ pub trait ExecutionBuilder {
         name: &str,
         src: &Span,
         explicit: bool,
-    ) -> Result<VariableId, ExecutionError> {
+    ) -> Result<VariableId, Box<ExecutionError>> {
         let var = self.execution_mut().create_variable(
             name.to_owned(),
             src.clone(),
@@ -85,18 +93,18 @@ pub trait ExecutionBuilder {
     fn extend(
         &mut self,
         input: syntax::block::execution::Execution,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Box<ExecutionError>> {
         //start by creating all the blocks
         for statement in input.statements.iter() {
-            match statement {
-                syntax::block::execution::Statement::Label(label) => {
-                    self.execution_mut()
-                        .new_block(label.name.to_owned())
-                        .ok_or_else(|| {
-                            ExecutionError::DuplicatedLabel(label.src.clone())
-                        })?;
-                }
-                _ => (),
+            if let syntax::block::execution::Statement::Label(label) = statement
+            {
+                self.execution_mut()
+                    .new_block(label.name.to_owned())
+                    .ok_or_else(|| {
+                        Box::new(ExecutionError::DuplicatedLabel(
+                            label.src.clone(),
+                        ))
+                    })?;
             }
         }
 
@@ -144,7 +152,9 @@ pub trait ExecutionBuilder {
                         let size = NumberNonZeroUnsigned::new(size.value)
                             .map(FieldSize::new_bytes)
                             .ok_or_else(|| {
-                                ExecutionError::InvalidVarLen(size.src)
+                                Box::new(ExecutionError::InvalidVarLen(
+                                    size.src,
+                                ))
                             })?;
                         var.size.set(size);
                     }
@@ -199,13 +209,13 @@ pub trait ExecutionBuilder {
             match iter.next() {
                 Some(first) => iter
                     .try_fold(first, |acc, item| acc.combine(item))
-                    .map(|x| Some(x)),
+                    .map(Some),
                 None => Some(None),
             }
         };
         self.execution_mut().return_value = match return_type {
             //short circuit, AKA invalid combination of return types
-            None => return Err(ExecutionError::InvalidExport),
+            None => return Err(Box::new(ExecutionError::InvalidExport)),
             //there are no returns
             Some(None) => ExportLen::None,
             //some return type
@@ -217,7 +227,7 @@ pub trait ExecutionBuilder {
     fn new_build(
         &mut self,
         input: syntax::block::execution::Build,
-    ) -> Result<Build, ExecutionError> {
+    ) -> Result<Build, Box<ExecutionError>> {
         let table_id = self.table(&input.table_name, &input.src)?;
         let location = input.src;
         Ok(Build {
@@ -231,7 +241,7 @@ pub trait ExecutionBuilder {
         &mut self,
         input: &str,
         src: &Span,
-    ) -> Result<ExportConst, ExecutionError> {
+    ) -> Result<ExportConst, Box<ExecutionError>> {
         use ReadValue::*;
         match self.read_scope(input, src)? {
             ExeVar(var) => Ok(ExportConst::ExeVar(var.id)),
@@ -246,9 +256,13 @@ pub trait ExecutionBuilder {
                     }
                     //TODO more specific error
                     //a const export can only use a table that also export const
-                    Some(_) => Err(ExecutionError::InvalidRef(src.clone())),
+                    Some(_) => {
+                        Err(Box::new(ExecutionError::InvalidRef(src.clone())))
+                    }
                     //to constructors are available yet, can't use this table
-                    None => Err(ExecutionError::InvalidRef(src.clone())),
+                    None => {
+                        Err(Box::new(ExecutionError::InvalidRef(src.clone())))
+                    }
                 }
             }
             x => todo!("Error export invalid const {:#?}", x),
@@ -257,7 +271,7 @@ pub trait ExecutionBuilder {
     fn new_export(
         &mut self,
         input: syntax::block::execution::export::Export,
-    ) -> Result<Export, ExecutionError> {
+    ) -> Result<Export, Box<ExecutionError>> {
         use syntax::block::execution::export::Export as RawExport;
         match input {
             RawExport::Value(value) => {
@@ -292,17 +306,15 @@ pub trait ExecutionBuilder {
                 let deref = self.new_addr_derefence(&space)?;
                 // if the addr is a single Disassembly variable, it affects
                 // how it's printed
-                match &addr {
-                    Expr::Value(ExprElement::Value(ReadValue::DisVar(
-                        variable,
-                    ))) => {
-                        let variable = self.disassembly_var(variable.id);
-                        variable.value_type = variable
-                            .value_type
-                            .set_space(deref.space)
-                            .ok_or(ExecutionError::InvalidExport)?;
-                    }
-                    _ => {}
+                if let Expr::Value(ExprElement::Value(ReadValue::DisVar(
+                    variable,
+                ))) = &addr
+                {
+                    let variable = self.disassembly_var(variable.id);
+                    variable.value_type =
+                        variable.value_type.set_space(deref.space).ok_or_else(
+                            || Box::new(ExecutionError::InvalidExport),
+                        )?;
                 }
                 Ok(Export::new_reference(
                     self.sleigh(),
@@ -316,15 +328,12 @@ pub trait ExecutionBuilder {
                 let size =
                     NumberNonZeroUnsigned::new(size.value).unwrap(/*TODO*/);
                 // if the value is a disassembly variable, we define it's len
-                match value {
-                    ExportConst::DisVar(id) => {
-                        let variable = self.disassembly_var(id);
-                        variable.value_type = variable
-                            .value_type
-                            .set_len(size)
-                            .ok_or(ExecutionError::InvalidExport)?;
-                    }
-                    _ => {}
+                if let ExportConst::DisVar(id) = value {
+                    let variable = self.disassembly_var(id);
+                    variable.value_type =
+                        variable.value_type.set_len(size).ok_or_else(|| {
+                            Box::new(ExecutionError::InvalidExport)
+                        })?;
                 }
                 let size = FieldSize::new_bytes(size);
                 Ok(Export::new_const(size, src, value))
@@ -334,17 +343,15 @@ pub trait ExecutionBuilder {
     fn new_call_statement(
         &mut self,
         input: syntax::block::execution::UserCall,
-    ) -> Result<Statement, ExecutionError> {
+    ) -> Result<Statement, Box<ExecutionError>> {
         let params = input
             .params
             .into_iter()
             .map(|param| self.new_expr(param))
             .collect::<Result<Vec<_>, _>>()?;
-        match self
-            .sleigh()
-            .get_global(&input.name)
-            .ok_or(ExecutionError::MissingRef(input.src.clone()))?
-        {
+        match self.sleigh().get_global(&input.name).ok_or_else(|| {
+            Box::new(ExecutionError::MissingRef(input.src.clone()))
+        })? {
             GlobalScope::UserFunction(x) => {
                 Ok(Statement::UserCall(UserCall::new(
                     self.sleigh(),
@@ -357,23 +364,21 @@ pub trait ExecutionBuilder {
             GlobalScope::PcodeMacro(x) => {
                 Ok(Statement::MacroCall(MacroCall::new(params, x)))
             }
-            _ => Err(ExecutionError::InvalidRef(input.src)),
+            _ => Err(Box::new(ExecutionError::InvalidRef(input.src))),
         }
     }
     fn new_call_expr(
         &mut self,
         input: syntax::block::execution::UserCall,
-    ) -> Result<ExprElement, ExecutionError> {
+    ) -> Result<ExprElement, Box<ExecutionError>> {
         let params = input
             .params
             .into_iter()
             .map(|param| self.new_expr(param))
             .collect::<Result<Vec<_>, _>>()?;
-        match self
-            .sleigh()
-            .get_global(&input.name)
-            .ok_or_else(|| ExecutionError::MissingRef(input.src.clone()))?
-        {
+        match self.sleigh().get_global(&input.name).ok_or_else(|| {
+            Box::new(ExecutionError::MissingRef(input.src.clone()))
+        })? {
             GlobalScope::UserFunction(function) => {
                 Ok(ExprElement::UserCall(UserCall::new(
                     self.sleigh(),
@@ -387,14 +392,14 @@ pub trait ExecutionBuilder {
                 let pmacro = self.sleigh().pcode_macro(x);
                 todo!("user defined {} exports?", &pmacro.name)
             }
-            _ => Err(ExecutionError::InvalidRef(input.src)),
+            _ => Err(Box::new(ExecutionError::InvalidRef(input.src))),
         }
     }
 
     fn new_assignment(
         &mut self,
         input: syntax::block::execution::assignment::Assignment,
-    ) -> Result<Statement, ExecutionError> {
+    ) -> Result<Statement, Box<ExecutionError>> {
         let mut right = self.new_expr(input.right)?;
         let var = self.write_scope(&input.ident, &input.src).ok();
         match (var, input.local) {
@@ -431,7 +436,7 @@ pub trait ExecutionBuilder {
             }
             //variable exists, with local is error
             (Some(_), true) => {
-                Err(ExecutionError::InvalidVarDeclare(input.src))
+                Err(Box::new(ExecutionError::InvalidVarDeclare(input.src)))
             }
             //variable exists, just return it
             (Some(var), false) => {
@@ -454,8 +459,10 @@ pub trait ExecutionBuilder {
                                 size: FieldSize::new_bytes(
                                     self.sleigh().addr_bytes().ok_or_else(
                                         || {
-                                            ExecutionError::InvalidRef(
-                                                input.src.clone(),
+                                            Box::new(
+                                                ExecutionError::InvalidRef(
+                                                    input.src.clone(),
+                                                ),
                                             )
                                         },
                                     )?,
@@ -489,7 +496,7 @@ pub trait ExecutionBuilder {
     fn new_mem_write(
         &mut self,
         input: syntax::block::execution::assignment::MemWrite,
-    ) -> Result<MemWrite, ExecutionError> {
+    ) -> Result<MemWrite, Box<ExecutionError>> {
         let mem = self.new_addr_derefence(&input.mem)?;
         let addr = self.new_expr(input.addr)?;
         let right = self.new_expr(input.right)?;
@@ -505,10 +512,10 @@ pub trait ExecutionBuilder {
     fn new_assignment_op(
         &self,
         input: syntax::block::execution::assignment::OpLeft,
-    ) -> Result<Truncate, ExecutionError> {
+    ) -> Result<Truncate, Box<ExecutionError>> {
         use syntax::block::execution::assignment::OpLeft;
         //TODO genertic error here
-        let error = ExecutionError::BitRangeZero;
+        let error = Box::new(ExecutionError::BitRangeZero);
         let ass = match input {
             OpLeft::BitRange(range) => {
                 let size =
@@ -527,7 +534,7 @@ pub trait ExecutionBuilder {
     fn new_cpu_branch_dst(
         &mut self,
         input: syntax::block::execution::branch::BranchDst,
-    ) -> Result<(bool, Expr), ExecutionError> {
+    ) -> Result<(bool, Expr), Box<ExecutionError>> {
         use syntax::block::execution::branch::BranchDst::*;
         Ok(match input {
             Label(_) => unreachable!(),
@@ -537,7 +544,7 @@ pub trait ExecutionBuilder {
     fn new_cpu_branch(
         &mut self,
         input: syntax::block::execution::branch::Branch,
-    ) -> Result<CpuBranch, ExecutionError> {
+    ) -> Result<CpuBranch, Box<ExecutionError>> {
         let cond = input.cond.map(|x| self.new_expr(x)).transpose()?;
         let call = input.call;
         let (direct, dst) = self.new_cpu_branch_dst(input.dst)?;
@@ -554,24 +561,25 @@ pub trait ExecutionBuilder {
     fn new_local_goto(
         &mut self,
         input: syntax::block::execution::branch::Branch,
-    ) -> Result<LocalGoto, ExecutionError> {
+    ) -> Result<LocalGoto, Box<ExecutionError>> {
         let cond = input.cond.map(|x| self.new_expr(x)).transpose()?;
         if !matches!(input.call, BranchCall::Goto) {
-            return Err(ExecutionError::InvalidLocalGoto);
+            return Err(Box::new(ExecutionError::InvalidLocalGoto));
         }
         let dst = match input.dst {
-            syntax::block::execution::branch::BranchDst::Label(x) => self
-                .execution()
-                .block_by_name(&x.name)
-                .ok_or_else(|| ExecutionError::MissingLabel(x.src.clone()))?,
+            syntax::block::execution::branch::BranchDst::Label(x) => {
+                self.execution().block_by_name(&x.name).ok_or_else(|| {
+                    Box::new(ExecutionError::MissingLabel(x.src.clone()))
+                })?
+            }
             _ => unreachable!(),
         };
-        Ok(LocalGoto::new(self.sleigh(), self.execution(), cond, dst)?)
+        LocalGoto::new(self.sleigh(), self.execution(), cond, dst)
     }
     fn new_expr_element(
         &mut self,
         input: syntax::block::execution::expr::ExprElement,
-    ) -> Result<ExprElement, ExecutionError> {
+    ) -> Result<ExprElement, Box<ExecutionError>> {
         use syntax::block::execution::expr::ExprElement as RawExprElement;
         match input {
             RawExprElement::Value(syntax::Value::Number(src, value)) => Ok(
@@ -615,8 +623,9 @@ pub trait ExecutionBuilder {
                 let ref_bytes = size
                     .map(|x| {
                         //TODO non generic error here
-                        NumberNonZeroUnsigned::new(x.value)
-                            .ok_or(ExecutionError::BitRangeZero)
+                        NumberNonZeroUnsigned::new(x.value).ok_or_else(|| {
+                            Box::new(ExecutionError::BitRangeZero)
+                        })
                     })
                     .transpose()?;
                 let value = match self.read_scope(&value, &src)? {
@@ -680,7 +689,7 @@ pub trait ExecutionBuilder {
                             value: ReferencedValue::Table(table),
                         })
                     }
-                    _ => return Err(ExecutionError::InvalidRef(src)),
+                    _ => return Err(Box::new(ExecutionError::InvalidRef(src))),
                 };
                 Ok(value)
             }
@@ -747,7 +756,7 @@ pub trait ExecutionBuilder {
     fn new_expr(
         &mut self,
         input: syntax::block::execution::expr::Expr,
-    ) -> Result<Expr, ExecutionError> {
+    ) -> Result<Expr, Box<ExecutionError>> {
         use syntax::block::execution::expr::Expr as RawExpr;
         match input {
             RawExpr::Value(value) => {
@@ -772,11 +781,11 @@ pub trait ExecutionBuilder {
         input: &syntax::block::execution::op::Unary,
         src: Span,
         expr: Expr,
-    ) -> Result<ExprElement, ExecutionError> {
+    ) -> Result<ExprElement, Box<ExecutionError>> {
         use syntax::block::execution::op::Unary as Op;
         let to_nonzero =
             //TODO generic error here
-            |x: NumberUnsigned| NumberNonZeroUnsigned::new(x).ok_or(ExecutionError::BitRangeZero);
+            |x: NumberUnsigned| NumberNonZeroUnsigned::new(x).ok_or_else(||Box::new(ExecutionError::BitRangeZero));
         let op = match input {
             Op::ByteRangeMsb(x) => {
                 return Ok(ExprElement::Truncate(
@@ -870,7 +879,7 @@ pub trait ExecutionBuilder {
     fn new_addr_derefence(
         &self,
         input: &syntax::block::execution::op::AddrDereference,
-    ) -> Result<MemoryLocation, ExecutionError> {
+    ) -> Result<MemoryLocation, Box<ExecutionError>> {
         let space = input
             .space
             .as_ref()
@@ -878,14 +887,14 @@ pub trait ExecutionBuilder {
             .unwrap_or_else(|| {
             self.sleigh()
                 .default_space()
-                .ok_or(ExecutionError::DefaultSpace)
+                .ok_or_else(|| Box::new(ExecutionError::DefaultSpace))
         })?;
         //size will be the lsb of size, if specified, otherwise  we can't know
         //the size directly
         let size = match input.size.as_ref() {
             Some(size) => FieldSize::new_bytes(
                 NumberNonZeroUnsigned::new(size.value)
-                    .ok_or(ExecutionError::BitRangeZero)?,
+                    .ok_or_else(|| Box::new(ExecutionError::BitRangeZero))?,
             ),
             None => FieldSize::new_unsized(),
         };

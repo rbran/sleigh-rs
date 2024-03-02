@@ -13,7 +13,7 @@ impl Sleigh {
         &mut self,
         fields: Vec<(String, Span)>,
         meaning: Meaning,
-    ) -> Result<(), SleighError> {
+    ) -> Result<(), Box<SleighError>> {
         for (field_name, field_src) in fields.into_iter() {
             match self.get_global(&field_name) {
                 Some(GlobalScope::TokenField(token_field)) => {
@@ -25,9 +25,9 @@ impl Sleigh {
                     context.attach(meaning)?;
                 }
                 _ => {
-                    return Err(SleighError::AttachInvalidVariable(
+                    return Err(Box::new(SleighError::AttachInvalidVariable(
                         field_src.clone(),
-                    ))
+                    )))
                 }
             }
         }
@@ -36,7 +36,7 @@ impl Sleigh {
     pub fn attach_meaning(
         &mut self,
         attach: syntax::attach::Attach,
-    ) -> Result<(), SleighError> {
+    ) -> Result<(), Box<SleighError>> {
         let syntax::attach::Attach {
             src,
             fields,
@@ -49,17 +49,17 @@ impl Sleigh {
                     .enumerate()
                     .filter_map(|(i, (name, s))| Some((i, name?, s)))
                     .map(
-                        |(index, var_name, var_src)| -> Result<_, SleighError> {
+                        |(index, var_name, var_src)| -> Result<_, Box<SleighError>> {
                             let var_id = self
                                 .get_global(&var_name)
                                 .ok_or_else(|| {
-                                    SleighError::VarnodeUndefined(
+                                    Box::new(SleighError::VarnodeUndefined(
                                         var_src.clone(),
-                                    )
+                                    ))
                                 })?
                                 .varnode()
                                 .ok_or_else(|| {
-                                    SleighError::VarnodeInvalid(var_src.clone())
+                                    Box::new(SleighError::VarnodeInvalid(var_src.clone()))
                                 })?;
                             Ok((index, var_id))
                         },
@@ -71,7 +71,9 @@ impl Sleigh {
                 let varnode_len = var_iter.next().unwrap();
                 for var in var_iter {
                     if var != varnode_len {
-                        return Err(SleighError::VarnodeInvalid(src.clone()));
+                        return Err(Box::new(SleighError::VarnodeInvalid(
+                            src.clone(),
+                        )));
                     }
                 }
                 self.attach_varnodes.push(AttachVarnode(vars));

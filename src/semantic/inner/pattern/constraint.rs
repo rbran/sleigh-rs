@@ -75,10 +75,10 @@ pub fn apply_value(
     };
 
     let field_bits_len = field_bits.len().get().try_into().unwrap();
-    for (value_bit, field_bit) in field_bits.0.into_iter().enumerate() {
+    for (value_bit, field_bit) in field_bits.0.enumerate() {
         let field_bit = field_bit.try_into().unwrap();
         let field_bit = field_order(field_bit, constraint.len());
-        let bit = &mut constraint[field_bit as usize];
+        let bit = &mut constraint[field_bit];
         if let Some(value) = value {
             let value_bit = value_order(value_bit, field_bits_len);
             let value_bit = (value >> value_bit) & 1 != 0;

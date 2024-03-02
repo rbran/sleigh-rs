@@ -17,13 +17,15 @@ pub enum Op {
 }
 
 impl Op {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Op, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Op, Box<SleighError>> {
         alt((value(Op::Or, tag!("|")), value(Op::And, tag!("&"))))(input)
     }
 }
 
 impl CmpOp {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], CmpOp, SleighError> {
+    pub fn parse(
+        input: &[Token],
+    ) -> IResult<&[Token], CmpOp, Box<SleighError>> {
         alt((
             value(CmpOp::Le, tag!("<=")),
             value(CmpOp::Ge, tag!(">=")),
@@ -42,7 +44,7 @@ pub struct ConstraintValue {
 }
 
 impl ConstraintValue {
-    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             alt((
                 delimited(
@@ -64,7 +66,7 @@ pub struct Constraint {
 }
 
 impl Constraint {
-    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(pair(CmpOp::parse, ConstraintValue::parse), |(op, value)| {
             Self { op, value }
         })(input)
@@ -81,7 +83,7 @@ pub enum Field {
     SubPattern(Pattern),
 }
 impl Field {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         alt((
             map(delimited(tag!("("), Pattern::parse, tag!(")")), |sub| {
                 Field::SubPattern(sub)
@@ -105,7 +107,7 @@ pub struct Element {
 }
 
 impl Element {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map_res(
             tuple((
                 opt(map(tag!("..."), |span| (Ellipsis::Left, span))),
@@ -119,7 +121,9 @@ impl Element {
                             left.clone().start(),
                             right.clone().end(),
                         );
-                        return Err(SleighError::DualEllipsis(location));
+                        return Err(Box::new(SleighError::DualEllipsis(
+                            location,
+                        )));
                     }
                     (left, right) => left.or(right).map(|(e, _)| e),
                 };
@@ -140,7 +144,7 @@ impl Block {
     pub fn op(&self) -> Op {
         self.elements.first().map(|(op, _)| *op).unwrap_or(Op::And)
     }
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             tuple((Element::parse, many0(pair(Op::parse, Element::parse)))),
             |(first, elements)| {
@@ -177,11 +181,11 @@ impl IntoIterator for Pattern {
 }
 
 impl Pattern {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         let (rest, pattern) =
             map(separated_list0(tag!(";"), Block::parse), |blocks| Pattern {
                 //TODO improve the src here
-                src: input.get(0).unwrap().location.clone(),
+                src: input.first().unwrap().location.clone(),
                 blocks,
             })(input)?;
         Ok((rest, pattern))

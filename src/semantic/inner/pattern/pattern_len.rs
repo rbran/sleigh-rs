@@ -62,43 +62,42 @@ impl ConstructorPatternLen {
     }
     ///the max possible pattern len size, None is infinite maximum possible len
     pub fn max(&self) -> Option<NumberUnsigned> {
-        self.basic().map(|len| len.max()).flatten()
+        self.basic().and_then(|len| len.max())
     }
     //TODO replace Option with Result?
     pub fn add(self, other: Self) -> Option<Self> {
-        let new_self = match (self, other) {
-            (Self::Basic(x), Self::Basic(y)) => Self::Basic(x.concat(y)),
+        match (self, other) {
+            (Self::Basic(x), Self::Basic(y)) => Some(Self::Basic(x.concat(y))),
             //NonGrowingRecursize concat with a basic block, result in a
             //GrowingRecursive
             (Self::NonGrowingRecursive(non_grow), Self::Basic(basic))
             | (Self::Basic(basic), Self::NonGrowingRecursive(non_grow)) => {
-                Self::GrowingRecursive {
+                Some(Self::GrowingRecursive {
                     grow: basic,
                     non_grow,
-                }
+                })
             }
             //Growing Recursive concat with a basic, just grows
             (Self::GrowingRecursive { grow, non_grow }, Self::Basic(basic))
             | (Self::Basic(basic), Self::GrowingRecursive { grow, non_grow }) => {
-                Self::GrowingRecursive {
+                Some(Self::GrowingRecursive {
                     grow: grow.concat(basic),
                     non_grow,
-                }
+                })
             }
             //a pattern can only have one SelfRecursive, so this is invalid
             (
                 Self::GrowingRecursive { .. } | Self::NonGrowingRecursive(_),
                 Self::GrowingRecursive { .. } | Self::NonGrowingRecursive(_),
-            ) => return None,
-        };
-        Some(new_self)
+            ) => None,
+        }
     }
     pub fn greater(self, other: Self) -> Option<Self> {
         match (self, other) {
             (
                 Self::GrowingRecursive { .. } | Self::NonGrowingRecursive(_),
                 Self::GrowingRecursive { .. } | Self::NonGrowingRecursive(_),
-            ) => return None,
+            ) => None,
             (Self::Basic(x), Self::Basic(y)) => Some(Self::Basic(x.greater(y))),
             (
                 Self::Basic(x) | Self::NonGrowingRecursive(x),

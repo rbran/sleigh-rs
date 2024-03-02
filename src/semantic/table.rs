@@ -46,19 +46,19 @@ pub struct Constructor {
     pub location: Span,
     // the bit pattern for all possible variants in the pattern,
     // impossible variants are simply not present here
+    #[allow(clippy::type_complexity)]
     pub(crate) variants_bits:
         Box<[(VariantId, Box<[BitConstraint]>, Box<[BitConstraint]>)]>,
 }
 
 impl Constructor {
-    pub fn variants<'a>(
-        &'a self,
-    ) -> impl Iterator<
-        Item = (VariantId, &'a [BitConstraint], &'a [BitConstraint]),
-    > + 'a {
-        self.variants_bits.iter().map(|(id, context, token)| {
-            (*id, context.as_ref(), token.as_ref())
-        })
+    pub fn variants(
+        &self,
+    ) -> impl Iterator<Item = (VariantId, &'_ [BitConstraint], &'_ [BitConstraint])>
+    {
+        self.variants_bits
+            .iter()
+            .map(|(id, context, token)| (*id, context.as_ref(), token.as_ref()))
     }
     pub fn variant(
         &self,

@@ -50,7 +50,7 @@ impl PrintFlags {
     pub fn from_token_att<'a>(
         src: &Span,
         att: impl Iterator<Item = &'a TokenFieldAttribute>,
-    ) -> Result<Self, SleighError> {
+    ) -> Result<Self, Box<SleighError>> {
         let (mut signed_set, mut base) = (false, None);
         for att in att {
             use syntax::define::TokenFieldAttribute::*;
@@ -58,11 +58,15 @@ impl PrintFlags {
                 Hex if base.is_none() => base = Some(PrintBase::Hex),
                 Dec if base.is_none() => base = Some(PrintBase::Dec),
                 Hex | Dec => {
-                    return Err(SleighError::TokenFieldAttachDup(src.clone()))
+                    return Err(Box::new(SleighError::TokenFieldAttachDup(
+                        src.clone(),
+                    )))
                 }
                 Signed if !signed_set => signed_set = true,
                 Signed => {
-                    return Err(SleighError::TokenFieldAttDup(src.clone()))
+                    return Err(Box::new(SleighError::TokenFieldAttDup(
+                        src.clone(),
+                    )))
                 }
             }
         }
@@ -261,26 +265,29 @@ impl Sleigh {
     pub fn get_global(&self, name: &str) -> Option<GlobalScope> {
         self.global_scope.get(name).copied()
     }
-    pub fn set_endian(&mut self, endian: Endian) -> Result<(), SleighError> {
+    pub fn set_endian(
+        &mut self,
+        endian: Endian,
+    ) -> Result<(), Box<SleighError>> {
         self.endian
             .replace(endian)
-            .map(|_old| Err(SleighError::EndianMultiple))
+            .map(|_old| Err(Box::new(SleighError::EndianMultiple)))
             .unwrap_or(Ok(()))
     }
     pub fn set_alignment(
         &mut self,
         align: syntax::define::Alignment,
-    ) -> Result<(), SleighError> {
+    ) -> Result<(), Box<SleighError>> {
         self.alignment
             .replace(align.0)
-            .map(|_| Err(SleighError::AlignmentMultiple))
+            .map(|_| Err(Box::new(SleighError::AlignmentMultiple)))
             .unwrap_or(Ok(()))
     }
     fn process(
         &mut self,
         with_block_current: &mut WithBlockCurrent,
         syntax: syntax::Sleigh,
-    ) -> Result<(), SleighError> {
+    ) -> Result<(), Box<SleighError>> {
         for assertation in syntax.assertations.into_iter() {
             use syntax::define::Define::*;
             use syntax::Assertation::*;
@@ -315,7 +322,7 @@ impl Sleigh {
         Some(space.addr_bytes)
     }
 
-    pub fn new(syntax: syntax::Sleigh) -> Result<Self, SleighError> {
+    pub fn new(syntax: syntax::Sleigh) -> Result<Self, Box<SleighError>> {
         let instruction_table =
             Table::new_empty(true, IDENT_INSTRUCTION.to_owned());
         let instruction_table_id = TableId(0);

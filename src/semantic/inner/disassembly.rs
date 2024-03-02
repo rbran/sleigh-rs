@@ -16,11 +16,11 @@ pub trait ExprBuilder {
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<ReadScope, DisassemblyError>;
+    ) -> Result<ReadScope, Box<DisassemblyError>>;
     fn new_expr(
         &mut self,
         input: syntax::block::disassembly::Expr,
-    ) -> Result<Expr, DisassemblyError> {
+    ) -> Result<Expr, Box<DisassemblyError>> {
         let rpn = input
             .rpn
             .into_iter()
@@ -31,7 +31,7 @@ pub trait ExprBuilder {
     fn new_expr_element(
         &mut self,
         input: syntax::block::disassembly::ExprElement,
-    ) -> Result<ExprElement, DisassemblyError> {
+    ) -> Result<ExprElement, Box<DisassemblyError>> {
         match input {
             syntax::block::disassembly::ExprElement::Value(
                 syntax::Value::Number(src, int),
@@ -101,18 +101,16 @@ impl<'a, 'b> ExprBuilder for Builder<'a, 'b> {
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<ReadScope, DisassemblyError> {
+    ) -> Result<ReadScope, Box<DisassemblyError>> {
         use super::GlobalScope;
         self.pattern
             .disassembly_variable_names
             .get(name)
             .map(|local| Ok(ReadScope::Local(*local)))
             .unwrap_or_else(|| {
-                match self
-                    .sleigh
-                    .get_global(name)
-                    .ok_or(DisassemblyError::MissingRef(src.clone()))?
-                {
+                match self.sleigh.get_global(name).ok_or_else(|| {
+                    Box::new(DisassemblyError::MissingRef(src.clone()))
+                })? {
                     GlobalScope::InstNext(x) => {
                         //inst_next can only be known after the pattern is
                         //completly match
@@ -122,14 +120,20 @@ impl<'a, 'b> ExprBuilder for Builder<'a, 'b> {
                     GlobalScope::InstStart(x) => Ok(ReadScope::InstStart(x)),
                     GlobalScope::TokenField(x) => {
                         //check the pattern will produce this field
-                        let Ok(Some(block_num)) = self.pattern.produce_token_field(&self.sleigh, x) else {
-                            return Err(DisassemblyError::InvalidRef(src.clone()))
+                        let Ok(Some(block_num)) =
+                            self.pattern.produce_token_field(self.sleigh, x)
+                        else {
+                            return Err(Box::new(
+                                DisassemblyError::InvalidRef(src.clone()),
+                            ));
                         };
                         self.block_counter.pre_disassembly_at(block_num);
                         Ok(ReadScope::TokenField(x))
                     }
                     GlobalScope::Context(x) => Ok(ReadScope::Context(x)),
-                    _ => Err(DisassemblyError::InvalidRef(src.clone())),
+                    _ => {
+                        Err(Box::new(DisassemblyError::InvalidRef(src.clone())))
+                    }
                 }
             })
     }
@@ -163,7 +167,7 @@ impl<'a, 'b> Builder<'a, 'b> {
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<AddrScope, DisassemblyError> {
+    ) -> Result<AddrScope, Box<DisassemblyError>> {
         use super::GlobalScope::*;
         //get from local, otherwise get from global
         self.pattern
@@ -171,11 +175,9 @@ impl<'a, 'b> Builder<'a, 'b> {
             .get(name)
             .map(|local| Ok(AddrScope::Local(*local)))
             .unwrap_or_else(|| {
-                match self
-                    .sleigh
-                    .get_global(name)
-                    .ok_or(DisassemblyError::MissingRef(src.clone()))?
-                {
+                match self.sleigh.get_global(name).ok_or_else(|| {
+                    Box::new(DisassemblyError::MissingRef(src.clone()))
+                })? {
                     //TODO make sure the pattern will produce this table
                     Table(x) => {
                         //TODO error
@@ -191,7 +193,9 @@ impl<'a, 'b> Builder<'a, 'b> {
                         self.block_counter.post_match();
                         Ok(AddrScope::InstNext(x))
                     }
-                    _ => Err(DisassemblyError::InvalidRef(src.clone())),
+                    _ => {
+                        Err(Box::new(DisassemblyError::InvalidRef(src.clone())))
+                    }
                 }
             })
     }
@@ -200,7 +204,7 @@ impl<'a, 'b> Builder<'a, 'b> {
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<WriteScope, DisassemblyError> {
+    ) -> Result<WriteScope, Box<DisassemblyError>> {
         //if variable exists, return it
         if let Some(var) = self.pattern.disassembly_variable_names.get(name) {
             return Ok(WriteScope::Local(*var));
@@ -211,8 +215,7 @@ impl<'a, 'b> Builder<'a, 'b> {
         if let Some(context) = self
             .sleigh
             .get_global(name)
-            .map(|global| global.context())
-            .flatten()
+            .and_then(|global| global.context())
         {
             return Ok(WriteScope::Context(context));
         }
@@ -233,20 +236,22 @@ impl<'a, 'b> Builder<'a, 'b> {
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<ContextId, DisassemblyError> {
+    ) -> Result<ContextId, Box<DisassemblyError>> {
         let context = self
             .sleigh
             .get_global(name)
-            .ok_or_else(|| DisassemblyError::MissingRef(src.clone()))?
+            .ok_or_else(|| Box::new(DisassemblyError::MissingRef(src.clone())))?
             .context()
-            .ok_or_else(|| DisassemblyError::InvalidRef(src.clone()))?;
+            .ok_or_else(|| {
+                Box::new(DisassemblyError::InvalidRef(src.clone()))
+            })?;
         Ok(context)
     }
 
     fn new_globalset(
         &mut self,
         input: syntax::block::disassembly::GlobalSet,
-    ) -> Result<GlobalSet, DisassemblyError> {
+    ) -> Result<GlobalSet, Box<DisassemblyError>> {
         let (_src, address) = match input.address {
             syntax::Value::Number(src, int) => {
                 let addr = AddrScope::Integer(int.unsigned().unwrap());
@@ -266,7 +271,7 @@ impl<'a, 'b> Builder<'a, 'b> {
     fn new_assignment(
         &mut self,
         input: syntax::block::disassembly::Assignment,
-    ) -> Result<Assignment, DisassemblyError> {
+    ) -> Result<Assignment, Box<DisassemblyError>> {
         let left = self.write_scope(&input.left, &input.left_span)?;
         let right = self.new_expr(input.right)?;
         Ok(Assignment { left, right })
@@ -274,7 +279,7 @@ impl<'a, 'b> Builder<'a, 'b> {
     fn new_assertation(
         &mut self,
         input: syntax::block::disassembly::Assertation,
-    ) -> Result<Assertation, DisassemblyError> {
+    ) -> Result<Assertation, Box<DisassemblyError>> {
         match input {
             syntax::block::disassembly::Assertation::GlobalSet(globalset) => {
                 self.new_globalset(globalset).map(Assertation::GlobalSet)
@@ -287,16 +292,11 @@ impl<'a, 'b> Builder<'a, 'b> {
     pub fn build(
         mut self,
         input: syntax::block::disassembly::Disassembly,
-    ) -> Result<(), DisassemblyError> {
-        input
-            .assertations
-            .into_iter()
-            .map(|input| {
-                self.new_assertation(input)
-                    .map(|ass| self.insert_assertation(ass))
-            })
-            .collect::<Result<_, _>>()?;
-        Ok(())
+    ) -> Result<(), Box<DisassemblyError>> {
+        input.assertations.into_iter().try_for_each(|input| {
+            self.new_assertation(input)
+                .map(|ass| self.insert_assertation(ass))
+        })
     }
 }
 

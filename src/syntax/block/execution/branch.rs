@@ -17,10 +17,12 @@ pub struct Branch {
     pub dst: BranchDst,
 }
 impl Branch {
-    pub fn parse_cond(input: &[Token]) -> IResult<&[Token], Expr, SleighError> {
+    pub fn parse_cond(
+        input: &[Token],
+    ) -> IResult<&[Token], Expr, Box<SleighError>> {
         preceded(tag!("if"), expr::Expr::parse)(input)
     }
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             terminated(
                 tuple((
@@ -38,7 +40,7 @@ impl Branch {
 impl BranchCall {
     pub fn parse(
         input: &[Token],
-    ) -> IResult<&[Token], BranchCall, SleighError> {
+    ) -> IResult<&[Token], BranchCall, Box<SleighError>> {
         alt((
             value(BranchCall::Goto, tag!("goto")),
             value(BranchCall::Call, tag!("call")),
@@ -53,9 +55,9 @@ pub enum BranchDst {
     Cpu { direct: bool, expr: expr::Expr },
 }
 impl BranchDst {
-    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         alt((
-            map(Label::parse, |label| Self::Label(label)),
+            map(Label::parse, Self::Label),
             map(expr::Expr::parse, |expr| Self::Cpu { direct: true, expr }),
             map(delimited(tag!("["), expr::Expr::parse, tag!("]")), |expr| {
                 Self::Cpu {

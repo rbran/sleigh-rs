@@ -16,10 +16,10 @@ use crate::{Endian, SleighError};
 use crate::preprocessor::token::Token as ParserToken;
 
 pub use self::alignment::Alignment;
-pub use self::bitrange::{BitRangeDef, VarnodeField};
-pub use self::context::{Context, ContextField, ContextFieldAttribute};
+pub use self::bitrange::BitRangeDef;
+pub use self::context::{Context, ContextFieldAttribute};
 pub use self::space::{Attribute, Space};
-pub use self::token::{Token, TokenField, TokenFieldAttribute};
+pub use self::token::{Token, TokenFieldAttribute};
 pub use self::user_function::UserFunction;
 pub use self::varnode::Varnode;
 
@@ -39,7 +39,7 @@ pub enum Define {
 
 pub fn parse_endian(
     input: &[ParserToken],
-) -> IResult<&[ParserToken], Endian, SleighError> {
+) -> IResult<&[ParserToken], Endian, Box<SleighError>> {
     preceded(
         pair(this_ident("endian"), tag!("=")),
         cut(alt((
@@ -50,7 +50,7 @@ pub fn parse_endian(
 }
 
 impl Define {
-    pub fn parse(input: &[ParserToken]) -> Result<Define, SleighError> {
+    pub fn parse(input: &[ParserToken]) -> Result<Define, Box<SleighError>> {
         let (_eof, define) = preceded(
             this_ident("define"),
             cut(terminated(

@@ -11,7 +11,7 @@ use crate::syntax::Value;
 use crate::{SleighError, Span};
 
 impl OpUnary {
-    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         use OpUnary::*;
         alt((value(Negation, tag!("~")), value(Negative, tag!("-"))))(input)
     }
@@ -20,14 +20,16 @@ impl Op {
     fn parse(
         input: &[Token],
         safe: bool,
-    ) -> IResult<&[Token], Self, SleighError> {
+    ) -> IResult<&[Token], Self, Box<SleighError>> {
         if safe {
             Self::parse_safe(input)
         } else {
             Self::parse_unsafe(input)
         }
     }
-    fn parse_unsafe(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    fn parse_unsafe(
+        input: &[Token],
+    ) -> IResult<&[Token], Self, Box<SleighError>> {
         alt((
             value(Self::Add, tag!("+")),
             value(Self::Sub, tag!("-")),
@@ -40,7 +42,9 @@ impl Op {
             value(Self::Xor, tag!("$xor")),
         ))(input)
     }
-    fn parse_safe(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    fn parse_safe(
+        input: &[Token],
+    ) -> IResult<&[Token], Self, Box<SleighError>> {
         alt((
             Self::parse_unsafe,
             value(Self::And, tag!("&")),
@@ -67,7 +71,7 @@ impl<'a> InnerExpr<'a> {
     fn open_parenthesis(
         &mut self,
         input: &'a [Token],
-    ) -> IResult<&'a [Token], (), SleighError> {
+    ) -> IResult<&'a [Token], (), Box<SleighError>> {
         let (input, span) = tag!("(")(input)?;
         //open parentessis goes on top of all ops
         self.operators
@@ -77,12 +81,12 @@ impl<'a> InnerExpr<'a> {
     fn close_parenthesis(
         &mut self,
         input: &'a [Token],
-    ) -> IResult<&'a [Token], (), SleighError> {
+    ) -> IResult<&'a [Token], (), Box<SleighError>> {
         let (input, location) = tag!(")")(input)?;
         //pop until we find the open parenthesis
         loop {
             let op = self.operators.pop().ok_or_else(|| {
-                SleighError::StatementInvalid(location.clone())
+                Box::new(SleighError::StatementInvalid(location.clone()))
             })?;
             match op {
                 InnerExprOperators::OpenParenthesis(_span) => break,
@@ -99,24 +103,23 @@ impl<'a> InnerExpr<'a> {
     fn parse_op_unary(
         &mut self,
         input: &'a [Token],
-    ) -> IResult<&'a [Token], (), SleighError> {
+    ) -> IResult<&'a [Token], (), Box<SleighError>> {
         map(opt(OpUnary::parse), |op| {
             if let Some(op) = op {
                 self.operators.push(InnerExprOperators::OpUnary(op));
             }
-            ()
         })(input)
     }
     fn parse_op(
         &mut self,
         input: &'a [Token],
         safe: bool,
-    ) -> IResult<&'a [Token], (), SleighError> {
+    ) -> IResult<&'a [Token], (), Box<SleighError>> {
         let (input, op) = Op::parse(input, safe)?;
         //unstack the operation until it is able to put this op to the stack
         loop {
             let Some(last_op) = self.operators.pop() else {
-                break
+                break;
             };
             match last_op {
                 //only if the op have a smaller precedence that this one
@@ -149,7 +152,7 @@ impl<'a> InnerExpr<'a> {
     fn value(
         &mut self,
         input: &'a [Token],
-    ) -> IResult<&'a [Token], (), SleighError> {
+    ) -> IResult<&'a [Token], (), Box<SleighError>> {
         map(Value::parse_signed, |x| {
             self.output.push(ExprElement::Value(x))
         })(input)
@@ -157,7 +160,7 @@ impl<'a> InnerExpr<'a> {
     fn expr_rec(
         &mut self,
         input: &'a [Token],
-    ) -> IResult<&'a [Token], (), SleighError> {
+    ) -> IResult<&'a [Token], (), Box<SleighError>> {
         let (input, ()) = self.parse_op_unary(input).unwrap();
 
         let input = if let Ok((input, _span)) = self.value(input) {
@@ -174,7 +177,7 @@ impl<'a> InnerExpr<'a> {
         &mut self,
         input: &'a [Token],
         safe: bool,
-    ) -> IResult<&'a [Token], (), SleighError> {
+    ) -> IResult<&'a [Token], (), Box<SleighError>> {
         //first element is required
         let (input, _) = self.expr_rec(input)?;
         //then we get 0 or more Op Field after that.
@@ -183,7 +186,7 @@ impl<'a> InnerExpr<'a> {
     fn parse(
         input: &'a [Token],
         safe: bool,
-    ) -> IResult<&'a [Token], Vec<ExprElement>, SleighError> {
+    ) -> IResult<&'a [Token], Vec<ExprElement>, Box<SleighError>> {
         let mut rpn = Self::default();
         let (input, _) = rpn.expr(input, safe)?;
         //pop all operators into the output
@@ -192,8 +195,8 @@ impl<'a> InnerExpr<'a> {
                 InnerExprOperators::Op(op) => ExprElement::Op(op),
                 InnerExprOperators::OpUnary(op) => ExprElement::OpUnary(op),
                 InnerExprOperators::OpenParenthesis(span) => {
-                    return Err(nom::Err::Error(SleighError::StatementInvalid(
-                        span.clone(),
+                    return Err(nom::Err::Error(Box::new(
+                        SleighError::StatementInvalid(span.clone()),
                     )))
                 }
             };
@@ -225,7 +228,7 @@ impl Expr {
     pub fn parse(
         input: &[Token],
         safe: bool,
-    ) -> IResult<&[Token], Self, SleighError> {
+    ) -> IResult<&[Token], Self, Box<SleighError>> {
         let (input, inner_expr) = InnerExpr::parse(input, safe)?;
         Ok((input, Self { rpn: inner_expr }))
     }
@@ -238,7 +241,7 @@ pub struct GlobalSet {
     pub context: String,
 }
 impl GlobalSet {
-    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             tuple((
                 terminated(this_ident("globalset"), tag!("(")),
@@ -263,7 +266,7 @@ pub struct Assignment {
 }
 
 impl Assignment {
-    fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             terminated(
                 separated_pair(ident, tag!("="), |x| Expr::parse(x, true)),
@@ -285,7 +288,7 @@ pub enum Assertation {
 }
 
 impl Assertation {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         alt((
             map(GlobalSet::parse, Self::GlobalSet),
             map(Assignment::parse, Self::Assignment),
@@ -308,7 +311,7 @@ impl IntoIterator for Disassembly {
 }
 
 impl Disassembly {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(many0(Assertation::parse), |assertations| Self {
             assertations,
         })(input)

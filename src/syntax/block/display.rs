@@ -15,7 +15,9 @@ pub enum DisplayElement {
 pub struct Display(pub Vec<DisplayElement>);
 
 impl Display {
-    pub fn parse(input: &mut FilePreProcessor) -> Result<Self, SleighError> {
+    pub fn parse(
+        input: &mut FilePreProcessor,
+    ) -> Result<Self, Box<SleighError>> {
         let mut display = vec![];
         loop {
             let token = input.parse_display()?;

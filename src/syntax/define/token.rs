@@ -24,7 +24,7 @@ pub struct Token {
 impl Token {
     pub fn parse(
         input: &[ParserToken],
-    ) -> IResult<&[ParserToken], Self, SleighError> {
+    ) -> IResult<&[ParserToken], Self, Box<SleighError>> {
         map(
             preceded(
                 this_ident("token"),
@@ -57,7 +57,7 @@ pub struct TokenField {
 impl TokenField {
     pub fn parse(
         input: &[ParserToken],
-    ) -> IResult<&[ParserToken], Self, SleighError> {
+    ) -> IResult<&[ParserToken], Self, Box<SleighError>> {
         map(
             tuple((
                 terminated(ident, tag!("=")),
@@ -92,10 +92,12 @@ impl TokenFieldAttribute {
     }
     fn parse(
         input_ori: &[ParserToken],
-    ) -> IResult<&[ParserToken], TokenFieldAttribute, SleighError> {
+    ) -> IResult<&[ParserToken], TokenFieldAttribute, Box<SleighError>> {
         let (input, (att, span)) = ident(input_ori)?;
         Self::from_str(&att)
             .map(|att| (input, att))
-            .ok_or(nom::Err::Error(SleighError::StatementInvalid(span.clone())))
+            .ok_or(nom::Err::Error(Box::new(SleighError::StatementInvalid(
+                span.clone(),
+            ))))
     }
 }

@@ -44,12 +44,10 @@ impl AttachNumber {
             .max()
             .unwrap();
         let len_bits = NumberNonZeroUnsigned::new(len_bits.into()).unwrap();
-        FieldSize::default()
-            .set_min(len_bits.try_into().unwrap())
-            .unwrap()
+        FieldSize::default().set_min(len_bits).unwrap()
     }
     pub fn is_signed(&self) -> bool {
-        self.0.iter().find(|(_i, v)| v.is_negative()).is_some()
+        self.0.iter().any(|(_i, v)| v.is_negative())
     }
 }
 
@@ -77,7 +75,7 @@ impl Meaning {
     ) -> Option<FieldSize> {
         match self {
             // name don't change the value size
-            Meaning::NoAttach(_) | Meaning::Literal(_) => return None,
+            Meaning::NoAttach(_) | Meaning::Literal(_) => None,
             Meaning::Varnode(vars_id) => {
                 let vars = sleigh.attach_varnode(*vars_id);
                 let varnode_bits =
@@ -94,11 +92,7 @@ impl Meaning {
                     .unwrap();
                 let len_bits =
                     NumberNonZeroUnsigned::new(len_bits.into()).unwrap();
-                Some(
-                    FieldSize::default()
-                        .set_min(len_bits.try_into().unwrap())
-                        .unwrap(),
-                )
+                Some(FieldSize::default().set_min(len_bits).unwrap())
             }
         }
     }

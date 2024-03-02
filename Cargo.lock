@@ -44,7 +44,7 @@ dependencies = [
 
 [[package]]
 name = "sleigh-rs"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "nom",
  "thiserror",

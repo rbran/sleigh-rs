@@ -241,7 +241,7 @@ impl Export {
         sleigh: &Sleigh,
         execution: &Execution,
         solved: &mut impl SolverStatus,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Box<ExecutionError>> {
         match self {
             Self::Const { .. } => Ok(()),
             Self::Value(expr) => expr.solve(sleigh, execution, solved),
@@ -326,7 +326,7 @@ impl MemWrite {
         sleigh: &Sleigh,
         execution: &Execution,
         solved: &mut impl SolverStatus,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Box<ExecutionError>> {
         self.right.solve(sleigh, execution, solved)?;
         //exception in case the right size is smaller then the left size,
         //truncate the right size with a msb(0)
@@ -374,9 +374,9 @@ impl MemWrite {
                 .update_action(|size| {
                     size.set_max(write_size)?.set_possible_value(write_size)
                 });
-            if modified
-                .ok_or_else(|| ExecutionError::VarSize(self.mem.src.clone()))?
-            {
+            if modified.ok_or_else(|| {
+                Box::new(ExecutionError::VarSize(self.mem.src.clone()))
+            })? {
                 solved.i_did_a_thing();
             }
         } else {
@@ -385,9 +385,9 @@ impl MemWrite {
             let modified = self.mem.size.update_action(|size| {
                 size.intersection(self.right.size(sleigh, execution))
             });
-            if modified
-                .ok_or_else(|| ExecutionError::VarSize(self.src.clone()))?
-            {
+            if modified.ok_or_else(|| {
+                Box::new(ExecutionError::VarSize(self.src.clone()))
+            })? {
                 solved.i_did_a_thing();
             }
         }
@@ -428,9 +428,9 @@ impl Assignment {
         sleigh: &Sleigh,
         execution: &Execution,
         solved: &mut impl SolverStatus,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Box<ExecutionError>> {
         let error_src = self.right.src().clone();
-        let error = || ExecutionError::VarSize(error_src.clone());
+        let error = || Box::new(ExecutionError::VarSize(error_src.clone()));
         self.right.solve(sleigh, execution, solved)?;
 
         //exception in case the right result is 1 bit and the left is
@@ -497,15 +497,13 @@ impl Assignment {
             //if right size is possible min, so does left if size is not defined
             if self.var.size(sleigh, execution).is_undefined()
                 && self.right.size(sleigh, execution).possible_min()
-            {
-                if self
+                && self
                     .var
                     .size_mut(sleigh, execution)
                     .update_action(|size| Some(size.set_possible_min()))
                     .unwrap()
-                {
-                    solved.i_did_a_thing();
-                }
+            {
+                solved.i_did_a_thing();
             }
             if modified.ok_or_else(error)? {
                 solved.i_did_a_thing()
@@ -589,7 +587,7 @@ impl MacroCall {
         sleigh: &Sleigh,
         execution: &Execution,
         solved: &mut T,
-    ) -> Result<(), ExecutionError>
+    ) -> Result<(), Box<ExecutionError>>
     where
         T: SolverStatus + Default,
     {
@@ -611,7 +609,7 @@ impl MacroCall {
             if param
                 .size_mut(sleigh, execution)
                 .update_action(|size| size.intersection(macro_param.size.get()))
-                .ok_or(ExecutionError::VarSize(src))?
+                .ok_or_else(|| Box::new(ExecutionError::VarSize(src)))?
             {
                 solved.we_did_a_thing();
             }
@@ -627,7 +625,9 @@ impl MacroCall {
         if let Some(params_size) = params_size {
             let pcode_macro = sleigh.pcode_macro(self.instance.macro_id);
             self.instance.instance_id = Some(
-                pcode_macro.specialize(&params_size).map_err(|_| todo!())?,
+                pcode_macro
+                    .specialize(&params_size)
+                    .map_err(|_| -> Box<ExecutionError> { todo!() })?,
             );
             solved.i_did_a_thing();
         }
@@ -673,11 +673,10 @@ impl UserCall {
         sleigh: &Sleigh,
         execution: &Execution,
         solved: &mut impl SolverStatus,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Box<ExecutionError>> {
         self.params
             .iter_mut()
-            .map(|x| x.solve(sleigh, execution, solved))
-            .collect::<Result<_, _>>()
+            .try_for_each(|x| x.solve(sleigh, execution, solved))
     }
     pub fn convert(self) -> FinalUserCall {
         let params = self.params.into_iter().map(|x| x.convert()).collect();
@@ -695,7 +694,7 @@ impl LocalGoto {
         execution: &Execution,
         mut cond: Option<Expr>,
         dst: BlockId,
-    ) -> Result<Self, ExecutionError> {
+    ) -> Result<Self, Box<ExecutionError>> {
         //condition can have any size, preferencially 1 bit for true/false
         cond.iter_mut().for_each(|cond| {
             cond.size_mut(sleigh, execution)
@@ -709,7 +708,7 @@ impl LocalGoto {
         sleigh: &Sleigh,
         execution: &Execution,
         solved: &mut impl SolverStatus,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Box<ExecutionError>> {
         if let Some(cond) = self.cond.as_mut() {
             cond.solve(sleigh, execution, solved)?;
             if cond.size(sleigh, execution).is_undefined() {
@@ -753,7 +752,7 @@ impl CpuBranch {
         sleigh: &Sleigh,
         execution: &Execution,
         solved: &mut impl SolverStatus,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Box<ExecutionError>> {
         let mut modified = false;
         if let Some(cond) = self.cond.as_mut() {
             cond.solve(sleigh, execution, solved)?;
@@ -762,7 +761,7 @@ impl CpuBranch {
             }
         }
         //correlate the addr execution size and the jmp dest addr size
-        let error = ExecutionError::VarSize(self.dst.src().clone());
+        let error = Box::new(ExecutionError::VarSize(self.dst.src().clone()));
         modified |= [
             &mut self.dst.size_mut(sleigh, execution) as &mut dyn FieldSizeMut,
             &mut FieldSizeMutOwned::from(FieldSize::new_bytes(
@@ -770,7 +769,7 @@ impl CpuBranch {
             )),
         ]
         .all_same_lenght()
-        .ok_or_else(|| error)?;
+        .ok_or(error)?;
 
         self.dst.solve(sleigh, execution, solved)?;
         if self.dst.size(sleigh, execution).is_undefined() {
@@ -800,7 +799,7 @@ impl Statement {
         sleigh: &Sleigh,
         execution: &Execution,
         solved: &mut T,
-    ) -> Result<(), ExecutionError>
+    ) -> Result<(), Box<ExecutionError>>
     where
         T: SolverStatus + Default,
     {
@@ -849,14 +848,13 @@ impl Block {
         sleigh: &Sleigh,
         execution: &Execution,
         solved: &mut T,
-    ) -> Result<(), ExecutionError>
+    ) -> Result<(), Box<ExecutionError>>
     where
         T: SolverStatus + Default,
     {
-        self.statements
-            .iter_mut()
-            .map(|statements| statements.solve(sleigh, execution, solved))
-            .collect::<Result<(), _>>()
+        self.statements.iter_mut().try_for_each(|statements| {
+            statements.solve(sleigh, execution, solved)
+        })
     }
     pub fn convert(self) -> FinalBlock {
         let statements = self
@@ -994,15 +992,14 @@ impl Execution {
         &mut self,
         sleigh: &Sleigh,
         solved: &mut T,
-    ) -> Result<(), ExecutionError>
+    ) -> Result<(), Box<ExecutionError>>
     where
         T: SolverStatus + Default,
     {
         self.blocks
             .borrow_mut()
             .iter_mut()
-            .map(|blocks| blocks.solve(sleigh, self, solved))
-            .collect::<Result<(), _>>()?;
+            .try_for_each(|blocks| blocks.solve(sleigh, self, solved))?;
 
         //get the export sizes, otherwise we are finished
         let mut return_size =
@@ -1025,7 +1022,7 @@ impl Execution {
                 return_size
                     .update_action(|size| size.intersection(out_size))
                     .map(|modified| acc | modified)
-                    .ok_or_else(|| ExecutionError::InvalidExport)
+                    .ok_or_else(|| Box::new(ExecutionError::InvalidExport))
             })?;
         //update all the export output sizes
         self.blocks
@@ -1034,16 +1031,11 @@ impl Execution {
             .filter(|block| block.next.is_none())
             .for_each(|block| {
                 let statements = &mut block.statements;
-                match statements.last_mut() {
-                    Some(Statement::Export(export)) => {
-                        modified |= export
-                            .output_size_mut(sleigh, self)
-                            .update_action(|size| {
-                                size.intersection(return_size)
-                            })
-                            .unwrap();
-                    }
-                    _ => (),
+                if let Some(Statement::Export(export)) = statements.last_mut() {
+                    modified |= export
+                        .output_size_mut(sleigh, self)
+                        .update_action(|size| size.intersection(return_size))
+                        .unwrap();
                 }
             });
         modified |= self
@@ -1104,7 +1096,7 @@ impl Execution {
     pub fn variable_by_name(&self, name: &str) -> Option<VariableId> {
         self.vars
             .iter()
-            .position(|vars| &vars.name == name)
+            .position(|vars| vars.name == name)
             .map(VariableId)
     }
     pub fn create_variable(
@@ -1112,10 +1104,10 @@ impl Execution {
         name: String,
         src: Span,
         explicit: bool,
-    ) -> Result<VariableId, ExecutionError> {
+    ) -> Result<VariableId, Box<ExecutionError>> {
         // don't allow duplicated name
         if self.variable_by_name(&name).is_some() {
-            return Err(ExecutionError::InvalidRef(src));
+            return Err(Box::new(ExecutionError::InvalidRef(src)));
         }
         //TODO src
         let var = Variable::new(name, explicit.then_some(src));

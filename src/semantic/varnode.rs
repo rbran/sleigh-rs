@@ -93,7 +93,7 @@ impl ContextMemoryMapping {
         for (i, context) in sleigh.contexts.iter().enumerate() {
             context_mapping
                 .entry(context.bitrange.varnode)
-                .or_insert(vec![])
+                .or_default()
                 .push(ContextId(i));
         }
 
@@ -119,13 +119,14 @@ impl ContextMemoryMapping {
             for current_context_id in contexts.into_iter() {
                 let current_context =
                     &sleigh.context(current_context_id).bitrange.bits;
-                let Some((last_context_id, last_bits)) = mem_mapping.last() else {
+                let Some((last_context_id, last_bits)) = mem_mapping.last()
+                else {
                     // first mapping is just added at bit 0
                     mem_mapping.push((
                         current_context_id,
-                        FieldBits::new(0, current_context.len().get())
+                        FieldBits::new(0, current_context.len().get()),
                     ));
-                    continue
+                    continue;
                 };
                 let last_context =
                     &sleigh.context(*last_context_id).bitrange.bits;

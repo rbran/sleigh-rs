@@ -10,7 +10,7 @@ use crate::{NumberUnsigned, SleighError};
 pub struct Alignment(pub NumberUnsigned);
 
 impl Alignment {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         preceded(
             pair(this_ident("alignment"), tag!("=")),
             map(number, |(num, _span)| Self(num)),

@@ -110,9 +110,9 @@ impl DrainingMacro {
     fn new(
         defined: &Define,
         location: FileSpan,
-    ) -> Result<Self, PreprocessorError> {
+    ) -> Result<Self, Box<PreprocessorError>> {
         let Some(defined_value) = &defined.value else {
-            return Err(PreprocessorError::ExpandingEmpty(location));
+            return Err(Box::new(PreprocessorError::ExpandingEmpty(location)));
         };
         Ok(Self {
             location: MacroLocation {
@@ -131,7 +131,7 @@ impl DrainingMacro {
     fn nom_it<'a, O, F, E>(
         &'a mut self,
         nom: F,
-    ) -> Result<(O, Span), PreprocessorError>
+    ) -> Result<(O, Span), Box<PreprocessorError>>
     where
         O: 'a,
         F: FnMut(&'a str) -> IResult<&'a str, O, E>,
@@ -140,9 +140,9 @@ impl DrainingMacro {
         //extract the value
         let (_, (skip, value)) = consumed(nom)(&self.data[self.position..])
             .map_err(|_| {
-                PreprocessorError::PreprocessorToken(Location::Macro(
+                Box::new(PreprocessorError::PreprocessorToken(Location::Macro(
                     self.location().clone(),
-                ))
+                )))
             })?;
         //calculate the currect line/column after consumption
         let end_line = self.location.line + skip.split('\n').count() as u64;
@@ -151,7 +151,7 @@ impl DrainingMacro {
             .map(|x| x.1.chars().count() as u64)
             .unwrap_or(self.location.column + skip.chars().count() as u64);
         // return this token location
-        let location = self.location().into_span(end_line, end_column);
+        let location = self.location().end_span(end_line, end_column);
         //update the currect drain location
         self.location.line = end_line;
         self.location.column = end_column;
@@ -161,7 +161,7 @@ impl DrainingMacro {
     }
     fn parse_display(
         &mut self,
-    ) -> Result<Option<DisplayToken>, PreprocessorError> {
+    ) -> Result<Option<DisplayToken>, Box<PreprocessorError>> {
         self.nom_it(display_token)
             .map(|(token, span)| match token? {
                 parser::Display::End => Some(DisplayToken::End),
@@ -175,7 +175,7 @@ impl DrainingMacro {
                 }
             })
     }
-    fn parse(&mut self) -> Result<Option<Token>, PreprocessorError> {
+    fn parse(&mut self) -> Result<Option<Token>, Box<PreprocessorError>> {
         //eat all the empty spaces
         let _ = self.nom_it::<_, _, ()>(space0).unwrap();
         //parse a token or None if eof
@@ -210,8 +210,9 @@ pub(crate) struct DrainingFile {
     position: usize,
 }
 impl DrainingFile {
-    fn new(file: &Path) -> Result<Self, PreprocessorError> {
-        let data = std::fs::read_to_string(file)?;
+    fn new(file: &Path) -> Result<Self, Box<PreprocessorError>> {
+        let data =
+            std::fs::read_to_string(file).map_err(|e| Box::new(e.into()))?;
         Ok(Self {
             data,
             position: 0,
@@ -232,7 +233,7 @@ impl DrainingFile {
     fn nom_it<'a, O, F, E>(
         &'a mut self,
         nom: F,
-    ) -> Result<(O, FileSpan), PreprocessorError>
+    ) -> Result<(O, FileSpan), Box<PreprocessorError>>
     where
         O: 'a,
         F: FnMut(&'a str) -> IResult<&'a str, O, E>,
@@ -241,9 +242,9 @@ impl DrainingFile {
         //extract the value
         let (_, (skip, value)) = consumed(nom)(&self.data[self.position..])
             .map_err(|_| {
-                PreprocessorError::PreprocessorToken(Location::File(
+                Box::new(PreprocessorError::PreprocessorToken(Location::File(
                     self.location().clone(),
-                ))
+                )))
             })?;
         //calculate the currect line/column after consumption
         let end_line = self.location.line + skip.split('\n').count() as u64 - 1;
@@ -252,7 +253,7 @@ impl DrainingFile {
             .map(|x| x.1.chars().count() as u64)
             .unwrap_or(self.location.column + skip.chars().count() as u64);
         // return this token location
-        let location = self.location().into_span(end_line, end_column);
+        let location = self.location().end_span(end_line, end_column);
         //update the currect drain location
         self.location.line = end_line;
         self.location.column = end_column;
@@ -264,7 +265,7 @@ impl DrainingFile {
         &mut self,
         src: &FileSpan,
         mut f: F,
-    ) -> Result<IfBorders, PreprocessorError>
+    ) -> Result<IfBorders, Box<PreprocessorError>>
     where
         F: FnMut(IfBorders) -> bool,
     {
@@ -305,7 +306,9 @@ impl DrainingFile {
                 None
             });
         let Some((line_num, line, block)) = found else {
-            return Err(PreprocessorError::NotFoundEndIf(src.clone()))
+            return Err(Box::new(PreprocessorError::NotFoundEndIf(
+                src.clone(),
+            )));
         };
 
         let skip = line.as_ptr() as usize - data.as_ptr() as usize;
@@ -320,7 +323,7 @@ impl DrainingFile {
         cond: bool,
         state: &PreProcessorState,
         src: &FileSpan,
-    ) -> Result<(), PreprocessorError> {
+    ) -> Result<(), Box<PreprocessorError>> {
         //if this if is true, just to inside it
         if cond {
             self.if_stack.push((src.clone(), IfStatus::If));
@@ -331,7 +334,7 @@ impl DrainingFile {
             let _next_block = self.next_if_block(src, |_| true)?;
             match self.nom_it(MacroLine::parse)? {
                 (MacroLine::ElIf(cond), src) => {
-                    if self.check_cond(state, cond, &src)? {
+                    if check_cond(state, cond, &src)? {
                         self.if_stack.push((src.clone(), IfStatus::IfElse));
                         break;
                     } else {
@@ -352,40 +355,13 @@ impl DrainingFile {
         }
         Ok(())
     }
-    fn check_cond(
-        &self,
-        state: &PreProcessorState,
-        cond: IfCheckOwned,
-        src: &FileSpan,
-    ) -> Result<bool, PreprocessorError> {
-        match cond {
-            IfCheckOwned::Defined(def) => Ok(state.exists(def.as_str())),
-            IfCheckOwned::NotDefined(ndef) => Ok(!state.exists(ndef.as_str())),
-            IfCheckOwned::Cmp { name, op, value } => {
-                //TODO what if comparing a value that don't exists?
-                let Some(defined) = state.get_value(name.as_str()) else {
-                    return Err(PreprocessorError::ComparingUndefined(src.clone()));
-                };
-                //TODO what if compring a define that have no value?
-                let Some(defined_value) = &defined.value else {
-                    return Err(PreprocessorError::ComparingEmpty(src.clone()));
-                };
-                Ok(op.cmp(&value, defined_value))
-            }
-            IfCheckOwned::Op { left, op, right } => {
-                let left = self.check_cond(state, *left, src)?;
-                let right = self.check_cond(state, *right, src)?;
-                Ok(op.check(left, right))
-            }
-        }
-    }
     fn parse_macro_line(&mut self) -> Option<DrainingFileBody> {
         let (macro_line, location) = self.nom_it(MacroLine::parse).ok()?;
         Some(DrainingFileBody::Macro(macro_line, location))
     }
     fn parse_display(
         &mut self,
-    ) -> Result<Option<DisplayToken>, PreprocessorError> {
+    ) -> Result<Option<DisplayToken>, Box<PreprocessorError>> {
         self.nom_it(display_token)
             .map(|(token, span)| match token? {
                 parser::Display::End => Some(DisplayToken::End),
@@ -399,7 +375,9 @@ impl DrainingFile {
                 }
             })
     }
-    fn parse_body(&mut self) -> Result<DrainingFileBody, PreprocessorError> {
+    fn parse_body(
+        &mut self,
+    ) -> Result<DrainingFileBody, Box<PreprocessorError>> {
         //a macro need to be after a new line or the first thing in the file
         if self.position == 0 {
             if let Some(x) = self.parse_macro_line() {
@@ -445,7 +423,7 @@ impl DrainingFile {
     fn parse(
         &mut self,
         state: &mut PreProcessorState,
-    ) -> Result<DrainingFileProduct, PreprocessorError> {
+    ) -> Result<DrainingFileProduct, Box<PreprocessorError>> {
         use DrainingFileBody::*;
         use MacroLine::*;
         loop {
@@ -455,7 +433,9 @@ impl DrainingFile {
                 (None, End) => return Ok(DrainingFileProduct::End),
 
                 (Some((location, _)), End) => {
-                    return Err(PreprocessorError::NotFoundEndIf(location))
+                    return Err(Box::new(PreprocessorError::NotFoundEndIf(
+                        location,
+                    )))
                 }
 
                 //found a token, just return it
@@ -479,7 +459,9 @@ impl DrainingFile {
                 (_, Macro(Undefine(name), src)) => {
                     //TODO ignore if try to delete non existing value?
                     if !state.del_value(&name) {
-                        return Err(PreprocessorError::DeleteUndefined(src));
+                        return Err(Box::new(
+                            PreprocessorError::DeleteUndefined(src),
+                        ));
                     }
                 }
 
@@ -490,7 +472,11 @@ impl DrainingFile {
                 | (
                     Some((_, IfStatus::Else)),
                     Macro(ElIf(_) | Else, location),
-                ) => return Err(PreprocessorError::InvalidEndIf(location)),
+                ) => {
+                    return Err(Box::new(PreprocessorError::InvalidEndIf(
+                        location,
+                    )))
+                }
 
                 //end of the current block, remove the status and continue parsing
                 (Some(_), Macro(EndIf, _)) => {
@@ -499,7 +485,7 @@ impl DrainingFile {
 
                 //found a inner if, just push the block or skip it
                 (_, Macro(If(cond), src)) => {
-                    let cond = self.check_cond(state, cond, &src)?;
+                    let cond = check_cond(state, cond, &src)?;
                     self.enter_if_block(cond, state, &src)?
                 }
 
@@ -522,13 +508,44 @@ impl DrainingFile {
     }
 }
 
+fn check_cond(
+    state: &PreProcessorState,
+    cond: IfCheckOwned,
+    src: &FileSpan,
+) -> Result<bool, Box<PreprocessorError>> {
+    match cond {
+        IfCheckOwned::Defined(def) => Ok(state.exists(def.as_str())),
+        IfCheckOwned::NotDefined(ndef) => Ok(!state.exists(ndef.as_str())),
+        IfCheckOwned::Cmp { name, op, value } => {
+            //TODO what if comparing a value that don't exists?
+            let Some(defined) = state.get_value(name.as_str()) else {
+                return Err(Box::new(PreprocessorError::ComparingUndefined(
+                    src.clone(),
+                )));
+            };
+            //TODO what if compring a define that have no value?
+            let Some(defined_value) = &defined.value else {
+                return Err(Box::new(PreprocessorError::ComparingEmpty(
+                    src.clone(),
+                )));
+            };
+            Ok(op.cmp(&value, defined_value))
+        }
+        IfCheckOwned::Op { left, op, right } => {
+            let left = check_cond(state, *left, src)?;
+            let right = check_cond(state, *right, src)?;
+            Ok(op.check(left, right))
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct PreProcessorState(HashMap<Rc<str>, Define>);
 impl PreProcessorState {
     fn exists(&self, ident: &str) -> bool {
         self.0.contains_key(ident)
     }
-    fn get_value<'a>(&'a self, ident: &str) -> Option<&Define> {
+    fn get_value(&self, ident: &str) -> Option<&Define> {
         self.0.get(ident)
     }
     fn set_define(
@@ -536,7 +553,7 @@ impl PreProcessorState {
         name: &str,
         value: Option<DefineDataOwned>,
         src: FileSpan,
-    ) -> Result<(), PreprocessorError> {
+    ) -> Result<(), Box<PreprocessorError>> {
         use macros::DefineDataOwned::*;
         let (value, value_location) = match value {
             None => (None, src.clone()),
@@ -544,11 +561,11 @@ impl PreProcessorState {
                 let (value, location) = self
                     .get_value(&alias)
                     .ok_or_else(|| {
-                        PreprocessorError::AliasUndefined(src.clone())
+                        Box::new(PreprocessorError::AliasUndefined(src.clone()))
                     })
                     .and_then(|define| {
                         let value = define.value.clone().ok_or_else(|| {
-                            PreprocessorError::AliasEmpty(src.clone())
+                            Box::new(PreprocessorError::AliasEmpty(src.clone()))
                         })?;
                         Ok((value, define.value_location.clone()))
                     })?;
@@ -590,7 +607,7 @@ pub struct FilePreProcessor {
     defines: PreProcessorState,
 }
 impl FilePreProcessor {
-    pub fn new(file: &Path) -> Result<Self, PreprocessorError> {
+    pub fn new(file: &Path) -> Result<Self, Box<PreprocessorError>> {
         let root_path = file.parent().map(Path::to_path_buf);
         let file = DrainingFile::new(file)?;
         Ok(Self {
@@ -603,12 +620,14 @@ impl FilePreProcessor {
         self.file_stack.is_empty()
     }
     /// process a display token
-    pub fn parse_display(&mut self) -> Result<DisplayToken, PreprocessorError> {
+    pub fn parse_display(
+        &mut self,
+    ) -> Result<DisplayToken, Box<PreprocessorError>> {
         //TODO does the display should expand macros?
         //TODO does display can exist in between files? is this loop required?
         loop {
             let Some(file) = self.file_stack.last_mut() else {
-                return Err(PreprocessorError::UnclosedDisplay);
+                return Err(Box::new(PreprocessorError::UnclosedDisplay));
             };
             //try to parse a token from this source
             let token = match file {
@@ -624,11 +643,11 @@ impl FilePreProcessor {
         }
     }
     /// process the accumulated buffer
-    pub fn parse(&mut self) -> Result<Option<Token>, PreprocessorError> {
+    pub fn parse(&mut self) -> Result<Option<Token>, Box<PreprocessorError>> {
         // read files untill is able to process a token
         loop {
             let Some(file) = self.file_stack.last_mut() else {
-                return Ok(None)
+                return Ok(None);
             };
             //try to parse a token from this source
             let token = match file {
@@ -652,8 +671,10 @@ impl FilePreProcessor {
                                 .defines
                                 .get_value(&exp)
                                 .ok_or_else(|| {
-                                    PreprocessorError::ExpandingUndefined(
-                                        src.clone(),
+                                    Box::new(
+                                        PreprocessorError::ExpandingUndefined(
+                                            src.clone(),
+                                        ),
                                     )
                                 })?;
                             self.file_stack.push(DrainingSource::Macro(
@@ -676,7 +697,7 @@ impl FilePreProcessor {
     }
 }
 impl Iterator for FilePreProcessor {
-    type Item = Result<Token, PreprocessorError>;
+    type Item = Result<Token, Box<PreprocessorError>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.parse().transpose()

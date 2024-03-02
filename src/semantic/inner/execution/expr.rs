@@ -197,7 +197,7 @@ impl Expr {
         sleigh: &Sleigh,
         constructor: &Execution,
         solved: &mut impl SolverStatus,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Box<ExecutionError>> {
         let (self_moved, mut op) = match self {
             Expr::Value(value) => {
                 return value.solve(sleigh, constructor, solved)
@@ -257,7 +257,7 @@ impl Expr {
                     )
                     .ok_or_else(|| {
                         //TODO better error
-                        ExecutionError::InvalidExport
+                        Box::new(ExecutionError::InvalidExport)
                     })?;
                 //replace self with our new value
                 Expr::Value(Ele::Value(Value::Int(ExprNumber::new(
@@ -374,7 +374,9 @@ impl Expr {
                     &mut FieldSizeMutRef::from(&mut op.output_size),
                 ]
                 .all_same_lenght()
-                .ok_or_else(|| ExecutionError::VarSize(op.location.clone()))?;
+                .ok_or_else(|| {
+                    Box::new(ExecutionError::VarSize(op.location.clone()))
+                })?;
                 if op.output_size.is_undefined() {
                     solved.iam_not_finished_location(
                         &op.location,
@@ -441,7 +443,9 @@ impl Expr {
                     &mut FieldSizeMutRef::from(&mut op.output_size),
                 ]
                 .all_same_lenght()
-                .ok_or_else(|| ExecutionError::VarSize(op.location.clone()))?;
+                .ok_or_else(|| {
+                    Box::new(ExecutionError::VarSize(op.location.clone()))
+                })?;
                 //TODO is that really right?
                 //if the output have a possible size, make left/right also have
                 if let Some(possible) = op.output_size.possible_value() {
@@ -507,7 +511,9 @@ impl Expr {
                     &mut right.size_mut(sleigh, constructor),
                 ]
                 .all_same_lenght()
-                .ok_or_else(|| ExecutionError::VarSize(op.location.clone()))?;
+                .ok_or_else(|| {
+                    Box::new(ExecutionError::VarSize(op.location.clone()))
+                })?;
                 if left.size(sleigh, constructor).is_undefined()
                     || right.size(sleigh, constructor).is_undefined()
                 {
@@ -587,7 +593,7 @@ impl ExprElement {
         sleigh: &Sleigh,
         execution: &Execution,
         solved: &mut impl SolverStatus,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Box<ExecutionError>> {
         let mut modified = false;
         match self {
             Self::Value(value) => value.solve(solved)?,
@@ -620,7 +626,7 @@ impl ExprElement {
                     ReferencedValue::InstStart(_) | ReferencedValue::InstNext(_),
             }) => (/*TODO*/),
             Self::Truncate(src, truncate, input) => {
-                let error = || ExecutionError::VarSize(src.clone());
+                let error = || Box::new(ExecutionError::VarSize(src.clone()));
                 let mut input_len = input.size_mut(sleigh, execution);
                 let output_len = &mut truncate.size;
 
@@ -666,7 +672,7 @@ impl ExprElement {
                 }
                 // if the input or output len are not possible, we are not done
                 if !input_len.get().is_possible() || !output_len.is_possible() {
-                    solved.iam_not_finished_location(&src, file!(), line!());
+                    solved.iam_not_finished_location(src, file!(), line!());
                 }
                 // try to solve the input with the new information
                 drop(input_len);
@@ -710,12 +716,12 @@ impl ExprElement {
                     let mut lens: [&mut dyn FieldSizeMut; 2] =
                         [&mut *input_size, &mut size];
                     modified |= lens.all_same_lenght().ok_or_else(|| {
-                        ExecutionError::VarSize(location.clone())
+                        Box::new(ExecutionError::VarSize(location.clone()))
                     })?;
                 }
                 if input.size(sleigh, execution).is_undefined() {
                     solved.iam_not_finished_location(
-                        &location,
+                        location,
                         file!(),
                         line!(),
                     );
@@ -743,7 +749,7 @@ impl ExprElement {
                                 size.set_possible_min().set_min(output_min)
                             })
                             .ok_or_else(|| {
-                                ExecutionError::VarSize(src.clone())
+                                Box::new(ExecutionError::VarSize(src.clone()))
                             })?
                         {
                             solved.i_did_a_thing();
@@ -751,7 +757,7 @@ impl ExprElement {
                     }
                 }
                 if size.is_undefined() {
-                    solved.iam_not_finished_location(&src, file!(), line!());
+                    solved.iam_not_finished_location(src, file!(), line!());
                 }
                 input.solve(sleigh, execution, solved)?;
             }
@@ -762,7 +768,7 @@ impl ExprElement {
                 op: Unary::Zext | Unary::Sext,
                 input: value,
             }) => {
-                let error = || ExecutionError::VarSize(src.clone());
+                let error = || Box::new(ExecutionError::VarSize(src.clone()));
                 //output size need to be bigger or eq to the value size
                 modified |= size
                     .update_action(|size| {
@@ -778,7 +784,7 @@ impl ExprElement {
                 if size.is_undefined()
                     || value.size(sleigh, execution).is_undefined()
                 {
-                    solved.iam_not_finished_location(&src, file!(), line!());
+                    solved.iam_not_finished_location(src, file!(), line!());
                 }
                 value.solve(sleigh, execution, solved)?;
             }
@@ -788,7 +794,7 @@ impl ExprElement {
                 op: Unary::SignTrunc,
                 input: value,
             }) => {
-                let error = || ExecutionError::VarSize(src.clone());
+                let error = || Box::new(ExecutionError::VarSize(src.clone()));
                 //output size need to be smaller or equal then the value size
                 modified |= size
                     .update_action(|size| {
@@ -804,7 +810,7 @@ impl ExprElement {
                 if size.is_undefined()
                     || value.size(sleigh, execution).is_undefined()
                 {
-                    solved.iam_not_finished_location(&src, file!(), line!());
+                    solved.iam_not_finished_location(src, file!(), line!());
                 }
                 value.solve(sleigh, execution, solved)?;
             }
@@ -841,15 +847,14 @@ impl ExprElement {
             }) => {
                 if size.is_undefined() {
                     solved.iam_not_finished_location(
-                        &location,
+                        location,
                         file!(),
                         line!(),
                     );
                 }
-                params
-                    .iter_mut()
-                    .map(|param| param.solve(sleigh, execution, solved))
-                    .collect::<Result<_, _>>()?;
+                params.iter_mut().try_for_each(|param| {
+                    param.solve(sleigh, execution, solved)
+                })?;
             }
             Self::New(_) => todo!(),
             Self::CPool(_) => todo!(),
@@ -1000,7 +1005,7 @@ impl ReadValue {
     pub fn solve(
         &mut self,
         solved: &mut impl SolverStatus,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Box<ExecutionError>> {
         match self {
             //don't call table solve directly, let the main loop do it
             Self::Table(_) | Self::ExeVar(_) => (),

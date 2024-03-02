@@ -10,7 +10,9 @@ use crate::syntax::parser::{ident, number, this_ident};
 use crate::{NumberUnsigned, SleighError, Span};
 
 impl SpaceType {
-    fn parse(input: &[Token]) -> IResult<&[Token], SpaceType, SleighError> {
+    fn parse(
+        input: &[Token],
+    ) -> IResult<&[Token], SpaceType, Box<SleighError>> {
         alt((
             value(SpaceType::Ram, this_ident("ram_space")),
             value(SpaceType::Rom, this_ident("rom_space")),
@@ -27,7 +29,9 @@ pub enum Attribute {
     Default,
 }
 impl Attribute {
-    fn parse(input: &[Token]) -> IResult<&[Token], Attribute, SleighError> {
+    fn parse(
+        input: &[Token],
+    ) -> IResult<&[Token], Attribute, Box<SleighError>> {
         alt((
             value(Attribute::Default, this_ident("default")),
             map(
@@ -54,7 +58,7 @@ pub struct Space {
 }
 
 impl Space {
-    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, SleighError> {
+    pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         map(
             preceded(
                 this_ident("space"),

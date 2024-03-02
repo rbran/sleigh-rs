@@ -242,12 +242,6 @@ pub struct MemWrite {
 }
 
 #[derive(Clone, Debug)]
-pub struct WriteAddr {
-    pub space: MemoryLocation,
-    pub expr: Expr,
-}
-
-#[derive(Clone, Debug)]
 pub struct Build {
     pub table: ExprTable,
 }

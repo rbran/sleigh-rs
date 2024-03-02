@@ -10,7 +10,7 @@ impl Sleigh {
         pattern: &mut Pattern,
         name: &str,
         src: &Span,
-    ) -> Result<DisplayElement, DisplayError> {
+    ) -> Result<DisplayElement, Box<DisplayError>> {
         use crate::semantic::inner::GlobalScope::*;
         if let Some(disassembly_var) =
             pattern.disassembly_variable_names.get(name)
@@ -19,7 +19,7 @@ impl Sleigh {
         }
         match self
             .get_global(name)
-            .ok_or(DisplayError::MissingRef(src.clone()))?
+            .ok_or_else(|| Box::new(DisplayError::MissingRef(src.clone())))?
         {
             TokenField(x) => {
                 if pattern
@@ -35,7 +35,7 @@ impl Sleigh {
             Varnode(x) => Ok(DisplayElement::Varnode(x)),
             Table(x) => Ok(DisplayElement::Table(x)),
             Context(x) => Ok(DisplayElement::Context(x)),
-            _ => Err(DisplayError::InvalidRef(src.clone())),
+            _ => Err(Box::new(DisplayError::InvalidRef(src.clone()))),
         }
     }
 
@@ -44,7 +44,7 @@ impl Sleigh {
         display: block::display::Display,
         pattern: &mut Pattern,
         is_root: bool,
-    ) -> Result<Display, DisplayError> {
+    ) -> Result<Display, Box<DisplayError>> {
         use block::display::DisplayElement::*;
         //solve the idents
         let mut elements = vec![];

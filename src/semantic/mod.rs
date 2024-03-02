@@ -230,7 +230,7 @@ impl Sleigh {
     pub fn attach_literal(&self, id: AttachLiteralId) -> &AttachLiteral {
         &self.attach_literals[id.0]
     }
-    pub(crate) fn new(value: syntax::Sleigh) -> Result<Self, SleighError> {
+    pub(crate) fn new(value: syntax::Sleigh) -> Result<Self, Box<SleighError>> {
         let inner = inner::Sleigh::new(value)?;
         //HACK: verify that indirect recursion don't happen
         //NOTE we don't need to worry about direct (self) recursion.

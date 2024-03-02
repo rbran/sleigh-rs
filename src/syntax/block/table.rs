@@ -29,7 +29,7 @@ impl Constructor {
     pub fn parse(
         input: &mut FilePreProcessor,
         buf: &mut Vec<Token>,
-    ) -> Result<Self, SleighError> {
+    ) -> Result<Self, Box<SleighError>> {
         input.parse_until(buf, |x| x.token_type == token_type!(":"))?;
         let (_eof, ((table_name, table_src), _, _)) =
             tuple((ident, tag!(":"), eof))(buf)?;
@@ -44,7 +44,7 @@ impl Constructor {
         buf: &mut Vec<Token>,
         table_name: String,
         src: Span,
-    ) -> Result<Self, SleighError> {
+    ) -> Result<Self, Box<SleighError>> {
         let display = Display::parse(input)?;
 
         input.parse_until(buf, |token| {
@@ -62,7 +62,7 @@ impl Constructor {
                 value(None, tag!("unimpl")),
                 delimited(
                     tag!("{"),
-                    map(Execution::parse, |x| Some(x)),
+                    map(Execution::parse, Option::Some),
                     tag!("}"),
                 ),
             ))),

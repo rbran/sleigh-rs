@@ -54,12 +54,12 @@ impl std::fmt::Debug for Table {
     }
 }
 
-////7.8.1. Matching
-////one pattern contains the other if all the cases that match the contained,
-////also match the pattern.
-////eg: `a` contains `b` if all cases that match `b` also match `a`. In other
-////words `a` is a special case of `b`.
-////NOTE the opose don't need to be true.
+//7.8.1. Matching
+//one pattern contains the other if all the cases that match the contained,
+//also match the pattern.
+//eg: `a` contains `b` if all cases that match `b` also match `a`. In other
+//words `a` is a special case of `b`.
+//NOTE the opose don't need to be true.
 fn is_first_then(
     constructors: &[FinalConstructor],
     matcher_a: Matcher,
@@ -73,18 +73,18 @@ fn is_first_then(
     let extend_len_a = pattern_len_max - pattern_len_a;
     let extend_len_b = pattern_len_max - pattern_len_b;
 
-    fn produce_iter<'a>(
-        constructor: &'a FinalConstructor,
+    fn produce_iter(
+        constructor: &FinalConstructor,
         variant: VariantId,
         extend: usize,
-    ) -> impl Iterator<Item = BitConstraint> + 'a {
+    ) -> impl Iterator<Item = BitConstraint> + '_ {
         let context_bits = &constructor.variants_bits[variant.0].1;
         let token_bits = &constructor.variants_bits[variant.0].2;
         context_bits
             .iter()
             .chain(token_bits.iter())
             .cloned()
-            .chain((0..extend).into_iter().map(|_| BitConstraint::Unrestrained))
+            .chain((0..extend).map(|_| BitConstraint::Unrestrained))
     }
     let bits_a =
         produce_iter(constructor_a, matcher_a.variant_id, extend_len_a);
@@ -132,7 +132,7 @@ impl Table {
     pub fn add_constructor(
         &mut self,
         constructor: Constructor,
-    ) -> Result<(), SleighError> {
+    ) -> Result<(), Box<SleighError>> {
         //all the constructor need to export or none can export
         //if this constructor is not `unimpl` update/verify the return type
         if let Some(execution) = constructor.execution() {
@@ -142,10 +142,10 @@ impl Table {
                 //compatible
                 *export = export.combine(execution.return_value).ok_or_else(
                     || {
-                        SleighError::new_table(
+                        Box::new(SleighError::new_table(
                             constructor.src.clone(),
                             ExecutionError::InvalidExport,
-                        )
+                        ))
                     },
                 )?;
             } else {
@@ -207,7 +207,7 @@ impl Table {
         &self,
         sleigh: &Sleigh,
         solved: &mut T,
-    ) -> Result<(), SleighError>
+    ) -> Result<(), Box<SleighError>>
     where
         T: SolverStatus + Default,
     {
@@ -283,7 +283,7 @@ impl Table {
         &self,
         sleigh: &Sleigh,
         solved: &mut T,
-    ) -> Result<(), SleighError>
+    ) -> Result<(), Box<SleighError>>
     where
         T: SolverStatus + Default,
     {
@@ -310,11 +310,7 @@ impl Table {
         //finish solving
         let mut modified = false;
         let mut export = self.export.borrow_mut();
-        let new_size: &mut FieldSize = if let Some(export) =
-            export.as_mut().map(|x| x.size_mut()).flatten()
-        {
-            export
-        } else {
+        let Some(new_size) = export.as_mut().and_then(|x| x.size_mut()) else {
             return Ok(());
         };
         //find the sizes of all contructors
@@ -328,10 +324,10 @@ impl Table {
             modified |= new_size
                 .update_action(|new_size| new_size.intersection(*size))
                 .ok_or_else(|| {
-                    SleighError::new_table(
+                    Box::new(SleighError::new_table(
                         src.clone(),
                         TableError::TableConstructorExportSizeInvalid,
-                    )
+                    ))
                 })?;
         }
 
@@ -369,16 +365,13 @@ impl Table {
             constructors.iter().map(|c| c.variants_bits.len()).sum();
         let mut matcher_order = Vec::with_capacity(matchers_num);
 
-        let matcher_a_iter = constructors
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
+        let matcher_a_iter =
+            constructors.iter().enumerate().flat_map(|(i, c)| {
                 c.variants().map(move |x| Matcher {
                     constructor: ConstructorId(i),
                     variant_id: x.0,
                 })
-            })
-            .flatten();
+            });
         for matcher_a in matcher_a_iter {
             //TODO detect conflicting instead of just looking for contains
             let pos = matcher_order.iter().position(|matcher_b| {
@@ -460,42 +453,42 @@ impl Constructor {
         &mut self,
         sleigh: &Sleigh,
         solved: &mut T,
-    ) -> Result<bool, SleighError>
+    ) -> Result<bool, Box<SleighError>>
     where
         T: SolverStatus + Default,
     {
         self.pattern
             .calculate_len(sleigh, solved)
-            .map_err(|e| SleighError::new_table(self.src.clone(), e))
+            .map_err(|e| Box::new(SleighError::new_table(self.src.clone(), *e)))
     }
 
     pub fn solve_execution<T>(
         &mut self,
         sleigh: &Sleigh,
         solved: &mut T,
-    ) -> Result<(), SleighError>
+    ) -> Result<(), Box<SleighError>>
     where
         T: SolverStatus + Default,
     {
         if let Some(execution) = &mut self.execution {
-            execution
-                .solve(sleigh, solved)
-                .map_err(|e| SleighError::new_table(self.src.clone(), e))?
+            execution.solve(sleigh, solved).map_err(|e| {
+                Box::new(SleighError::new_table(self.src.clone(), *e))
+            })?
         }
         Ok(())
     }
 
     pub fn convert(mut self, sleigh: &FinalSleigh) -> FinalConstructor {
-        let display = self.display.into();
         self.pattern.calculate_bits(0);
         let pattern = self.pattern.convert();
         let execution = self.execution.map(|x| x.convert());
         let src = self.src;
 
         //TODO detect export type and apply to the disassembly, if the case
-        match execution.as_ref().map(FinalExecution::export).flatten() {
-            Some(_export) => todo!(),
-            _ => (),
+        if let Some(_export) =
+            execution.as_ref().and_then(FinalExecution::export)
+        {
+            todo!()
         }
 
         let variants_bits = pattern
@@ -505,7 +498,7 @@ impl Constructor {
 
         FinalConstructor {
             pattern,
-            display,
+            display: self.display,
             execution,
             location: src,
             variants_bits,
@@ -518,34 +511,39 @@ impl Sleigh {
         &mut self,
         with_block_current: &mut WithBlockCurrent,
         constructor: syntax::block::table::Constructor,
-    ) -> Result<(), SleighError> {
+    ) -> Result<(), Box<SleighError>> {
         let table_name =
             with_block_current.table_name(constructor.table_name());
         let table_id =
             self.get_table_or_create_empty(table_name, &constructor.src)?;
 
         let pattern = with_block_current.pattern(&constructor.pattern);
-        let mut pattern = Pattern::new(self, pattern, table_id)
-            .map_err(|e| SleighError::new_table(constructor.src.clone(), e))?;
+        let mut pattern =
+            Pattern::new(self, pattern, table_id).map_err(|e| {
+                Box::new(SleighError::new_table(constructor.src.clone(), *e))
+            })?;
         //TODO move this into the Pattern::new function
-        pattern
-            .unresolved_token_fields(self)
-            .into_iter()
-            .try_for_each(|(token_field, location)| {
-                let token_produced =
-                    pattern.produce_token_field(self, token_field).map_err(
-                        |e| SleighError::new_table(constructor.src.clone(), e),
-                    )?;
+        pattern.unresolved_token_fields(self).try_for_each(
+            |(token_field, location)| {
+                let token_produced = pattern
+                    .produce_token_field(self, token_field)
+                    .map_err(|e| {
+                        Box::new(SleighError::new_table(
+                            constructor.src.clone(),
+                            *e,
+                        ))
+                    })?;
                 if token_produced.is_none() {
                     //TODO error with the list of unresolved fields instead of
                     //only the first
-                    return Err(SleighError::new_table(
+                    return Err(Box::new(SleighError::new_table(
                         constructor.src.clone(),
                         PatternError::MissingRef(location),
-                    ));
+                    )));
                 }
                 Ok(())
-            })?;
+            },
+        )?;
 
         let disassembly_raw =
             with_block_current.disassembly(constructor.disassembly);
@@ -553,18 +551,23 @@ impl Sleigh {
             disassembly::Builder::new(self, &mut pattern)
                 .build(disassembly_raw)
                 .map_err(|e| {
-                    SleighError::new_table(constructor.src.clone(), e)
+                    Box::new(SleighError::new_table(
+                        constructor.src.clone(),
+                        *e,
+                    ))
                 })?;
         }
 
         let is_root = self.instruction_table == table_id;
         let display = self
             .new_display(constructor.display, &mut pattern, is_root)
-            .map_err(|e| SleighError::new_table(constructor.src.clone(), e))?;
+            .map_err(|e| {
+                Box::new(SleighError::new_table(constructor.src.clone(), *e))
+            })?;
 
         let execution = constructor
             .execution
-            .map(|x| -> Result<Execution, ExecutionError> {
+            .map(|x| -> Result<Execution, Box<ExecutionError>> {
                 let mut execution = execution::Builder::new(
                     self,
                     &mut pattern,
@@ -574,7 +577,9 @@ impl Sleigh {
                 Ok(execution.into())
             })
             .transpose()
-            .map_err(|e| SleighError::new_table(constructor.src.clone(), e))?;
+            .map_err(|e| {
+                Box::new(SleighError::new_table(constructor.src.clone(), *e))
+            })?;
 
         let constructor =
             Constructor::new(display, pattern, execution, constructor.src);
@@ -586,18 +591,16 @@ impl Sleigh {
         &mut self,
         name: &str,
         location: &Span,
-    ) -> Result<TableId, SleighError> {
+    ) -> Result<TableId, Box<SleighError>> {
         //TODO check if creating the table is always required, or we can create
         //it only if a contructor is added to it. Or just remove empty tables
         //and check the Rc counts before converting into the final sleigh struct
         match self.global_scope.get(name) {
-            Some(GlobalScope::Table(id)) => return Ok(*id),
-            Some(_) => {
-                return Err(SleighError::new_table(
-                    location.clone(),
-                    TableError::TableNameInvalid,
-                ))
-            }
+            Some(GlobalScope::Table(id)) => Ok(*id),
+            Some(_) => Err(Box::new(SleighError::new_table(
+                location.clone(),
+                TableError::TableNameInvalid,
+            ))),
             None => {
                 let table = Table::new_empty(false, name.to_owned());
                 self.tables.push(table);

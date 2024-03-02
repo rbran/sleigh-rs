@@ -24,7 +24,7 @@ pub enum Meaning {
     Number(Vec<(Option<Number>, Span)>),
 }
 impl Attach {
-    pub fn parse(input: &[Token]) -> Result<Attach, SleighError> {
+    pub fn parse(input: &[Token]) -> Result<Attach, Box<SleighError>> {
         let (_eof, (src, (fields, meaning))) = pair(
             this_ident("attach"),
             cut(terminated(
@@ -51,18 +51,19 @@ impl Attach {
             meaning,
         })
     }
-    fn attach_lists<'a, Output>(
+    fn attach_lists<'a, O, E>(
         name: &'a str,
-        element: impl FnMut(
-            &'a [Token],
-        ) -> IResult<&'a [Token], Output, SleighError>,
+        element: E,
     ) -> impl FnMut(
         &'a [Token],
     ) -> IResult<
         &'a [Token],
-        (Vec<(String, Span)>, Output),
-        SleighError,
-    > {
+        (Vec<(String, Span)>, O),
+        Box<SleighError>,
+    >
+    where
+        E: FnMut(&'a [Token]) -> IResult<&'a [Token], O, Box<SleighError>>,
+    {
         preceded(this_ident(name), pair(fieldlist, element))
     }
 }
