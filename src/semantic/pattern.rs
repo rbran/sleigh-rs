@@ -2,6 +2,7 @@ use crate::disassembly::VariableId;
 use crate::semantic::{
     ContextId, Sleigh as FinalSleigh, TableId, TokenFieldId,
 };
+use crate::table::VariantId;
 use crate::{
     field_in_be, field_in_le, value_in_context, value_in_token, NumberUnsigned,
     Span,
@@ -287,6 +288,17 @@ impl Block {
             Block::And { len, .. } | Block::Or { len, .. } => *len,
         }
     }
+    pub fn pre_disassembler(&self) -> &[Assertation] {
+        match self {
+            Block::And { pre, .. } => pre,
+            Block::Or { .. } => &[],
+        }
+    }
+    pub fn post_disassembler(&self) -> &[Assertation] {
+        match self {
+            Block::And { pos, .. } | Block::Or { pos, .. } => pos,
+        }
+    }
     pub fn verifications(&self) -> &[Verification] {
         match self {
             Block::And { verifications, .. }
@@ -297,7 +309,13 @@ impl Block {
         }
     }
 
-    fn variants_number(&self) -> usize {
+    pub fn variants_prior(&self) -> usize {
+        match self {
+            Block::And { variants_prior, .. }
+            | Block::Or { variants_prior, .. } => *variants_prior,
+        }
+    }
+    pub fn variants_number(&self) -> usize {
         match self {
             Block::And {
                 variants_number, ..

@@ -169,6 +169,7 @@ pub struct Sleigh {
     pub alignment: u8,
 
     pub default_space: SpaceId,
+    // TODO make it a const value 0, first table is always the instruction table
     pub instruction_table: TableId,
 
     spaces: Box<[Space]>,

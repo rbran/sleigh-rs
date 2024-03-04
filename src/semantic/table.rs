@@ -46,6 +46,7 @@ pub struct Constructor {
     pub location: Span,
     // the bit pattern for all possible variants in the pattern,
     // impossible variants are simply not present here
+    // TODO VariantId is the position on the vector, just use the index
     #[allow(clippy::type_complexity)]
     pub(crate) variants_bits:
         Box<[(VariantId, Box<[BitConstraint]>, Box<[BitConstraint]>)]>,
@@ -60,6 +61,7 @@ impl Constructor {
             .iter()
             .map(|(id, context, token)| (*id, context.as_ref(), token.as_ref()))
     }
+    /// return the variant constraint for the context and pattern
     pub fn variant(
         &self,
         id: VariantId,
@@ -100,5 +102,8 @@ impl Table {
     }
     pub fn constructor(&self, id: ConstructorId) -> &Constructor {
         &self.constructors[id.0]
+    }
+    pub fn matcher_order(&self) -> &[Matcher] {
+        &self.matcher_order
     }
 }
