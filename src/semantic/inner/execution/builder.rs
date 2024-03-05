@@ -251,11 +251,11 @@ pub trait ExecutionBuilder {
             Table(expr_table) => {
                 let table = self.sleigh().table(expr_table.id);
                 match *table.export.borrow() {
-                    Some(ExportLen::Const(_export)) => {
+                    Some(ExportLen::Const(_) | ExportLen::Value(_)) => {
                         Ok(ExportConst::Table(expr_table.id))
                     }
                     //TODO more specific error
-                    //a const export can only use a table that also export const
+                    //a const can only export const or context
                     Some(_) => {
                         Err(Box::new(ExecutionError::InvalidRef(src.clone())))
                     }

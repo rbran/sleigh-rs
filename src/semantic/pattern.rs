@@ -2,7 +2,6 @@ use crate::disassembly::VariableId;
 use crate::semantic::{
     ContextId, Sleigh as FinalSleigh, TableId, TokenFieldId,
 };
-use crate::table::VariantId;
 use crate::{
     field_in_be, field_in_le, value_in_context, value_in_token, NumberUnsigned,
     Span,

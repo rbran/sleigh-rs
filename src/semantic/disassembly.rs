@@ -22,7 +22,7 @@ pub enum Op {
     Lsl,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum ReadScope {
     //TODO: table??? Handle tables that the execution is just export Disassembly
     //Table(TableId),

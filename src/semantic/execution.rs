@@ -259,7 +259,7 @@ pub enum ExportConst {
     TokenField(TokenFieldId),
     /// Attach values are limited
     Context(ContextId),
-    /// only if also export Const
+    /// only if also export Const or Context value
     Table(TableId),
     ExeVar(VariableId),
 }
