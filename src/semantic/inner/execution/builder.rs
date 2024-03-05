@@ -287,14 +287,14 @@ pub trait ExecutionBuilder {
                             self.execution(),
                             Expr::Value(ExprElement::Value(ReadValue::Int(
                                 ExprNumber::new(
-                                    varnode.location.clone(),
+                                    varnode_expr.location.clone(),
                                     Number::Positive(varnode.address),
                                 ),
                             ))),
                             MemoryLocation {
                                 space: varnode.space,
                                 size: FieldSize::new_bytes(varnode.len_bytes),
-                                src: varnode.location.clone(),
+                                src: varnode_expr.location.clone(),
                             },
                         ))
                     }

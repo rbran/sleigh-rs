@@ -167,13 +167,11 @@ impl Export {
         space_deref: MemoryLocation,
     ) -> Self {
         //addr expr is the addr to access the space, so it need to be space
-        //addr size
+        //addr size or smaller
         let space = sleigh.space(space_deref.space);
         addr.size_mut(sleigh, execution)
             .update_action(|size| {
-                size.intersection(
-                    FieldSize::new_bytes(space.addr_bytes)
-                )
+                size.set_max_bytes(space.addr_bytes)
             })
             .unwrap(/*TODO*/);
         Self::Reference {

@@ -151,6 +151,10 @@ impl FieldSize {
             Self::Unsized { range, .. } => range.min,
         }
     }
+    pub fn set_min_bytes(self, min: NumberNonZeroUnsigned) -> Option<Self> {
+        let min = NumberNonZeroUnsigned::new(min.get() * 8).unwrap();
+        self.set_min(min)
+    }
     pub fn set_min(self, min: NumberNonZeroUnsigned) -> Option<Self> {
         match self {
             Self::Value(value) => (min <= value).then_some(self),
@@ -169,6 +173,10 @@ impl FieldSize {
             Self::Value(value) => *value,
             Self::Unsized { range, .. } => range.max,
         }
+    }
+    pub fn set_max_bytes(self, max: NumberNonZeroUnsigned) -> Option<Self> {
+        let max = NumberNonZeroUnsigned::new(max.get() * 8).unwrap();
+        self.set_max(max)
     }
     pub fn set_max(self, max: NumberNonZeroUnsigned) -> Option<Self> {
         match self {
