@@ -282,7 +282,7 @@ pub trait ExecutionBuilder {
                         varnode_expr,
                     ))) => {
                         let varnode = self.sleigh().varnode(varnode_expr.id);
-                        Ok(Export::new_reference(
+                        Export::new_reference(
                             self.sleigh(),
                             self.execution(),
                             Expr::Value(ExprElement::Value(ReadValue::Int(
@@ -296,7 +296,7 @@ pub trait ExecutionBuilder {
                                 size: FieldSize::new_bytes(varnode.len_bytes),
                                 src: varnode_expr.location.clone(),
                             },
-                        ))
+                        )
                     }
                     _ => Ok(Export::new_value(value)),
                 }
@@ -316,12 +316,12 @@ pub trait ExecutionBuilder {
                             || Box::new(ExecutionError::InvalidExport),
                         )?;
                 }
-                Ok(Export::new_reference(
+                Export::new_reference(
                     self.sleigh(),
                     self.execution(),
                     addr,
                     deref,
-                ))
+                )
             }
             RawExport::Const { size, value, src } => {
                 let value = self.new_export_const(&value, &src)?;

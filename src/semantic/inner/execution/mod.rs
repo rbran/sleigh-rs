@@ -165,19 +165,18 @@ impl Export {
         execution: &Execution,
         mut addr: Expr,
         space_deref: MemoryLocation,
-    ) -> Self {
+    ) -> Result<Self, Box<ExecutionError>> {
         //addr expr is the addr to access the space, so it need to be space
         //addr size or smaller
         let space = sleigh.space(space_deref.space);
+        let src = addr.src().clone();
         addr.size_mut(sleigh, execution)
-            .update_action(|size| {
-                size.set_max_bytes(space.addr_bytes)
-            })
-            .unwrap(/*TODO*/);
-        Self::Reference {
+            .update_action(|size| size.set_max_bytes(space.addr_bytes))
+            .ok_or_else(|| ExecutionError::VarSize(src))?;
+        Ok(Self::Reference {
             addr,
             memory: space_deref,
-        }
+        })
     }
     pub fn return_type(
         &self,
