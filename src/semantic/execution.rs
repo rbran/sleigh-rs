@@ -11,6 +11,7 @@ pub struct Execution {
     pub(crate) blocks: Box<[Block]>,
     pub(crate) variables: Box<[Variable]>,
 
+    // TODO make this a const, the first block is always the entry block
     //entry_block have no name and is not on self.labels
     pub entry_block: BlockId,
 }
@@ -378,7 +379,12 @@ impl Execution {
     pub fn block(&self, id: BlockId) -> &Block {
         &self.blocks[id.0]
     }
-    pub fn export(&self) -> Option<&Export> {
-        todo!();
+    pub fn export(&self) -> impl Iterator<Item = &Export> {
+        self.blocks.iter().filter_map(|block| {
+            block.statements.last().and_then(|statement| match statement {
+                Statement::Export(export) => Some(export),
+                _ => None,
+            })
+        })
     }
 }

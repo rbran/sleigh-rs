@@ -3,7 +3,6 @@ use std::ops::ControlFlow;
 
 use crate::pattern::BitConstraint;
 use crate::semantic::display::Display;
-use crate::semantic::execution::Execution as FinalExecution;
 use crate::semantic::pattern::PatternLen;
 use crate::semantic::table::Constructor as FinalConstructor;
 use crate::semantic::{
@@ -485,11 +484,6 @@ impl Constructor {
         let src = self.src;
 
         //TODO detect export type and apply to the disassembly, if the case
-        if let Some(_export) =
-            execution.as_ref().and_then(FinalExecution::export)
-        {
-            todo!()
-        }
 
         let variants_bits = pattern
             .pattern_bits_variants(sleigh)
