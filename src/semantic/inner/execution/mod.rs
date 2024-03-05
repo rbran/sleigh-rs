@@ -760,14 +760,13 @@ impl CpuBranch {
         }
         //correlate the addr execution size and the jmp dest addr size
         let error = Box::new(ExecutionError::VarSize(self.dst.src().clone()));
-        modified |= [
-            &mut self.dst.size_mut(sleigh, execution) as &mut dyn FieldSizeMut,
-            &mut FieldSizeMutOwned::from(FieldSize::new_bytes(
-                sleigh.addr_bytes().unwrap(/*todo*/),
-            )),
-        ]
-        .all_same_lenght()
-        .ok_or(error)?;
+        modified |= self
+            .dst
+            .size_mut(sleigh, execution)
+            .update_action(|size| {
+                size.set_max_bytes(sleigh.addr_bytes().unwrap())
+            })
+            .ok_or(error)?;
 
         self.dst.solve(sleigh, execution, solved)?;
         if self.dst.size(sleigh, execution).is_undefined() {
