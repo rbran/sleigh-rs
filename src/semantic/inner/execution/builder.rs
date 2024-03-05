@@ -470,13 +470,18 @@ pub trait ExecutionBuilder {
                                 number: Number::Positive(var_ele.address),
                             }),
                         ));
-                        right
-                            .size_mut(self.sleigh(), self.execution())
-                            .update_action(|size| {
-                                size.intersection(FieldSize::new_bytes(
-                                    var_ele.len_bytes,
-                                ))
-                            });
+                        {
+                            let right = &mut right;
+                            let sleigh = self.sleigh();
+                            let execution = self.execution();
+                            right.size_mut(sleigh, execution).update_action(
+                                |size| {
+                                    size.intersection(FieldSize::new_bytes(
+                                        var_ele.len_bytes,
+                                    ))
+                                },
+                            );
+                        }
                         Ok(Statement::MemWrite(MemWrite::new(
                             self.sleigh(),
                             self.execution(),
@@ -594,7 +599,7 @@ pub trait ExecutionBuilder {
                         return Ok(ExprElement::Op(ExprUnaryOp {
                             location: tf.location.clone(),
                             output_size: FieldSize::new_unsized()
-                                .set_min(field.bits.len())
+                                .set_min_bits(field.bits.len())
                                 .unwrap(),
                             op: Unary::Zext,
                             input: Box::new(Expr::Value(ExprElement::Value(
@@ -607,7 +612,7 @@ pub trait ExecutionBuilder {
                         return Ok(ExprElement::Op(ExprUnaryOp {
                             location: bt.location.clone(),
                             output_size: FieldSize::new_unsized()
-                                .set_min(bitrange.bits.len())
+                                .set_min_bits(bitrange.bits.len())
                                 .unwrap(),
                             op: Unary::Zext,
                             input: Box::new(Expr::Value(ExprElement::Value(

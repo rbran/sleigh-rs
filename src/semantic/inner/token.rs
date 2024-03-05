@@ -58,7 +58,7 @@ impl TokenField {
             Some(TokenFieldAttach::NoAttach(_)) => unreachable!(),
             // does not affect the token_field len
             Some(TokenFieldAttach::Literal(_)) | None => {
-                FieldSize::default().set_min(self.bits.len()).unwrap()
+                FieldSize::default().set_min_bits(self.bits.len()).unwrap()
             }
             Some(TokenFieldAttach::Varnode(attach_id)) => {
                 let varnodes = sleigh.attach_varnode(attach_id);

@@ -226,12 +226,8 @@ impl Export {
         match self {
             Self::Value(expr) => expr.size_mut(sleigh, execution),
             //TODO verify this
-            Self::Reference { addr: _, memory } => {
-                Box::new(FieldSizeMutRef::from(&mut memory.size))
-            }
-            Self::Const { len_bits, .. } => {
-                Box::new(FieldSizeMutRef::from(len_bits))
-            }
+            Self::Reference { addr: _, memory } => Box::new(&mut memory.size),
+            Self::Const { len_bits, .. } => Box::new(len_bits),
         }
     }
     pub fn solve(
@@ -370,7 +366,8 @@ impl MemWrite {
                 .right
                 .size_mut(sleigh, execution)
                 .update_action(|size| {
-                    size.set_max(write_size)?.set_possible_value(write_size)
+                    size.set_max_bits(write_size)?
+                        .set_possible_value(write_size)
                 });
             if modified.ok_or_else(|| {
                 Box::new(ExecutionError::VarSize(self.mem.src.clone()))
@@ -474,23 +471,18 @@ impl Assignment {
 
         //left and right sizes are the same
         if let Some(trunc) = &mut self.op {
-            let modified = [
-                &mut self.right.size_mut(sleigh, execution)
-                    as &mut dyn FieldSizeMut,
-                &mut FieldSizeMutRef::from(trunc.output_size_mut()),
-            ]
-            .all_same_lenght();
+            let modified = restrict_field_same_size(&mut [
+                self.right.size_mut(sleigh, execution).as_dyn(),
+                trunc.output_size_mut(),
+            ]);
             if modified.ok_or_else(error)? {
                 solved.i_did_a_thing()
             }
         } else {
-            let modified = [
-                &mut self.right.size_mut(sleigh, execution)
-                    as &mut dyn FieldSizeMut,
-                &mut self.var.size_mut(sleigh, execution)
-                    as &mut dyn FieldSizeMut,
-            ]
-            .all_same_lenght();
+            let modified = restrict_field_same_size(&mut [
+                &mut *self.right.size_mut(sleigh, execution),
+                &mut *self.var.size_mut(sleigh, execution),
+            ]);
 
             //if right size is possible min, so does left if size is not defined
             if self.var.size(sleigh, execution).is_undefined()
@@ -555,13 +547,13 @@ impl WriteValue {
         execution: &'a Execution,
     ) -> Box<dyn FieldSizeMut + 'a> {
         match self {
-            Self::Varnode(var) => Box::new(FieldSizeMutOwned::from(
+            Self::Varnode(var) => Box::new(FieldSizeUnmutable::from(
                 FieldSize::new_bytes(sleigh.varnode(var.id).len_bytes),
             )),
-            Self::Bitrange(var) => Box::new(FieldSizeMutOwned::from(
+            Self::Bitrange(var) => Box::new(FieldSizeUnmutable::from(
                 FieldSize::new_bits(sleigh.bitrange(var.id).bits.len()),
             )),
-            Self::TokenField(ass) => Box::new(FieldSizeMutOwned::from(
+            Self::TokenField(ass) => Box::new(FieldSizeUnmutable::from(
                 sleigh.token_field(ass.id).exec_value_len(sleigh),
             )),
             Self::TableExport(table) => Box::new(sleigh.table(table.id)),

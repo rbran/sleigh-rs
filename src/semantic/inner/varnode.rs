@@ -54,7 +54,7 @@ impl Context {
             //don't have speacial meaning, or the meaning just use the raw value
             Some(ContextAttach::NoAttach(_)) => unreachable!(),
             Some(ContextAttach::Literal(_)) | None => FieldSize::default()
-                .set_min(self.bitrange.bits.len())
+                .set_min_bits(self.bitrange.bits.len())
                 .unwrap(),
             Some(ContextAttach::Varnode(attach_id)) => {
                 let varnodes = sleigh.attach_varnode(attach_id);

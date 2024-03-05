@@ -1,55 +1,71 @@
 use std::cell::Cell;
 use std::ops::{Bound, RangeBounds};
 
-use crate::{NumberNonZeroUnsigned, NumberUnsigned};
+use crate::NumberNonZeroUnsigned;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FieldRange {
-    min: NumberNonZeroUnsigned,
-    max: NumberNonZeroUnsigned,
+    min: Option<NumberNonZeroUnsigned>,
+    max: Option<NumberNonZeroUnsigned>,
 }
 impl FieldRange {
     fn new(
-        min: NumberNonZeroUnsigned,
+        min: Option<NumberNonZeroUnsigned>,
         max: Option<NumberNonZeroUnsigned>,
     ) -> Self {
-        Self {
-            min,
-            max: max.unwrap_or(
-                NumberNonZeroUnsigned::new(NumberUnsigned::MAX).unwrap(),
-            ),
-        }
+        Self { min, max }
     }
     fn new_unsize() -> Self {
-        Self::new(1.try_into().unwrap(), None)
+        Self::new(None, None)
     }
     fn set_min(self, new_min: NumberNonZeroUnsigned) -> Option<Self> {
-        if self.max < new_min {
+        if matches!(self.max, Some(max) if max < new_min) {
             //max is less then the new_min, unable to set this value
             return None;
         }
-        let min = self.min.max(new_min);
-        Some(Self { min, max: self.max })
+        let min = self
+            .min
+            .map(|old_min| old_min.max(new_min))
+            .unwrap_or(new_min);
+        Some(Self {
+            min: Some(min),
+            max: self.max,
+        })
     }
     fn set_max(self, new_max: NumberNonZeroUnsigned) -> Option<Self> {
-        if self.min > new_max {
+        if matches!(self.min, Some(min) if min > new_max) {
             //unable to set this max value
             return None;
         }
-        let max = self.max.min(new_max);
-        Some(Self { min: self.min, max })
+        let max = self
+            .max
+            .map(|old_max| old_max.min(new_max))
+            .unwrap_or(new_max);
+        Some(Self {
+            min: self.min,
+            max: Some(max),
+        })
     }
     fn single_value(&self) -> Option<NumberNonZeroUnsigned> {
-        (self.min == self.max).then_some(self.min)
+        self.min
+            .zip(self.max)
+            .and_then(|(min, max)| (min == max).then_some(min))
     }
 }
 impl RangeBounds<NumberNonZeroUnsigned> for FieldRange {
     fn start_bound(&self) -> Bound<&NumberNonZeroUnsigned> {
-        Bound::Included(&self.min)
+        // range always starts from 1
+        self.min
+            .as_ref()
+            .map(Bound::Included)
+            .unwrap_or(Bound::Unbounded)
     }
 
     fn end_bound(&self) -> Bound<&NumberNonZeroUnsigned> {
-        Bound::Included(&self.max)
+        self.max
+            .as_ref()
+            .map(Bound::Included)
+            .unwrap_or(Bound::Unbounded)
     }
 }
 
@@ -71,10 +87,8 @@ impl FieldAuto {
 
 pub const FIELD_SIZE_BOOL: FieldSize = FieldSize::Unsized {
     range: FieldRange {
-        min: unsafe { NumberNonZeroUnsigned::new_unchecked(1) },
-        max: unsafe {
-            NumberNonZeroUnsigned::new_unchecked(NumberUnsigned::MAX)
-        },
+        min: Some(unsafe { NumberNonZeroUnsigned::new_unchecked(1) }),
+        max: None,
     },
     possible: FieldAuto::Min,
 };
@@ -145,17 +159,20 @@ impl FieldSize {
                 .then_some(Self::Value(final_value)),
         }
     }
-    pub fn min(&self) -> NumberNonZeroUnsigned {
+    pub fn min_bits(&self) -> NumberNonZeroUnsigned {
         match self {
             Self::Value(value) => *value,
-            Self::Unsized { range, .. } => range.min,
+            Self::Unsized { range, .. } => {
+                // field can't be smaller then 1
+                range.min.unwrap_or(NumberNonZeroUnsigned::new(1).unwrap())
+            }
         }
     }
     pub fn set_min_bytes(self, min: NumberNonZeroUnsigned) -> Option<Self> {
         let min = NumberNonZeroUnsigned::new(min.get() * 8).unwrap();
-        self.set_min(min)
+        self.set_min_bits(min)
     }
-    pub fn set_min(self, min: NumberNonZeroUnsigned) -> Option<Self> {
+    pub fn set_min_bits(self, min: NumberNonZeroUnsigned) -> Option<Self> {
         match self {
             Self::Value(value) => (min <= value).then_some(self),
             Self::Unsized { range, possible } => {
@@ -168,17 +185,20 @@ impl FieldSize {
             }
         }
     }
-    pub fn max(&self) -> NumberNonZeroUnsigned {
+    pub fn max_bits(&self) -> NumberNonZeroUnsigned {
         match self {
             Self::Value(value) => *value,
-            Self::Unsized { range, .. } => range.max,
+            Self::Unsized { range, .. } => {
+                // that will be technically true LOL
+                range.max.unwrap_or(NumberNonZeroUnsigned::MAX)
+            }
         }
     }
     pub fn set_max_bytes(self, max: NumberNonZeroUnsigned) -> Option<Self> {
         let max = NumberNonZeroUnsigned::new(max.get() * 8).unwrap();
-        self.set_max(max)
+        self.set_max_bits(max)
     }
-    pub fn set_max(self, max: NumberNonZeroUnsigned) -> Option<Self> {
+    pub fn set_max_bits(self, max: NumberNonZeroUnsigned) -> Option<Self> {
         match self {
             Self::Value(value) => (max >= value).then_some(self),
             Self::Unsized { range, possible } => {
@@ -201,7 +221,7 @@ impl FieldSize {
             Self::Unsized {
                 possible: FieldAuto::Min,
                 ..
-            } => Some(self.min()),
+            } => Some(self.min_bits()),
             Self::Unsized {
                 possible: FieldAuto::None,
                 ..
@@ -246,8 +266,8 @@ impl FieldSize {
         }
     }
     pub fn intersection(self, other: Self) -> Option<Self> {
-        self.set_min(self.min().max(other.min()))?
-            .set_max(self.max().min(other.max()))
+        self.set_min_bits(self.min_bits().max(other.min_bits()))?
+            .set_max_bits(self.max_bits().min(other.max_bits()))
     }
 }
 impl Default for FieldSize {
@@ -256,35 +276,19 @@ impl Default for FieldSize {
     }
 }
 
-pub trait FieldSizeIntersectIter: Sized {
-    fn all_reduce_set<R, S>(self, reduce: R, set: S) -> Option<bool>
-    where
-        R: FnMut(FieldSize, FieldSize) -> Option<FieldSize>,
-        S: FnMut(&mut dyn FieldSizeMut, &FieldSize) -> Option<bool>;
-    fn all_same_lenght(self) -> Option<bool> {
-        self.all_reduce_set(FieldSize::intersection, |me, new_len| {
-            let new_me = me.get().intersection(*new_len)?;
-            me.set(new_me)
-        })
-    }
-}
-
-impl<'a: 'b, 'b> FieldSizeIntersectIter
-    for &'a mut [&'b mut dyn FieldSizeMut]
-{
-    fn all_reduce_set<R, S>(self, reduce: R, mut set: S) -> Option<bool>
-    where
-        R: FnMut(FieldSize, FieldSize) -> Option<FieldSize>,
-        S: FnMut(&'b mut dyn FieldSizeMut, &FieldSize) -> Option<bool>,
-    {
-        let final_len = self
-            .iter_mut()
-            .map(|x| x.get())
-            .try_fold(FieldSize::default(), reduce)?;
-        self.iter_mut()
-            .map(|size_mut| set(*size_mut, &final_len))
-            .try_fold(false, |acc, x| Some(acc | x?))
-    }
+pub fn restrict_field_same_size(
+    fields: &mut [&mut dyn FieldSizeMut],
+) -> Option<bool> {
+    let final_len = fields
+        .iter_mut()
+        .map(|x| x.get())
+        .try_fold(FieldSize::default(), |me, new_len| {
+            me.intersection(new_len)
+        })?;
+    fields
+        .iter_mut()
+        .map(|size_mut| size_mut.set(final_len))
+        .try_fold(false, |acc, x| Some(acc | x?))
 }
 
 //TODO make it a enum, that is better
@@ -294,6 +298,9 @@ pub trait FieldSizeMut {
 }
 
 impl<'a> dyn FieldSizeMut + 'a {
+    pub fn as_dyn(&mut self) -> &mut dyn FieldSizeMut {
+        self
+    }
     pub fn update_action(
         &mut self,
         mut action: impl FnMut(FieldSize) -> Option<FieldSize>,
@@ -303,18 +310,7 @@ impl<'a> dyn FieldSizeMut + 'a {
     }
 }
 
-impl<'a, T> FieldSizeMut for T
-where
-    T: std::borrow::BorrowMut<dyn FieldSizeMut + 'a>,
-{
-    fn get(&self) -> FieldSize {
-        self.borrow().get()
-    }
-    fn set(&mut self, size: FieldSize) -> Option<bool> {
-        self.borrow_mut().set(size)
-    }
-}
-impl<'a> FieldSizeMut for &'a Cell<FieldSize> {
+impl FieldSizeMut for &Cell<FieldSize> {
     fn get(&self) -> FieldSize {
         (*self).get()
     }
@@ -326,27 +322,29 @@ impl<'a> FieldSizeMut for &'a Cell<FieldSize> {
         Some(modify)
     }
 }
-pub struct FieldSizeMutRef<'a>(&'a mut FieldSize);
-impl<'a> FieldSizeMut for FieldSizeMutRef<'a> {
+impl FieldSizeMut for FieldSize {
     fn get(&self) -> FieldSize {
-        *self.0
+        *self
     }
     fn set(&mut self, size: FieldSize) -> Option<bool> {
-        let modify = *self.0 != size;
+        let modify = *self != size;
         if modify {
-            *self.0 = size;
+            *self = size;
         }
         Some(modify)
     }
 }
-impl<'a> From<&'a mut FieldSize> for FieldSizeMutRef<'a> {
-    fn from(input: &'a mut FieldSize) -> Self {
-        Self(input)
+impl FieldSizeMut for &mut FieldSize {
+    fn get(&self) -> FieldSize {
+        (**self).get()
+    }
+    fn set(&mut self, size: FieldSize) -> Option<bool> {
+        (*self).set(size)
     }
 }
 //don't allow mutation
-pub struct FieldSizeMutOwned(FieldSize);
-impl FieldSizeMut for FieldSizeMutOwned {
+pub struct FieldSizeUnmutable(FieldSize);
+impl FieldSizeMut for FieldSizeUnmutable {
     fn get(&self) -> FieldSize {
         self.0
     }
@@ -354,7 +352,7 @@ impl FieldSizeMut for FieldSizeMutOwned {
         (self.0 == size).then_some(false)
     }
 }
-impl From<FieldSize> for FieldSizeMutOwned {
+impl From<FieldSize> for FieldSizeUnmutable {
     fn from(input: FieldSize) -> Self {
         Self(input)
     }

@@ -44,7 +44,7 @@ impl AttachNumber {
             .max()
             .unwrap();
         let len_bits = NumberNonZeroUnsigned::new(len_bits.into()).unwrap();
-        FieldSize::default().set_min(len_bits).unwrap()
+        FieldSize::default().set_min_bits(len_bits).unwrap()
     }
     pub fn is_signed(&self) -> bool {
         self.0.iter().any(|(_i, v)| v.is_negative())
@@ -92,7 +92,7 @@ impl Meaning {
                     .unwrap();
                 let len_bits =
                     NumberNonZeroUnsigned::new(len_bits.into()).unwrap();
-                Some(FieldSize::default().set_min(len_bits).unwrap())
+                Some(FieldSize::default().set_min_bits(len_bits).unwrap())
             }
         }
     }

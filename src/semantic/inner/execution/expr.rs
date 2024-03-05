@@ -8,15 +8,15 @@ use crate::semantic::execution::{
     ReadValue as FinalReadValue, Reference as FinalReference, ReferencedValue,
     Unary,
 };
+use crate::semantic::inner::execution::restrict_field_same_size;
 use crate::semantic::inner::{FieldSize, Sleigh, Solved, SolverStatus};
 use crate::{
     ExecutionError, Number, NumberNonZeroUnsigned, NumberUnsigned, Span,
 };
 
 use super::{
-    Execution, ExportLen, FieldSizeIntersectIter, FieldSizeMut,
-    FieldSizeMutOwned, FieldSizeMutRef, MemoryLocation, Truncate, UserCall,
-    FIELD_SIZE_BOOL,
+    Execution, ExportLen, FieldSizeMut, FieldSizeUnmutable, MemoryLocation,
+    Truncate, UserCall, FIELD_SIZE_BOOL,
 };
 
 #[derive(Clone, Debug)]
@@ -114,8 +114,9 @@ impl Expr {
         left: Expr,
         mut right: Expr,
     ) -> Self {
+        use Binary::*;
         let size = match op {
-            Binary::Lsl | Binary::Lsr | Binary::Asr => {
+            Lsl | Lsr | Asr => {
                 //rotation is unlikelly to rotate more then 128 bits,
                 //so right element size only require 32bits max
                 right.size_mut(sleigh, execution).update_action(|size| {
@@ -123,42 +124,14 @@ impl Expr {
                 });
                 FieldSize::new_unsized()
             }
-            Binary::SigLess
-            | Binary::SigGreater
-            | Binary::SigRem
-            | Binary::SigLessEq
-            | Binary::SigGreaterEq
-            | Binary::Less
-            | Binary::Greater
-            | Binary::LessEq
-            | Binary::GreaterEq
-            | Binary::FloatLess
-            | Binary::FloatGreater
-            | Binary::FloatLessEq
-            | Binary::FloatGreaterEq
-            | Binary::And
-            | Binary::Xor
-            | Binary::Or
-            | Binary::Eq
-            | Binary::Ne
-            | Binary::FloatEq
-            | Binary::FloatNe
-            | Binary::Carry
-            | Binary::SCarry
-            | Binary::SBorrow => FIELD_SIZE_BOOL,
-            Binary::Mult
-            | Binary::Div
-            | Binary::SigDiv
-            | Binary::Rem
-            | Binary::FloatDiv
-            | Binary::FloatMult
-            | Binary::Sub
-            | Binary::FloatAdd
-            | Binary::FloatSub
-            | Binary::BitAnd
-            | Binary::BitXor
-            | Binary::BitOr
-            | Binary::Add => FieldSize::new_unsized(),
+            SigLess | SigGreater | SigRem | SigLessEq | SigGreaterEq | Less
+            | Greater | LessEq | GreaterEq | FloatLess | FloatGreater
+            | FloatLessEq | FloatGreaterEq | And | Xor | Or | Eq | Ne
+            | FloatEq | FloatNe | Carry | SCarry | SBorrow => FIELD_SIZE_BOOL,
+            Mult | Div | SigDiv | Rem | FloatDiv | FloatMult | Sub
+            | FloatAdd | FloatSub | BitAnd | BitXor | BitOr | Add => {
+                FieldSize::new_unsized()
+            }
         };
         Self::Op(ExprBinaryOp {
             location: src,
@@ -187,9 +160,7 @@ impl Expr {
     ) -> Box<dyn FieldSizeMut + 'a> {
         match self {
             Expr::Value(value) => value.size_mut(sleigh, constructor),
-            Expr::Op(op) => {
-                Box::new(FieldSizeMutRef::from(&mut op.output_size))
-            }
+            Expr::Op(op) => Box::new(&mut op.output_size),
         }
     }
     pub fn solve(
@@ -368,12 +339,12 @@ impl Expr {
                 //NOTE right defaults to 32bits
                 right.solve(sleigh, constructor, solved)?;
 
-                modified |= [
-                    &mut left.size_mut(sleigh, constructor)
-                        as &mut dyn FieldSizeMut,
-                    &mut FieldSizeMutRef::from(&mut op.output_size),
-                ]
-                .all_same_lenght()
+                let output_size = &mut op.output_size;
+                let output_size: &mut dyn FieldSizeMut = output_size;
+                modified |= restrict_field_same_size(&mut [
+                    left.size_mut(sleigh, constructor).as_dyn(),
+                    output_size,
+                ])
                 .ok_or_else(|| {
                     Box::new(ExecutionError::VarSize(op.location.clone()))
                 })?;
@@ -436,13 +407,11 @@ impl Expr {
             ) => {
                 left.solve(sleigh, constructor, solved)?;
                 right.solve(sleigh, constructor, solved)?;
-                modified |= [
-                    &mut left.size_mut(sleigh, constructor)
-                        as &mut dyn FieldSizeMut,
-                    &mut right.size_mut(sleigh, constructor),
-                    &mut FieldSizeMutRef::from(&mut op.output_size),
-                ]
-                .all_same_lenght()
+                modified |= restrict_field_same_size(&mut [
+                    left.size_mut(sleigh, constructor).as_dyn(),
+                    right.size_mut(sleigh, constructor).as_dyn(),
+                    &mut op.output_size,
+                ])
                 .ok_or_else(|| {
                     Box::new(ExecutionError::VarSize(op.location.clone()))
                 })?;
@@ -505,12 +474,10 @@ impl Expr {
                 right.solve(sleigh, constructor, solved)?;
                 //Both sides need to have the same number of bits.
                 //output can have any size because is always 0/1
-                modified |= [
-                    &mut left.size_mut(sleigh, constructor)
-                        as &mut dyn FieldSizeMut,
-                    &mut right.size_mut(sleigh, constructor),
-                ]
-                .all_same_lenght()
+                modified |= restrict_field_same_size(&mut [
+                    left.size_mut(sleigh, constructor).as_dyn(),
+                    right.size_mut(sleigh, constructor).as_dyn(),
+                ])
                 .ok_or_else(|| {
                     Box::new(ExecutionError::VarSize(op.location.clone()))
                 })?;
@@ -633,22 +600,22 @@ impl ExprElement {
                 // input len need to be (output_len truncate.lsb) or bigger
                 modified |= input_len
                     .update_action(|input_len| {
-                        input_len.set_min(
-                            (truncate.lsb + output_len.min().get())
+                        input_len.set_min_bits(
+                            (truncate.lsb + output_len.min_bits().get())
                                 .try_into()
                                 .unwrap(),
                         )
                     })
                     .ok_or_else(error)?;
                 // input len can't be smaller then (truncate.lsb + 1)
-                if input_len.get().max().get() <= truncate.lsb {
+                if input_len.get().max_bits().get() <= truncate.lsb {
                     return Err(error());
                 }
                 // output_len need to me (input_len - truncate.lsb) or smaller
                 modified |= output_len
                     .update_action(|output_len| {
-                        output_len.set_max(
-                            (input_len.get().max().get() - truncate.lsb)
+                        output_len.set_max_bits(
+                            (input_len.get().max_bits().get() - truncate.lsb)
                                 .try_into()
                                 .unwrap(),
                         )
@@ -712,12 +679,13 @@ impl ExprElement {
                 //the input and output have the same number of bits
                 {
                     let mut input_size = input.size_mut(sleigh, execution);
-                    let mut size = FieldSizeMutRef::from(size);
-                    let mut lens: [&mut dyn FieldSizeMut; 2] =
-                        [&mut *input_size, &mut size];
-                    modified |= lens.all_same_lenght().ok_or_else(|| {
-                        Box::new(ExecutionError::VarSize(location.clone()))
-                    })?;
+                    modified |=
+                        restrict_field_same_size(&mut [&mut *input_size, size])
+                            .ok_or_else(|| {
+                                Box::new(ExecutionError::VarSize(
+                                    location.clone(),
+                                ))
+                            })?;
                 }
                 if input.size(sleigh, execution).is_undefined() {
                     solved.iam_not_finished_location(
@@ -746,7 +714,7 @@ impl ExprElement {
                     {
                         if size
                             .update_action(|size| {
-                                size.set_possible_min().set_min(output_min)
+                                size.set_possible_min().set_min_bits(output_min)
                             })
                             .ok_or_else(|| {
                                 Box::new(ExecutionError::VarSize(src.clone()))
@@ -772,13 +740,15 @@ impl ExprElement {
                 //output size need to be bigger or eq to the value size
                 modified |= size
                     .update_action(|size| {
-                        size.set_min(value.size(sleigh, execution).min())
+                        size.set_min_bits(
+                            value.size(sleigh, execution).min_bits(),
+                        )
                     })
                     .ok_or_else(error)?;
                 //and vise-versa
                 modified |= value
                     .size_mut(sleigh, execution)
-                    .update_action(|size| size.set_max(size.max()))
+                    .update_action(|size| size.set_max_bits(size.max_bits()))
                     .ok_or_else(error)?;
 
                 if size.is_undefined()
@@ -798,13 +768,15 @@ impl ExprElement {
                 //output size need to be smaller or equal then the value size
                 modified |= size
                     .update_action(|size| {
-                        size.set_max(value.size(sleigh, execution).min())
+                        size.set_max_bits(
+                            value.size(sleigh, execution).min_bits(),
+                        )
                     })
                     .ok_or_else(error)?;
                 //and vise-versa
                 modified |= value
                     .size_mut(sleigh, execution)
-                    .update_action(|size| size.set_min(size.max()))
+                    .update_action(|size| size.set_min_bits(size.max_bits()))
                     .ok_or_else(error)?;
 
                 if size.is_undefined()
@@ -905,17 +877,11 @@ impl ExprElement {
     ) -> Box<dyn FieldSizeMut + 'a> {
         match self {
             Self::Value(value) => value.size_mut(sleigh, constructor),
-            Self::DeReference(_, deref, _) => {
-                Box::new(FieldSizeMutRef::from(&mut deref.size))
-            }
-            Self::Truncate(_, trunc, _) => {
-                Box::new(FieldSizeMutRef::from(&mut trunc.size))
-            }
-            Self::Reference(x) => Box::new(FieldSizeMutRef::from(&mut x.len)),
-            Self::Op(x) => Box::new(FieldSizeMutRef::from(&mut x.output_size)),
-            Self::UserCall(x) => {
-                Box::new(FieldSizeMutRef::from(&mut x.output_size))
-            }
+            Self::DeReference(_, deref, _) => Box::new(&mut deref.size),
+            Self::Truncate(_, trunc, _) => Box::new(&mut trunc.size),
+            Self::Reference(x) => Box::new(&mut x.len),
+            Self::Op(x) => Box::new(&mut x.output_size),
+            Self::UserCall(x) => Box::new(&mut x.output_size),
             Self::New(_x) => todo!(),
             Self::CPool(_x) => todo!(),
         }
@@ -955,16 +921,16 @@ impl ReadValue {
         constructor: &'a Execution,
     ) -> Box<dyn FieldSizeMut + 'a> {
         match self {
-            Self::Int(x) => Box::new(FieldSizeMutRef::from(&mut x.size)),
-            Self::DisVar(x) => Box::new(FieldSizeMutRef::from(&mut x.size)),
+            Self::Int(x) => Box::new(&mut x.size),
+            Self::DisVar(x) => Box::new(&mut x.size),
             Self::Context(_)
             | Self::Bitrange(_)
             | Self::InstStart(_)
             | Self::InstNext(_)
-            | Self::TokenField(_) => Box::new(FieldSizeMutOwned::from(
+            | Self::TokenField(_) => Box::new(FieldSizeUnmutable::from(
                 self.size(sleigh, constructor),
             )),
-            Self::Varnode(var) => Box::new(FieldSizeMutOwned::from(
+            Self::Varnode(var) => Box::new(FieldSizeUnmutable::from(
                 FieldSize::new_bytes(sleigh.varnode(var.id).len_bytes),
             )),
             Self::Table(x) => Box::new(sleigh.table(x.id)),
@@ -1115,7 +1081,7 @@ impl ExprNumber {
 
     pub(crate) fn new(location: Span, number: Number) -> ExprNumber {
         let size = FieldSize::default()
-            .set_min(
+            .set_min_bits(
                 NumberNonZeroUnsigned::new(number.bits_required().into())
                     .unwrap(),
             )
