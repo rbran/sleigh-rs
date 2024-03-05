@@ -260,6 +260,8 @@ pub enum ExportConst {
     TokenField(TokenFieldId),
     /// Attach values are limited
     Context(ContextId),
+    // the instruction start addr,
+    InstructionStart,
     /// only if also export Const or Context value
     Table(TableId),
     ExeVar(VariableId),

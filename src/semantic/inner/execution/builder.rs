@@ -248,6 +248,7 @@ pub trait ExecutionBuilder {
             DisVar(var) => Ok(ExportConst::DisVar(var.id)),
             TokenField(ass) => Ok(ExportConst::TokenField(ass.id)),
             Context(cont) => Ok(ExportConst::Context(cont.id)),
+            InstStart(_) => Ok(ExportConst::InstructionStart),
             Table(expr_table) => {
                 let table = self.sleigh().table(expr_table.id);
                 match *table.export.borrow() {
