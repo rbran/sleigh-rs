@@ -15,8 +15,8 @@ use crate::{
 };
 
 use super::{
-    Execution, ExportLen, FieldSizeMut, FieldSizeUnmutable, MemoryLocation,
-    Truncate, UserCall, FIELD_SIZE_BOOL,
+    ExportLen, FieldSizeMut, FieldSizeUnmutable, MemoryLocation, Truncate,
+    UserCall, Variable, FIELD_SIZE_BOOL,
 };
 
 #[derive(Clone, Debug)]
@@ -108,7 +108,7 @@ impl Expr {
     }
     pub fn new_op(
         sleigh: &Sleigh,
-        execution: &Execution,
+        variables: &[Variable],
         src: Span,
         op: Binary,
         left: Expr,
@@ -119,7 +119,7 @@ impl Expr {
             Lsl | Lsr | Asr => {
                 //rotation is unlikelly to rotate more then 128 bits,
                 //so right element size only require 32bits max
-                right.size_mut(sleigh, execution).update_action(|size| {
+                right.size_mut(sleigh, variables).update_action(|size| {
                     size.set_possible_value(32.try_into().unwrap())
                 });
                 FieldSize::new_unsized()
@@ -147,31 +147,31 @@ impl Expr {
             Expr::Op(op) => &op.location,
         }
     }
-    pub fn size(&self, sleigh: &Sleigh, constructor: &Execution) -> FieldSize {
+    pub fn size(&self, sleigh: &Sleigh, variables: &[Variable]) -> FieldSize {
         match self {
-            Expr::Value(value) => value.size(sleigh, constructor),
+            Expr::Value(value) => value.size(sleigh, variables),
             Expr::Op(op) => op.output_size,
         }
     }
     pub fn size_mut<'a>(
         &'a mut self,
         sleigh: &'a Sleigh,
-        constructor: &'a Execution,
+        variables: &'a [Variable],
     ) -> Box<dyn FieldSizeMut + 'a> {
         match self {
-            Expr::Value(value) => value.size_mut(sleigh, constructor),
+            Expr::Value(value) => value.size_mut(sleigh, variables),
             Expr::Op(op) => Box::new(&mut op.output_size),
         }
     }
     pub fn solve(
         &mut self,
         sleigh: &Sleigh,
-        constructor: &Execution,
+        variables: &[Variable],
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
         let (self_moved, mut op) = match self {
             Expr::Value(value) => {
-                return value.solve(sleigh, constructor, solved)
+                return value.solve(sleigh, variables, solved)
             }
             self_moved @ Expr::Op(_) => {
                 //TODO make this less akward and remove the unecessary deref
@@ -268,7 +268,7 @@ impl Expr {
                 })
                 .unwrap_or(false)
                 && value
-                    .size(sleigh, constructor)
+                    .size(sleigh, variables)
                     .final_value()
                     .map(|bits| {
                         bits.get()
@@ -313,7 +313,7 @@ impl Expr {
             ) if op
                 .output_size
                 .final_value()
-                .zip(value.size(sleigh, constructor).final_value())
+                .zip(value.size(sleigh, variables).final_value())
                 .map(|(out_bits, val_bits)| (out_bits.get(), val_bits.get()))
                 .map(|(out_bits, val_bits)| {
                     val_bits >= lsb.as_unsigned().unwrap()
@@ -335,14 +335,14 @@ impl Expr {
 
             //output and left have the same size, right can have any size
             (mut left, Binary::Lsl | Binary::Lsr | Binary::Asr, mut right) => {
-                left.solve(sleigh, constructor, solved)?;
+                left.solve(sleigh, variables, solved)?;
                 //NOTE right defaults to 32bits
-                right.solve(sleigh, constructor, solved)?;
+                right.solve(sleigh, variables, solved)?;
 
                 let output_size = &mut op.output_size;
                 let output_size: &mut dyn FieldSizeMut = output_size;
                 modified |= restrict_field_same_size(&mut [
-                    left.size_mut(sleigh, constructor).as_dyn(),
+                    left.size_mut(sleigh, variables).as_dyn(),
                     output_size,
                 ])
                 .ok_or_else(|| {
@@ -368,8 +368,8 @@ impl Expr {
             (mut left, Binary::And | Binary::Xor | Binary::Or, mut right) => {
                 //left/right can have any lenght, so just try to solve the len
                 //if possible, otherwise just ignore it
-                left.solve(sleigh, constructor, &mut Solved::default())?;
-                right.solve(sleigh, constructor, &mut Solved::default())?;
+                left.solve(sleigh, variables, &mut Solved::default())?;
+                right.solve(sleigh, variables, &mut Solved::default())?;
                 if op.output_size.is_undefined() {
                     solved.iam_not_finished_location(
                         &op.location,
@@ -405,11 +405,11 @@ impl Expr {
                 | Binary::BitOr,
                 mut right,
             ) => {
-                left.solve(sleigh, constructor, solved)?;
-                right.solve(sleigh, constructor, solved)?;
+                left.solve(sleigh, variables, solved)?;
+                right.solve(sleigh, variables, solved)?;
                 modified |= restrict_field_same_size(&mut [
-                    left.size_mut(sleigh, constructor).as_dyn(),
-                    right.size_mut(sleigh, constructor).as_dyn(),
+                    left.size_mut(sleigh, variables).as_dyn(),
+                    right.size_mut(sleigh, variables).as_dyn(),
                     &mut op.output_size,
                 ])
                 .ok_or_else(|| {
@@ -419,15 +419,15 @@ impl Expr {
                 //if the output have a possible size, make left/right also have
                 if let Some(possible) = op.output_size.possible_value() {
                     let new_left = left
-                        .size(sleigh, constructor)
+                        .size(sleigh, variables)
                         .set_possible_value(possible);
                     let new_right = right
-                        .size(sleigh, constructor)
+                        .size(sleigh, variables)
                         .set_possible_value(possible);
                     if let Some((new_left, new_right)) = new_left.zip(new_right)
                     {
-                        left.size_mut(sleigh, constructor).set(new_left);
-                        right.size_mut(sleigh, constructor).set(new_right);
+                        left.size_mut(sleigh, variables).set(new_left);
+                        right.size_mut(sleigh, variables).set(new_right);
                     }
                 }
                 if op.output_size.is_undefined() {
@@ -470,19 +470,19 @@ impl Expr {
                 | Binary::SBorrow,
                 mut right,
             ) => {
-                left.solve(sleigh, constructor, solved)?;
-                right.solve(sleigh, constructor, solved)?;
+                left.solve(sleigh, variables, solved)?;
+                right.solve(sleigh, variables, solved)?;
                 //Both sides need to have the same number of bits.
                 //output can have any size because is always 0/1
                 modified |= restrict_field_same_size(&mut [
-                    left.size_mut(sleigh, constructor).as_dyn(),
-                    right.size_mut(sleigh, constructor).as_dyn(),
+                    left.size_mut(sleigh, variables).as_dyn(),
+                    right.size_mut(sleigh, variables).as_dyn(),
                 ])
                 .ok_or_else(|| {
                     Box::new(ExecutionError::VarSize(op.location.clone()))
                 })?;
-                if left.size(sleigh, constructor).is_undefined()
-                    || right.size(sleigh, constructor).is_undefined()
+                if left.size(sleigh, variables).is_undefined()
+                    || right.size(sleigh, variables).is_undefined()
                 {
                     solved.iam_not_finished_location(
                         &op.location,
@@ -518,14 +518,14 @@ impl ExprElement {
     }
     pub fn new_deref(
         sleigh: &Sleigh,
-        constructor: &Execution,
+        variables: &[Variable],
         src: Span,
         deref: MemoryLocation,
         mut addr: Expr,
     ) -> Self {
         let space = sleigh.space(deref.space);
         //addr expr, need to be the space_addr size
-        addr.size_mut(sleigh, constructor)
+        addr.size_mut(sleigh, variables)
             .set(FieldSize::new_bytes(space.addr_bytes));
         Self::DeReference(src, deref, Box::new(addr))
     }
@@ -558,7 +558,7 @@ impl ExprElement {
     pub fn solve(
         &mut self,
         sleigh: &Sleigh,
-        execution: &Execution,
+        variables: &[Variable],
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
         let mut modified = false;
@@ -594,7 +594,7 @@ impl ExprElement {
             }) => (/*TODO*/),
             Self::Truncate(src, truncate, input) => {
                 let error = || Box::new(ExecutionError::VarSize(src.clone()));
-                let mut input_len = input.size_mut(sleigh, execution);
+                let mut input_len = input.size_mut(sleigh, variables);
                 let output_len = &mut truncate.size;
 
                 // input len need to be (output_len truncate.lsb) or bigger
@@ -643,11 +643,11 @@ impl ExprElement {
                 }
                 // try to solve the input with the new information
                 drop(input_len);
-                input.solve(sleigh, execution, solved)?;
+                input.solve(sleigh, variables, solved)?;
             }
             Self::DeReference(_, deref, value) => {
                 deref.solve(solved);
-                value.solve(sleigh, execution, solved)?;
+                value.solve(sleigh, variables, solved)?;
             }
             Self::Op(ExprUnaryOp {
                 location,
@@ -666,19 +666,19 @@ impl ExprElement {
             }) => {
                 //if one can be min size, both can be
                 if size.possible_min()
-                    || input.size(sleigh, execution).possible_min()
+                    || input.size(sleigh, variables).possible_min()
                 {
                     let set_min =
                         |size: FieldSize| Some(size.set_possible_min());
                     modified |= size.update_action(set_min).unwrap();
                     modified |= input
-                        .size_mut(sleigh, execution)
+                        .size_mut(sleigh, variables)
                         .update_action(set_min)
                         .unwrap();
                 }
                 //the input and output have the same number of bits
                 {
-                    let mut input_size = input.size_mut(sleigh, execution);
+                    let mut input_size = input.size_mut(sleigh, variables);
                     modified |=
                         restrict_field_same_size(&mut [&mut *input_size, size])
                             .ok_or_else(|| {
@@ -687,14 +687,14 @@ impl ExprElement {
                                 ))
                             })?;
                 }
-                if input.size(sleigh, execution).is_undefined() {
+                if input.size(sleigh, variables).is_undefined() {
                     solved.iam_not_finished_location(
                         location,
                         file!(),
                         line!(),
                     );
                 }
-                input.solve(sleigh, execution, solved)?;
+                input.solve(sleigh, variables, solved)?;
             }
             Self::Op(ExprUnaryOp {
                 location: src,
@@ -704,7 +704,7 @@ impl ExprElement {
             }) => {
                 //the output min size is: log2(bit_len(input) + 1)
                 if let Some(input_num_bits) =
-                    input.size(sleigh, execution).final_value()
+                    input.size(sleigh, variables).final_value()
                 {
                     //equivalent to log2(bit_len(input) + 1)
                     let output_min = NumberUnsigned::BITS
@@ -727,7 +727,7 @@ impl ExprElement {
                 if size.is_undefined() {
                     solved.iam_not_finished_location(src, file!(), line!());
                 }
-                input.solve(sleigh, execution, solved)?;
+                input.solve(sleigh, variables, solved)?;
             }
 
             Self::Op(ExprUnaryOp {
@@ -741,22 +741,22 @@ impl ExprElement {
                 modified |= size
                     .update_action(|size| {
                         size.set_min_bits(
-                            value.size(sleigh, execution).min_bits(),
+                            value.size(sleigh, variables).min_bits(),
                         )
                     })
                     .ok_or_else(error)?;
                 //and vise-versa
                 modified |= value
-                    .size_mut(sleigh, execution)
+                    .size_mut(sleigh, variables)
                     .update_action(|size| size.set_max_bits(size.max_bits()))
                     .ok_or_else(error)?;
 
                 if size.is_undefined()
-                    || value.size(sleigh, execution).is_undefined()
+                    || value.size(sleigh, variables).is_undefined()
                 {
                     solved.iam_not_finished_location(src, file!(), line!());
                 }
-                value.solve(sleigh, execution, solved)?;
+                value.solve(sleigh, variables, solved)?;
             }
             Self::Op(ExprUnaryOp {
                 location: src,
@@ -769,22 +769,22 @@ impl ExprElement {
                 modified |= size
                     .update_action(|size| {
                         size.set_max_bits(
-                            value.size(sleigh, execution).min_bits(),
+                            value.size(sleigh, variables).min_bits(),
                         )
                     })
                     .ok_or_else(error)?;
                 //and vise-versa
                 modified |= value
-                    .size_mut(sleigh, execution)
+                    .size_mut(sleigh, variables)
                     .update_action(|size| size.set_min_bits(size.max_bits()))
                     .ok_or_else(error)?;
 
                 if size.is_undefined()
-                    || value.size(sleigh, execution).is_undefined()
+                    || value.size(sleigh, variables).is_undefined()
                 {
                     solved.iam_not_finished_location(src, file!(), line!());
                 }
-                value.solve(sleigh, execution, solved)?;
+                value.solve(sleigh, variables, solved)?;
             }
             Self::Op(ExprUnaryOp {
                 location: src,
@@ -794,11 +794,11 @@ impl ExprElement {
             }) => {
                 //input and output can have any size
                 if size.is_undefined()
-                    || input.size(sleigh, execution).is_undefined()
+                    || input.size(sleigh, variables).is_undefined()
                 {
                     solved.iam_not_finished_location(src, file!(), line!());
                 }
-                input.solve(sleigh, execution, solved)?;
+                input.solve(sleigh, variables, solved)?;
             }
             Self::Op(ExprUnaryOp {
                 location: src,
@@ -809,7 +809,7 @@ impl ExprElement {
                 if size.is_undefined() {
                     solved.iam_not_finished_location(src, file!(), line!());
                 }
-                input.solve(sleigh, execution, solved)?;
+                input.solve(sleigh, variables, solved)?;
             }
             Self::UserCall(UserCall {
                 output_size: size,
@@ -825,7 +825,7 @@ impl ExprElement {
                     );
                 }
                 params.iter_mut().try_for_each(|param| {
-                    param.solve(sleigh, execution, solved)
+                    param.solve(sleigh, variables, solved)
                 })?;
             }
             Self::New(_) => todo!(),
@@ -873,10 +873,10 @@ impl ExprElement {
     pub fn size_mut<'a>(
         &'a mut self,
         sleigh: &'a Sleigh,
-        constructor: &'a Execution,
+        variables: &'a [Variable],
     ) -> Box<dyn FieldSizeMut + 'a> {
         match self {
-            Self::Value(value) => value.size_mut(sleigh, constructor),
+            Self::Value(value) => value.size_mut(sleigh, variables),
             Self::DeReference(_, deref, _) => Box::new(&mut deref.size),
             Self::Truncate(_, trunc, _) => Box::new(&mut trunc.size),
             Self::Reference(x) => Box::new(&mut x.len),
@@ -886,9 +886,9 @@ impl ExprElement {
             Self::CPool(_x) => todo!(),
         }
     }
-    pub fn size(&self, sleigh: &Sleigh, constructor: &Execution) -> FieldSize {
+    pub fn size(&self, sleigh: &Sleigh, variables: &[Variable]) -> FieldSize {
         match self {
-            Self::Value(value) => value.size(sleigh, constructor),
+            Self::Value(value) => value.size(sleigh, variables),
             Self::DeReference(_, deref, _) => deref.size,
             Self::Truncate(_, trunc, _) => trunc.size,
             Self::Reference(x) => x.len,
@@ -918,7 +918,7 @@ impl ReadValue {
     pub fn size_mut<'a>(
         &'a mut self,
         sleigh: &'a Sleigh,
-        constructor: &'a Execution,
+        variables: &'a [Variable],
     ) -> Box<dyn FieldSizeMut + 'a> {
         match self {
             Self::Int(x) => Box::new(&mut x.size),
@@ -927,17 +927,17 @@ impl ReadValue {
             | Self::Bitrange(_)
             | Self::InstStart(_)
             | Self::InstNext(_)
-            | Self::TokenField(_) => Box::new(FieldSizeUnmutable::from(
-                self.size(sleigh, constructor),
-            )),
+            | Self::TokenField(_) => {
+                Box::new(FieldSizeUnmutable::from(self.size(sleigh, variables)))
+            }
             Self::Varnode(var) => Box::new(FieldSizeUnmutable::from(
                 FieldSize::new_bytes(sleigh.varnode(var.id).len_bytes),
             )),
             Self::Table(x) => Box::new(sleigh.table(x.id)),
-            Self::ExeVar(x) => Box::new(&constructor.variable(x.id).size),
+            Self::ExeVar(x) => Box::new(&variables[x.id.0].size),
         }
     }
-    pub fn size(&self, sleigh: &Sleigh, constructor: &Execution) -> FieldSize {
+    pub fn size(&self, sleigh: &Sleigh, variables: &[Variable]) -> FieldSize {
         match self {
             Self::Int(x) => x.size,
             Self::DisVar(x) => x.size,
@@ -965,7 +965,7 @@ impl ReadValue {
                 .unwrap()
                 .size()
                 .unwrap(),
-            Self::ExeVar(x) => constructor.variable(x.id).size.get(),
+            Self::ExeVar(x) => variables[x.id.0].size.get(),
         }
     }
     pub fn solve(

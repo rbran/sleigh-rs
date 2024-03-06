@@ -475,13 +475,13 @@ pub trait ExecutionBuilder {
                             let right = &mut right;
                             let sleigh = self.sleigh();
                             let execution = self.execution();
-                            right.size_mut(sleigh, execution).update_action(
-                                |size| {
+                            right
+                                .size_mut(sleigh, &execution.vars)
+                                .update_action(|size| {
                                     size.intersection(FieldSize::new_bytes(
                                         var_ele.len_bytes,
                                     ))
-                                },
-                            );
+                                });
                         }
                         Ok(Statement::MemWrite(MemWrite::new(
                             self.sleigh(),
@@ -773,7 +773,7 @@ pub trait ExecutionBuilder {
                 let right = self.new_expr(*right)?;
                 Ok(Expr::new_op(
                     self.sleigh(),
-                    self.execution(),
+                    &self.execution().vars,
                     src,
                     op,
                     left,

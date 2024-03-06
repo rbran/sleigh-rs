@@ -170,7 +170,7 @@ impl Export {
         //addr size or smaller
         let space = sleigh.space(space_deref.space);
         let src = addr.src().clone();
-        addr.size_mut(sleigh, execution)
+        addr.size_mut(sleigh, &execution.vars)
             .update_action(|size| size.set_max_bytes(space.addr_bytes))
             .ok_or_else(|| ExecutionError::VarSize(src))?;
         Ok(Self::Reference {
@@ -185,7 +185,7 @@ impl Export {
     ) -> ExportLen {
         match self {
             Export::Value(value) => {
-                ExportLen::Value(value.size(sleigh, execution))
+                ExportLen::Value(value.size(sleigh, &execution.vars))
             }
             Export::Reference { addr: _, memory } => {
                 ExportLen::Reference(memory.size)
@@ -211,7 +211,7 @@ impl Export {
         execution: &Execution,
     ) -> FieldSize {
         match self {
-            Self::Value(expr) => expr.size(sleigh, execution),
+            Self::Value(expr) => expr.size(sleigh, &execution.vars),
             //TODO verify this
             Self::Reference { addr: _, memory } => memory.size,
             Self::Const { len_bits: len, .. } => *len,
@@ -220,10 +220,10 @@ impl Export {
     pub fn output_size_mut<'a>(
         &'a mut self,
         sleigh: &'a Sleigh,
-        execution: &'a Execution,
+        variables: &'a [Variable],
     ) -> Box<dyn FieldSizeMut + 'a> {
         match self {
-            Self::Value(expr) => expr.size_mut(sleigh, execution),
+            Self::Value(expr) => expr.size_mut(sleigh, variables),
             //TODO verify this
             Self::Reference { addr: _, memory } => Box::new(&mut memory.size),
             Self::Const { len_bits, .. } => Box::new(len_bits),
@@ -232,16 +232,16 @@ impl Export {
     pub fn solve(
         &mut self,
         sleigh: &Sleigh,
-        execution: &Execution,
+        variables: &[Variable],
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
         match self {
             Self::Const { .. } => Ok(()),
-            Self::Value(expr) => expr.solve(sleigh, execution, solved),
+            Self::Value(expr) => expr.solve(sleigh, variables, solved),
             Self::Reference { addr, memory } => {
-                addr.solve(sleigh, execution, solved)?;
+                addr.solve(sleigh, variables, solved)?;
                 memory.solve(solved);
-                if addr.size(sleigh, execution).is_undefined() {
+                if addr.size(sleigh, variables).is_undefined() {
                     solved.iam_not_finished_location(
                         addr.src(),
                         file!(),
@@ -290,7 +290,7 @@ impl MemWrite {
             .map(|size| size.get() == 8)
             .unwrap_or(false)
             && right
-                .size(sleigh, execution)
+                .size(sleigh, &execution.vars)
                 .final_value()
                 .map(|size| size.get() == 1)
                 .unwrap_or(false)
@@ -305,7 +305,7 @@ impl MemWrite {
         //addr expr is the addr to access the space, so it need to be space
         //addr size
         let space = sleigh.space(mem.space);
-        addr.size_mut(sleigh, execution)
+        addr.size_mut(sleigh, &execution.vars)
             .set(FieldSize::new_bytes(space.addr_bytes));
         Self {
             addr,
@@ -317,14 +317,14 @@ impl MemWrite {
     pub fn solve(
         &mut self,
         sleigh: &Sleigh,
-        execution: &Execution,
+        variables: &[Variable],
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
-        self.right.solve(sleigh, execution, solved)?;
+        self.right.solve(sleigh, variables, solved)?;
         //exception in case the right size is smaller then the left size,
         //truncate the right size with a msb(0)
         let left_size = self.mem.size.final_value();
-        let right_size = self.right.size(sleigh, execution).final_value();
+        let right_size = self.right.size(sleigh, variables).final_value();
         if left_size
             .zip(right_size)
             .map(|(left, right)| left.get() < right.get())
@@ -352,7 +352,7 @@ impl MemWrite {
                 Truncate::new(0, left_size.unwrap()),
                 Box::new(taken),
             ));
-            self.right.solve(sleigh, execution, solved)?;
+            self.right.solve(sleigh, variables, solved)?;
             solved.i_did_a_thing()
         }
 
@@ -363,7 +363,7 @@ impl MemWrite {
             //a value with size equal or smaller then that
             let modified = self
                 .right
-                .size_mut(sleigh, execution)
+                .size_mut(sleigh, variables)
                 .update_action(|size| {
                     size.set_max_bits(write_size)?
                         .set_possible_value(write_size)
@@ -377,7 +377,7 @@ impl MemWrite {
             //if the left side is WriteAddr without a size, the only option is
             //to use the right side size
             let modified = self.mem.size.update_action(|size| {
-                size.intersection(self.right.size(sleigh, execution))
+                size.intersection(self.right.size(sleigh, variables))
             });
             if modified.ok_or_else(|| {
                 Box::new(ExecutionError::VarSize(self.src.clone()))
@@ -386,8 +386,8 @@ impl MemWrite {
             }
         }
 
-        if self.addr.size(sleigh, execution).is_undefined()
-            || self.right.size(sleigh, execution).is_undefined()
+        if self.addr.size(sleigh, variables).is_undefined()
+            || self.right.size(sleigh, variables).is_undefined()
         {
             solved.iam_not_finished_location(self.right.src(), file!(), line!())
         }
@@ -420,12 +420,12 @@ impl Assignment {
     pub fn solve(
         &mut self,
         sleigh: &Sleigh,
-        execution: &Execution,
+        variables: &[Variable],
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
         let error_src = self.right.src().clone();
         let error = || Box::new(ExecutionError::VarSize(error_src.clone()));
-        self.right.solve(sleigh, execution, solved)?;
+        self.right.solve(sleigh, variables, solved)?;
 
         //exception in case the right result is 1 bit and the left is
         //less then 1 byte, auto add zext the right side
@@ -433,9 +433,9 @@ impl Assignment {
             .op
             .as_ref()
             .map(|op| op.output_size())
-            .unwrap_or_else(|| self.var.size(sleigh, execution))
+            .unwrap_or_else(|| self.var.size(sleigh, variables))
             .final_value();
-        let right_size = self.right.size(sleigh, execution).final_value();
+        let right_size = self.right.size(sleigh, variables).final_value();
         if left_size
             .zip(right_size)
             .map(|(left, right)| left.get() == 8 && right.get() < 8)
@@ -464,14 +464,14 @@ impl Assignment {
                 op: Unary::Zext,
                 input: Box::new(taken),
             }));
-            self.right.solve(sleigh, execution, solved)?;
+            self.right.solve(sleigh, variables, solved)?;
             solved.i_did_a_thing()
         }
 
         //left and right sizes are the same
         if let Some(trunc) = &mut self.op {
             let modified = restrict_field_same_size(&mut [
-                self.right.size_mut(sleigh, execution).as_dyn(),
+                self.right.size_mut(sleigh, variables).as_dyn(),
                 trunc.output_size_mut(),
             ]);
             if modified.ok_or_else(error)? {
@@ -479,16 +479,16 @@ impl Assignment {
             }
         } else {
             let modified = restrict_field_same_size(&mut [
-                &mut *self.right.size_mut(sleigh, execution),
-                &mut *self.var.size_mut(sleigh, execution),
+                &mut *self.right.size_mut(sleigh, variables),
+                &mut *self.var.size_mut(sleigh, variables),
             ]);
 
             //if right size is possible min, so does left if size is not defined
-            if self.var.size(sleigh, execution).is_undefined()
-                && self.right.size(sleigh, execution).possible_min()
+            if self.var.size(sleigh, variables).is_undefined()
+                && self.right.size(sleigh, variables).possible_min()
                 && self
                     .var
-                    .size_mut(sleigh, execution)
+                    .size_mut(sleigh, variables)
                     .update_action(|size| Some(size.set_possible_min()))
                     .unwrap()
             {
@@ -499,8 +499,8 @@ impl Assignment {
             }
         }
 
-        if self.var.size(sleigh, execution).is_undefined()
-            || self.right.size(sleigh, execution).is_undefined()
+        if self.var.size(sleigh, variables).is_undefined()
+            || self.right.size(sleigh, variables).is_undefined()
         {
             solved.iam_not_finished_location(self.right.src(), file!(), line!())
         }
@@ -521,7 +521,7 @@ impl WriteValue {
     pub(crate) fn size(
         &self,
         sleigh: &Sleigh,
-        execution: &Execution,
+        variables: &[Variable],
     ) -> FieldSize {
         match self {
             Self::Varnode(var) => {
@@ -537,13 +537,13 @@ impl WriteValue {
             Self::TokenField(ass) => {
                 sleigh.token_field(ass.id).exec_value_len(sleigh)
             }
-            Self::Local(var) => execution.variable(var.id).size.get(),
+            Self::Local(var) => variables[var.id.0].size.get(),
         }
     }
     pub fn size_mut<'a>(
         &'a mut self,
         sleigh: &'a Sleigh,
-        execution: &'a Execution,
+        variables: &'a [Variable],
     ) -> Box<dyn FieldSizeMut + 'a> {
         match self {
             Self::Varnode(var) => Box::new(FieldSizeUnmutable::from(
@@ -556,7 +556,7 @@ impl WriteValue {
                 sleigh.token_field(ass.id).exec_value_len(sleigh),
             )),
             Self::TableExport(table) => Box::new(sleigh.table(table.id)),
-            Self::Local(local) => Box::new(&execution.variable(local.id).size),
+            Self::Local(local) => Box::new(&variables[local.id.0].size),
         }
     }
 }
@@ -574,7 +574,7 @@ impl MacroCall {
     pub fn solve<T>(
         &mut self,
         sleigh: &Sleigh,
-        execution: &Execution,
+        variables: &[Variable],
         solved: &mut T,
     ) -> Result<(), Box<ExecutionError>>
     where
@@ -596,20 +596,20 @@ impl MacroCall {
         for (param, macro_param) in self.params.iter_mut().zip(params_iter) {
             let src = param.src().clone();
             if param
-                .size_mut(sleigh, execution)
+                .size_mut(sleigh, variables)
                 .update_action(|size| size.intersection(macro_param.size.get()))
                 .ok_or_else(|| Box::new(ExecutionError::VarSize(src)))?
             {
                 solved.we_did_a_thing();
             }
-            param.solve(sleigh, execution, solved)?;
+            param.solve(sleigh, variables, solved)?;
         }
 
         //try to specialize the macro call
         let params_size = self
             .params
             .iter()
-            .map(|x| x.size(sleigh, execution).final_value())
+            .map(|x| x.size(sleigh, variables).final_value())
             .collect::<Option<Vec<_>>>();
         if let Some(params_size) = params_size {
             let pcode_macro = sleigh.pcode_macro(self.instance.macro_id);
@@ -646,7 +646,7 @@ impl UserCall {
         params.iter_mut().for_each(|param| {
             //TODO improve the size speculation
             param
-                .size_mut(sleigh, execution)
+                .size_mut(sleigh, &execution.vars)
                 .update_action(|size| Some(size.set_possible_min()))
                 .unwrap();
         });
@@ -660,12 +660,12 @@ impl UserCall {
     pub fn solve(
         &mut self,
         sleigh: &Sleigh,
-        execution: &Execution,
+        variable: &[Variable],
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
         self.params
             .iter_mut()
-            .try_for_each(|x| x.solve(sleigh, execution, solved))
+            .try_for_each(|x| x.solve(sleigh, variable, solved))
     }
     pub fn convert(self) -> FinalUserCall {
         let params = self.params.into_iter().map(|x| x.convert()).collect();
@@ -686,7 +686,7 @@ impl LocalGoto {
     ) -> Result<Self, Box<ExecutionError>> {
         //condition can have any size, preferencially 1 bit for true/false
         cond.iter_mut().for_each(|cond| {
-            cond.size_mut(sleigh, execution)
+            cond.size_mut(sleigh, &execution.vars)
                 .update_action(|size| Some(size.set_possible_min()))
                 .unwrap();
         });
@@ -695,12 +695,12 @@ impl LocalGoto {
     pub fn solve(
         &mut self,
         sleigh: &Sleigh,
-        execution: &Execution,
+        variables: &[Variable],
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
         if let Some(cond) = self.cond.as_mut() {
-            cond.solve(sleigh, execution, solved)?;
-            if cond.size(sleigh, execution).is_undefined() {
+            cond.solve(sleigh, variables, solved)?;
+            if cond.size(sleigh, variables).is_undefined() {
                 solved.iam_not_finished_location(cond.src(), file!(), line!());
             }
         }
@@ -725,7 +725,7 @@ impl CpuBranch {
     ) -> Self {
         //condition can have any size, preferencially 1 bit for true/false
         cond.iter_mut().for_each(|cond| {
-            cond.size_mut(sleigh, execution)
+            cond.size_mut(sleigh, &execution.vars)
                 .update_action(|size| Some(size.set_possible_min()))
                 .unwrap();
         });
@@ -739,13 +739,13 @@ impl CpuBranch {
     pub fn solve(
         &mut self,
         sleigh: &Sleigh,
-        execution: &Execution,
+        variables: &[Variable],
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
         let mut modified = false;
         if let Some(cond) = self.cond.as_mut() {
-            cond.solve(sleigh, execution, solved)?;
-            if cond.size(sleigh, execution).is_undefined() {
+            cond.solve(sleigh, variables, solved)?;
+            if cond.size(sleigh, variables).is_undefined() {
                 solved.iam_not_finished_location(cond.src(), file!(), line!());
             }
         }
@@ -753,14 +753,14 @@ impl CpuBranch {
         let error = Box::new(ExecutionError::VarSize(self.dst.src().clone()));
         modified |= self
             .dst
-            .size_mut(sleigh, execution)
+            .size_mut(sleigh, variables)
             .update_action(|size| {
                 size.set_max_bytes(sleigh.addr_bytes().unwrap())
             })
             .ok_or(error)?;
 
-        self.dst.solve(sleigh, execution, solved)?;
-        if self.dst.size(sleigh, execution).is_undefined() {
+        self.dst.solve(sleigh, variables, solved)?;
+        if self.dst.size(sleigh, variables).is_undefined() {
             solved.iam_not_finished_location(self.dst.src(), file!(), line!());
         }
 
@@ -785,7 +785,7 @@ impl Statement {
     pub fn solve<T>(
         &mut self,
         sleigh: &Sleigh,
-        execution: &Execution,
+        variables: &[Variable],
         solved: &mut T,
     ) -> Result<(), Box<ExecutionError>>
     where
@@ -794,14 +794,14 @@ impl Statement {
         match self {
             Self::Build(_x) => (),
             Self::Delayslot(_) => (),
-            Self::Export(x) => x.solve(sleigh, execution, solved)?,
+            Self::Export(x) => x.solve(sleigh, variables, solved)?,
             Self::Declare(_x) => (),
-            Self::CpuBranch(x) => x.solve(sleigh, execution, solved)?,
-            Self::LocalGoto(x) => x.solve(sleigh, execution, solved)?,
-            Self::MacroCall(x) => x.solve(sleigh, execution, solved)?,
-            Self::UserCall(x) => x.solve(sleigh, execution, solved)?,
-            Self::Assignment(x) => x.solve(sleigh, execution, solved)?,
-            Self::MemWrite(x) => x.solve(sleigh, execution, solved)?,
+            Self::CpuBranch(x) => x.solve(sleigh, variables, solved)?,
+            Self::LocalGoto(x) => x.solve(sleigh, variables, solved)?,
+            Self::MacroCall(x) => x.solve(sleigh, variables, solved)?,
+            Self::UserCall(x) => x.solve(sleigh, variables, solved)?,
+            Self::Assignment(x) => x.solve(sleigh, variables, solved)?,
+            Self::MemWrite(x) => x.solve(sleigh, variables, solved)?,
         }
         Ok(())
     }
@@ -834,14 +834,14 @@ impl Block {
     pub fn solve<T>(
         &mut self,
         sleigh: &Sleigh,
-        execution: &Execution,
+        variables: &[Variable],
         solved: &mut T,
     ) -> Result<(), Box<ExecutionError>>
     where
         T: SolverStatus + Default,
     {
         self.statements.iter_mut().try_for_each(|statements| {
-            statements.solve(sleigh, execution, solved)
+            statements.solve(sleigh, variables, solved)
         })
     }
     pub fn convert(self) -> FinalBlock {
@@ -984,14 +984,9 @@ impl Execution {
     where
         T: SolverStatus + Default,
     {
-        {
-            // take the blocks and put it back, kind of a hack
-            let mut blocks = std::mem::take(&mut self.blocks);
-            blocks
-                .iter_mut()
-                .try_for_each(|block| block.solve(sleigh, self, solved))?;
-            self.blocks = blocks;
-        }
+        self.blocks
+            .iter_mut()
+            .try_for_each(|block| block.solve(sleigh, &self.vars, solved))?;
 
         //get the export sizes, otherwise we are finished
         let mut return_size =
@@ -1016,27 +1011,18 @@ impl Execution {
                     .ok_or_else(|| Box::new(ExecutionError::InvalidExport))
             })?;
         //update all the export output sizes
-        // take the blocks and put it back, kind of a hack
-        {
-            let mut blocks = std::mem::take(&mut self.blocks);
-            blocks
-                .iter_mut()
-                .filter(|block| block.next.is_none())
-                .for_each(|block| {
-                    let statements = &mut block.statements;
-                    if let Some(Statement::Export(export)) =
-                        statements.last_mut()
-                    {
-                        modified |= export
-                            .output_size_mut(sleigh, self)
-                            .update_action(|size| {
-                                size.intersection(return_size)
-                            })
-                            .unwrap();
-                    }
-                });
-            self.blocks = blocks;
-        }
+        self.blocks
+            .iter_mut()
+            .filter(|block| block.next.is_none())
+            .for_each(|block| {
+                let statements = &mut block.statements;
+                if let Some(Statement::Export(export)) = statements.last_mut() {
+                    modified |= export
+                        .output_size_mut(sleigh, &self.vars)
+                        .update_action(|size| size.intersection(return_size))
+                        .unwrap();
+                }
+            });
         modified |= self
             .return_value
             .size_mut()
