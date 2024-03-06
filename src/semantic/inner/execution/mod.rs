@@ -1,4 +1,4 @@
-use std::cell::{Cell, Ref, RefCell, RefMut};
+use std::cell::Cell;
 
 use crate::semantic::execution::{
     Assignment as FinalAssignment, Block as FinalBlock, BlockId, BranchCall,
@@ -29,7 +29,7 @@ pub use len::*;
 #[derive(Clone, Debug)]
 pub struct Execution {
     pub src: Span,
-    pub blocks: RefCell<Vec<Block>>,
+    pub blocks: Vec<Block>,
     pub vars: Vec<Variable>,
 
     pub return_value: ExportLen,
@@ -970,7 +970,7 @@ impl Execution {
         let entry_block = Block::new_empty(None);
         Execution {
             src,
-            blocks: RefCell::new(vec![entry_block]),
+            blocks: vec![entry_block],
             vars: vec![],
             return_value: ExportLen::default(),
             entry_block: BlockId(0),
@@ -984,10 +984,14 @@ impl Execution {
     where
         T: SolverStatus + Default,
     {
-        self.blocks
-            .borrow_mut()
-            .iter_mut()
-            .try_for_each(|blocks| blocks.solve(sleigh, self, solved))?;
+        {
+            // take the blocks and put it back, kind of a hack
+            let mut blocks = std::mem::take(&mut self.blocks);
+            blocks
+                .iter_mut()
+                .try_for_each(|block| block.solve(sleigh, self, solved))?;
+            self.blocks = blocks;
+        }
 
         //get the export sizes, otherwise we are finished
         let mut return_size =
@@ -999,7 +1003,6 @@ impl Execution {
         //find and combine all the output sizes
         let mut modified = self
             .blocks
-            .borrow()
             .iter()
             .filter(|block| block.next.is_none())
             .filter_map(|block| match block.statements.last()? {
@@ -1013,19 +1016,27 @@ impl Execution {
                     .ok_or_else(|| Box::new(ExecutionError::InvalidExport))
             })?;
         //update all the export output sizes
-        self.blocks
-            .borrow_mut()
-            .iter_mut()
-            .filter(|block| block.next.is_none())
-            .for_each(|block| {
-                let statements = &mut block.statements;
-                if let Some(Statement::Export(export)) = statements.last_mut() {
-                    modified |= export
-                        .output_size_mut(sleigh, self)
-                        .update_action(|size| size.intersection(return_size))
-                        .unwrap();
-                }
-            });
+        // take the blocks and put it back, kind of a hack
+        {
+            let mut blocks = std::mem::take(&mut self.blocks);
+            blocks
+                .iter_mut()
+                .filter(|block| block.next.is_none())
+                .for_each(|block| {
+                    let statements = &mut block.statements;
+                    if let Some(Statement::Export(export)) =
+                        statements.last_mut()
+                    {
+                        modified |= export
+                            .output_size_mut(sleigh, self)
+                            .update_action(|size| {
+                                size.intersection(return_size)
+                            })
+                            .unwrap();
+                    }
+                });
+            self.blocks = blocks;
+        }
         modified |= self
             .return_value
             .size_mut()
@@ -1041,22 +1052,24 @@ impl Execution {
         Ok(())
     }
     pub fn convert(self) -> FinalExecution {
-        let blocks = self.blocks.take();
         FinalExecution {
-            blocks: blocks.into_iter().map(|block| block.convert()).collect(),
+            blocks: self
+                .blocks
+                .into_iter()
+                .map(|block| block.convert())
+                .collect(),
             variables: self.vars.into_iter().map(|var| var.convert()).collect(),
             entry_block: self.entry_block,
         }
     }
-    pub fn block(&self, id: BlockId) -> Ref<Block> {
-        Ref::map(self.blocks.borrow(), |x| &x[id.0])
+    pub fn block(&self, id: BlockId) -> &Block {
+        &self.blocks[id.0]
     }
-    pub fn block_mut(&self, id: BlockId) -> RefMut<Block> {
-        RefMut::map(self.blocks.borrow_mut(), |x| &mut x[id.0])
+    pub fn block_mut(&mut self, id: BlockId) -> &mut Block {
+        &mut self.blocks[id.0]
     }
     pub fn block_by_name(&self, name: &str) -> Option<BlockId> {
         self.blocks
-            .borrow()
             .iter()
             .position(|block| {
                 block
@@ -1072,7 +1085,7 @@ impl Execution {
             return None;
         }
         let block = Block::new_empty(Some(name.into()));
-        self.blocks.borrow_mut().push(block);
+        self.blocks.push(block);
         Some(())
     }
     pub fn variable(&self, id: VariableId) -> &Variable {

@@ -61,13 +61,12 @@ pub trait ExecutionBuilder {
     fn inner_set_curent_block(&mut self, block: BlockId);
     fn set_current_block(&mut self, block: BlockId) {
         let current_id = self.current_block();
-        {
-            let mut current = self.execution().block_mut(current_id);
-            current
-                .next
-                .replace(block)
-                .map_or((), |_| panic!("multiple next"))
-        }
+        let _ = self
+            .execution_mut()
+            .block_mut(current_id)
+            .next
+            .replace(block)
+            .map_or((), |_| panic!("multiple next"));
         self.inner_set_curent_block(block)
     }
     fn create_variable(
@@ -86,9 +85,10 @@ pub trait ExecutionBuilder {
     }
     fn insert_statement(&mut self, statement: Statement) {
         let current_block_id = self.current_block();
-        let mut current_block =
-            self.execution_mut().block_mut(current_block_id);
-        current_block.statements.push(statement);
+        self.execution_mut()
+            .block_mut(current_block_id)
+            .statements
+            .push(statement);
     }
     fn extend(
         &mut self,
@@ -170,7 +170,7 @@ pub trait ExecutionBuilder {
             }
         }
         //update blocks based on the last statement
-        for block in self.execution_mut().blocks.borrow_mut().iter_mut() {
+        for block in self.execution_mut().blocks.iter_mut() {
             let last_statement = block.statements.last();
             match last_statement {
                 //this block ends with unconditional local_jmp, this replace the
@@ -192,8 +192,8 @@ pub trait ExecutionBuilder {
         //find the return type for this execution
         let return_type = {
             let execution = self.execution();
-            let blocks = execution.blocks.borrow();
-            let mut iter = blocks
+            let mut iter = execution
+                .blocks
                 .iter()
                 //only blocks with no next block can export
                 .filter(|block| block.next.is_none())
