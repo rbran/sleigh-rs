@@ -68,7 +68,7 @@ pub struct ExprBinaryOp {
 
 #[derive(Clone, Debug)]
 pub enum ExprElement {
-    Value(ReadValue),
+    Value(ExprValue),
     UserCall(UserCall),
     Reference(Reference),
     Op(ExprUnaryOp),
@@ -112,7 +112,7 @@ pub struct UserCall {
 }
 
 #[derive(Clone, Debug)]
-pub enum ReadValue {
+pub enum ExprValue {
     Int(ExprNumber),
     TokenField(ExprTokenField),
     InstStart(ExprInstStart),
@@ -128,13 +128,14 @@ pub enum ReadValue {
 #[derive(Clone, Debug)]
 pub struct ExprNumber {
     pub location: Span,
-    pub len_bits: NumberNonZeroUnsigned,
+    pub size: NumberNonZeroUnsigned,
     pub number: Number,
 }
 
 #[derive(Clone, Debug)]
 pub struct ExprTokenField {
     pub location: Span,
+    pub size: NumberNonZeroUnsigned,
     pub id: TokenFieldId,
 }
 
@@ -159,12 +160,14 @@ pub struct ExprVarnode {
 #[derive(Clone, Debug)]
 pub struct ExprContext {
     pub location: Span,
+    pub size: NumberNonZeroUnsigned,
     pub id: ContextId,
 }
 
 #[derive(Clone, Debug)]
 pub struct ExprBitrange {
     pub location: Span,
+    pub size: NumberNonZeroUnsigned,
     pub id: BitrangeId,
 }
 
@@ -177,7 +180,7 @@ pub struct ExprTable {
 #[derive(Clone, Debug)]
 pub struct ExprDisVar {
     pub location: Span,
-    pub len_bits: NumberNonZeroUnsigned,
+    pub size: NumberNonZeroUnsigned,
     pub id: disassembly::VariableId,
 }
 
@@ -190,10 +193,34 @@ pub struct ExprExeVar {
 #[derive(Clone, Debug)]
 pub enum ReferencedValue {
     //only if translate into varnode
-    TokenField(ExprTokenField),
-    InstStart(ExprInstStart),
-    InstNext(ExprInstNext),
-    Table(ExprTable),
+    TokenField(RefTokenField),
+    InstStart(RefInstStart),
+    InstNext(RefInstNext),
+    Table(RefTable),
+}
+
+#[derive(Clone, Debug)]
+pub struct RefTokenField {
+    pub location: Span,
+    pub id: TokenFieldId,
+}
+
+#[derive(Clone, Debug)]
+pub struct RefInstStart {
+    pub location: Span,
+    pub data: InstStart,
+}
+
+#[derive(Clone, Debug)]
+pub struct RefInstNext {
+    pub location: Span,
+    pub data: InstNext,
+}
+
+#[derive(Clone, Debug)]
+pub struct RefTable {
+    pub location: Span,
+    pub id: TableId,
 }
 
 #[derive(Clone, Debug)]
@@ -219,12 +246,42 @@ pub struct LocalGoto {
 
 #[derive(Clone, Debug)]
 pub enum WriteValue {
-    Varnode(ExprVarnode),
-    Bitrange(ExprBitrange),
+    Varnode(WriteVarnode),
+    Bitrange(WriteBitrange),
     ///only with attach variable
-    TokenField(ExprTokenField),
-    TableExport(ExprTable),
-    Local(ExprExeVar),
+    TokenField(WriteTokenField),
+    TableExport(WriteTable),
+    Local(WriteExeVar),
+}
+
+#[derive(Clone, Debug)]
+pub struct WriteVarnode {
+    pub location: Span,
+    pub id: VarnodeId,
+}
+
+#[derive(Clone, Debug)]
+pub struct WriteBitrange {
+    pub location: Span,
+    pub id: BitrangeId,
+}
+
+#[derive(Clone, Debug)]
+pub struct WriteTokenField {
+    pub location: Span,
+    pub id: TokenFieldId,
+}
+
+#[derive(Clone, Debug)]
+pub struct WriteTable {
+    pub location: Span,
+    pub id: TableId,
+}
+
+#[derive(Clone, Debug)]
+pub struct WriteExeVar {
+    pub location: Span,
+    pub id: VariableId,
 }
 
 #[derive(Clone, Debug)]
@@ -239,6 +296,7 @@ pub struct Assignment {
 pub struct MemWrite {
     pub addr: Expr,
     pub mem: MemoryLocation,
+    pub truncate: Option<Truncate>,
     pub right: Expr,
 }
 
@@ -383,10 +441,13 @@ impl Execution {
     }
     pub fn export(&self) -> impl Iterator<Item = &Export> {
         self.blocks.iter().filter_map(|block| {
-            block.statements.last().and_then(|statement| match statement {
-                Statement::Export(export) => Some(export),
-                _ => None,
-            })
+            block
+                .statements
+                .last()
+                .and_then(|statement| match statement {
+                    Statement::Export(export) => Some(export),
+                    _ => None,
+                })
         })
     }
 }

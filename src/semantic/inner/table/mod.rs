@@ -237,7 +237,7 @@ impl Table {
             Err(src) => {
                 //found one undefined len, unable to calculate the table pattern
                 //len range for now
-                solved.iam_not_finished_location(src, file!(), line!());
+                solved.iam_not_finished(src, file!(), line!());
                 return Ok(());
             }
         };
@@ -323,10 +323,10 @@ impl Table {
             modified |= new_size
                 .update_action(|new_size| new_size.intersection(*size))
                 .ok_or_else(|| {
-                    Box::new(SleighError::new_table(
+                    SleighError::new_table(
                         src.clone(),
                         TableError::TableConstructorExportSizeInvalid,
-                    ))
+                    )
                 })?;
         }
 
@@ -344,7 +344,7 @@ impl Table {
                 .update_action(|size| size.intersection(*new_size))
                 .unwrap();
             if size.is_undefined() {
-                solved.iam_not_finished_location(&src, file!(), line!());
+                solved.iam_not_finished(&src, file!(), line!());
             }
         }
         //update the export size
@@ -470,9 +470,9 @@ impl Constructor {
         T: SolverStatus + Default,
     {
         if let Some(execution) = &mut self.execution {
-            execution.solve(sleigh, solved).map_err(|e| {
-                Box::new(SleighError::new_table(self.src.clone(), *e))
-            })?
+            execution
+                .solve(sleigh, solved)
+                .map_err(|e| SleighError::new_table(self.src.clone(), *e))?
         }
         Ok(())
     }

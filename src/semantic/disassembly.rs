@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use crate::semantic::{
     ContextId, InstNext, InstStart, Span, TableId, TokenFieldId,
 };
@@ -87,7 +89,7 @@ pub struct Variable {
     pub(crate) name: Box<str>,
     pub location: Span,
     /// a disassembly variable could have a defined len, defined by the export
-    pub value_type: VariableType,
+    pub value_type: Cell<VariableType>,
 }
 
 impl Variable {

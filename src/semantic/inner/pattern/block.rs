@@ -820,11 +820,7 @@ impl BlockPhase1 {
             //at least one len is not known yet, request another
             //run to solve it
             Err(OrLenPossible::Unknown) => {
-                solved.iam_not_finished_location(
-                    &base.location,
-                    file!(),
-                    line!(),
-                );
+                solved.iam_not_finished(&base.location, file!(), line!());
             }
             //at least one len is recursive
             Err(OrLenPossible::Recursive) => {
@@ -863,11 +859,7 @@ impl BlockPhase1 {
             //basic means fully solved
             if !final_len.is_basic() {
                 //need to solve the recursive len of the pattern
-                solved.iam_not_finished_location(
-                    &base.location,
-                    file!(),
-                    line!(),
-                );
+                solved.iam_not_finished(&base.location, file!(), line!());
             }
             if self.len != Some(final_len) {
                 solved.i_did_a_thing();
@@ -875,7 +867,7 @@ impl BlockPhase1 {
             }
         } else {
             //if not fully finished yet, request another run
-            solved.iam_not_finished_location(&base.location, file!(), line!());
+            solved.iam_not_finished(&base.location, file!(), line!());
         }
         Ok(())
     }
@@ -909,7 +901,7 @@ impl BlockPhase1 {
         let finished =
             matches!(&self.len, Some(ConstructorPatternLen::Basic(_)));
         if !finished {
-            solved.iam_not_finished_location(&base.location, file!(), line!());
+            solved.iam_not_finished(&base.location, file!(), line!());
         }
         Ok(finished)
     }

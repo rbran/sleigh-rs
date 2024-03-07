@@ -1,39 +1,61 @@
 use crate::semantic::execution::{
-    BlockId, Build, ExprExeVar, ExprTable, ReferencedValue, Unary, VariableId,
-    WriteValue,
+    BlockId, Build, ExprInstNext, ExprInstStart, ExprTable, RefTable,
+    RefTokenField, ReferencedValue, Unary, VariableId, WriteExeVar, WriteValue,
 };
-use crate::semantic::inner::execution::{ExprNumber, ExprUnaryOp};
+use crate::semantic::inner::execution::ExprNumber;
+use crate::semantic::inner::pattern::Pattern;
 use crate::semantic::inner::Sleigh;
-use crate::semantic::{GlobalScope, SpaceId, TableId};
+use crate::semantic::{GlobalScope, InstNext, InstStart, SpaceId, TableId};
 use crate::{
-    disassembly, syntax, Number, NumberNonZeroUnsigned, NumberUnsigned, Span,
+    disassembly, syntax, BitrangeId, ContextId, Number, NumberNonZeroUnsigned,
+    NumberUnsigned, Span, TokenFieldId, VarnodeId,
 };
 
 use super::{
     Assignment, BranchCall, CpuBranch, Execution, ExecutionError, Export,
-    ExportConst, ExportLen, Expr, ExprCPool, ExprDisVar, ExprElement, ExprNew,
-    FieldSize, LocalGoto, MacroCall, MemWrite, MemoryLocation, ReadValue,
-    Reference, Statement, Truncate, UserCall,
+    ExportLen, Expr, ExprCPool, ExprDisVar, ExprElement, ExprNew, ExprValue,
+    FieldSize, LocalGoto, MacroCall, MemWrite, MemoryLocation, Reference,
+    Statement, Truncate, UserCall,
 };
+
+#[derive(Clone, Debug)]
+pub enum ReadScope {
+    TokenField(TokenFieldId),
+    InstStart,
+    InstNext,
+    Varnode(VarnodeId),
+    Context(ContextId),
+    Bitrange(BitrangeId),
+    Table(TableId),
+    DisVar(disassembly::VariableId),
+    ExeVar(VariableId),
+}
+
+#[derive(Clone, Debug)]
+pub enum WriteScope {
+    Varnode(VarnodeId),
+    Bitrange(BitrangeId),
+    /// only token fields that are attach to a variable
+    TokenField(TokenFieldId),
+    TableExport(TableId),
+    Local(VariableId),
+}
 
 pub trait ExecutionBuilder {
     fn sleigh(&self) -> &Sleigh;
-    fn disassembly_var(
-        &mut self,
-        id: disassembly::VariableId,
-    ) -> &mut disassembly::Variable;
+    fn pattern(&self) -> &Pattern;
     fn execution(&self) -> &Execution;
     fn execution_mut(&mut self) -> &mut Execution;
     fn read_scope(
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<ReadValue, Box<ExecutionError>>;
+    ) -> Result<ReadScope, Box<ExecutionError>>;
     fn write_scope(
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<WriteValue, Box<ExecutionError>>;
+    ) -> Result<WriteScope, Box<ExecutionError>>;
     fn table(
         &self,
         name: &str,
@@ -61,12 +83,14 @@ pub trait ExecutionBuilder {
     fn inner_set_curent_block(&mut self, block: BlockId);
     fn set_current_block(&mut self, block: BlockId) {
         let current_id = self.current_block();
-        let _ = self
+        if let Some(old) = self
             .execution_mut()
             .block_mut(current_id)
             .next
             .replace(block)
-            .map_or((), |_| panic!("multiple next"));
+        {
+            panic!("multiple next, old: {old:?}")
+        }
         self.inner_set_curent_block(block)
     }
     fn create_variable(
@@ -199,9 +223,9 @@ pub trait ExecutionBuilder {
                 .filter(|block| block.next.is_none())
                 //if the last statement is export, convert to export size
                 .filter_map(|block| match block.statements.last() {
-                    Some(Statement::Export(exp)) => {
-                        Some(exp.return_type(self.sleigh(), self.execution()))
-                    }
+                    Some(Statement::Export(exp)) => Some(
+                        exp.return_type(self.sleigh(), &self.execution().vars),
+                    ),
                     _ => None,
                 });
             //FUTURE: replace this with try_reduce:
@@ -237,38 +261,6 @@ pub trait ExecutionBuilder {
             },
         })
     }
-    fn new_export_const(
-        &mut self,
-        input: &str,
-        src: &Span,
-    ) -> Result<ExportConst, Box<ExecutionError>> {
-        use ReadValue::*;
-        match self.read_scope(input, src)? {
-            ExeVar(var) => Ok(ExportConst::ExeVar(var.id)),
-            DisVar(var) => Ok(ExportConst::DisVar(var.id)),
-            TokenField(ass) => Ok(ExportConst::TokenField(ass.id)),
-            Context(cont) => Ok(ExportConst::Context(cont.id)),
-            InstStart(_) => Ok(ExportConst::InstructionStart),
-            Table(expr_table) => {
-                let table = self.sleigh().table(expr_table.id);
-                match *table.export.borrow() {
-                    Some(ExportLen::Const(_) | ExportLen::Value(_)) => {
-                        Ok(ExportConst::Table(expr_table.id))
-                    }
-                    //TODO more specific error
-                    //a const can only export const or context
-                    Some(_) => {
-                        Err(Box::new(ExecutionError::InvalidRef(src.clone())))
-                    }
-                    //to constructors are available yet, can't use this table
-                    None => {
-                        Err(Box::new(ExecutionError::InvalidRef(src.clone())))
-                    }
-                }
-            }
-            x => todo!("Error export invalid const {:#?}", x),
-        }
-    }
     fn new_export(
         &mut self,
         input: syntax::block::execution::export::Export,
@@ -277,67 +269,33 @@ pub trait ExecutionBuilder {
         match input {
             RawExport::Value(value) => {
                 let value = self.new_expr(value)?;
-                match &value {
-                    //if the value is just an varnode, then is actually a reference
-                    Expr::Value(ExprElement::Value(ReadValue::Varnode(
-                        varnode_expr,
-                    ))) => {
-                        let varnode = self.sleigh().varnode(varnode_expr.id);
-                        Export::new_reference(
-                            self.sleigh(),
-                            self.execution(),
-                            Expr::Value(ExprElement::Value(ReadValue::Int(
-                                ExprNumber::new(
-                                    varnode_expr.location.clone(),
-                                    Number::Positive(varnode.address),
-                                ),
-                            ))),
-                            MemoryLocation {
-                                space: varnode.space,
-                                size: FieldSize::new_bytes(varnode.len_bytes),
-                                src: varnode_expr.location.clone(),
-                            },
-                        )
-                    }
-                    _ => Ok(Export::new_value(value)),
-                }
+                Export::new_value(
+                    self.sleigh(),
+                    self.pattern(),
+                    self.execution(),
+                    value,
+                )
             }
             RawExport::Reference { space, addr } => {
                 let addr = self.new_expr(addr)?;
                 let deref = self.new_addr_derefence(&space)?;
-                // if the addr is a single Disassembly variable, it affects
-                // how it's printed
-                if let Expr::Value(ExprElement::Value(ReadValue::DisVar(
-                    variable,
-                ))) = &addr
-                {
-                    let variable = self.disassembly_var(variable.id);
-                    variable.value_type =
-                        variable.value_type.set_space(deref.space).ok_or_else(
-                            || Box::new(ExecutionError::InvalidExport),
-                        )?;
-                }
                 Export::new_reference(
                     self.sleigh(),
+                    self.pattern(),
                     self.execution(),
                     addr,
                     deref,
                 )
             }
             RawExport::Const { size, value, src } => {
-                let value = self.new_export_const(&value, &src)?;
-                let size =
-                    NumberNonZeroUnsigned::new(size.value).unwrap(/*TODO*/);
-                // if the value is a disassembly variable, we define it's len
-                if let ExportConst::DisVar(id) = value {
-                    let variable = self.disassembly_var(id);
-                    variable.value_type =
-                        variable.value_type.set_len(size).ok_or_else(|| {
-                            Box::new(ExecutionError::InvalidExport)
-                        })?;
-                }
-                let size = FieldSize::new_bytes(size);
-                Ok(Export::new_const(size, src, value))
+                let read_scope = self.read_scope(&value, &src)?;
+                Export::new_const(
+                    self.sleigh(),
+                    self.pattern(),
+                    read_scope,
+                    size,
+                    src,
+                )
             }
         }
     }
@@ -350,9 +308,11 @@ pub trait ExecutionBuilder {
             .into_iter()
             .map(|param| self.new_expr(param))
             .collect::<Result<Vec<_>, _>>()?;
-        match self.sleigh().get_global(&input.name).ok_or_else(|| {
-            Box::new(ExecutionError::MissingRef(input.src.clone()))
-        })? {
+        let global = self
+            .sleigh()
+            .get_global(&input.name)
+            .ok_or_else(|| ExecutionError::MissingRef(input.src.clone()))?;
+        match global {
             GlobalScope::UserFunction(x) => {
                 Ok(Statement::UserCall(UserCall::new(
                     self.sleigh(),
@@ -377,9 +337,11 @@ pub trait ExecutionBuilder {
             .into_iter()
             .map(|param| self.new_expr(param))
             .collect::<Result<Vec<_>, _>>()?;
-        match self.sleigh().get_global(&input.name).ok_or_else(|| {
-            Box::new(ExecutionError::MissingRef(input.src.clone()))
-        })? {
+        let global = self
+            .sleigh()
+            .get_global(&input.name)
+            .ok_or_else(|| ExecutionError::MissingRef(input.src.clone()))?;
+        match global {
             GlobalScope::UserFunction(function) => {
                 Ok(ExprElement::UserCall(UserCall::new(
                     self.sleigh(),
@@ -426,7 +388,7 @@ pub trait ExecutionBuilder {
                     None => (),
                 }
                 Ok(Statement::Assignment(Assignment::new(
-                    WriteValue::Local(ExprExeVar {
+                    WriteValue::Local(WriteExeVar {
                         id: new_var_id,
                         location: input.src.clone(),
                     }),
@@ -439,63 +401,58 @@ pub trait ExecutionBuilder {
             (Some(_), true) => {
                 Err(Box::new(ExecutionError::InvalidVarDeclare(input.src)))
             }
+            //Assign to varnode is actually a mem write
+            (Some(WriteScope::Varnode(var)), false) => {
+                let op =
+                    input.op.map(|op| self.new_truncate(op)).transpose()?;
+                let var_ele = self.sleigh().varnode(var);
+                let mem = MemoryLocation {
+                    space: var_ele.space,
+                    size: FieldSize::new_bytes(var_ele.len_bytes),
+                    src: input.src.clone(),
+                };
+                let size = FieldSize::new_bytes(
+                    self.sleigh().addr_bytes().ok_or_else(|| {
+                        ExecutionError::InvalidRef(input.src.clone())
+                    })?,
+                );
+                let addr = Expr::Value(ExprElement::Value(ExprValue::Int(
+                    ExprNumber {
+                        location: input.src.clone(),
+                        size,
+                        number: Number::Positive(var_ele.address),
+                    },
+                )));
+                {
+                    let right = &mut right;
+                    let sleigh = self.sleigh();
+                    let execution = self.execution();
+                    right.size_mut(sleigh, &execution.vars).update_action(
+                        |size| {
+                            size.intersection(FieldSize::new_bytes(
+                                var_ele.len_bytes,
+                            ))
+                        },
+                    );
+                }
+                Ok(Statement::MemWrite(MemWrite::new(
+                    self.sleigh(),
+                    self.execution(),
+                    addr,
+                    op,
+                    mem,
+                    input.src,
+                    right,
+                )))
+            }
             //variable exists, just return it
             (Some(var), false) => {
-                let op = input
-                    .op
-                    .map(|op| self.new_assignment_op(op))
-                    .transpose()?;
-                match var {
-                    //Assign to varnode is actually a mem write
-                    WriteValue::Varnode(var) => {
-                        let var_ele = self.sleigh().varnode(var.id);
-                        let mem = MemoryLocation {
-                            space: var_ele.space,
-                            size: FieldSize::new_bytes(var_ele.len_bytes),
-                            src: input.src.clone(),
-                        };
-                        let addr = Expr::Value(ExprElement::Value(
-                            ReadValue::Int(ExprNumber {
-                                location: input.src.clone(),
-                                size: FieldSize::new_bytes(
-                                    self.sleigh().addr_bytes().ok_or_else(
-                                        || {
-                                            Box::new(
-                                                ExecutionError::InvalidRef(
-                                                    input.src.clone(),
-                                                ),
-                                            )
-                                        },
-                                    )?,
-                                ),
-                                number: Number::Positive(var_ele.address),
-                            }),
-                        ));
-                        {
-                            let right = &mut right;
-                            let sleigh = self.sleigh();
-                            let execution = self.execution();
-                            right
-                                .size_mut(sleigh, &execution.vars)
-                                .update_action(|size| {
-                                    size.intersection(FieldSize::new_bytes(
-                                        var_ele.len_bytes,
-                                    ))
-                                });
-                        }
-                        Ok(Statement::MemWrite(MemWrite::new(
-                            self.sleigh(),
-                            self.execution(),
-                            addr,
-                            mem,
-                            input.src,
-                            right,
-                        )))
-                    }
-                    var => Ok(Statement::Assignment(Assignment::new(
-                        var, op, input.src, right,
-                    ))),
-                }
+                let op =
+                    input.op.map(|op| self.new_truncate(op)).transpose()?;
+                let var = WriteValue::from_write_scope(var, input.src.clone());
+                Ok(Statement::Assignment(Assignment::new(
+                    var, op, input.src, right,
+                )))
             }
         }
     }
@@ -510,12 +467,13 @@ pub trait ExecutionBuilder {
             self.sleigh(),
             self.execution(),
             addr,
+            None,
             mem,
             input.src,
             right,
         ))
     }
-    fn new_assignment_op(
+    fn new_truncate(
         &self,
         input: syntax::block::execution::assignment::OpLeft,
     ) -> Result<Truncate, Box<ExecutionError>> {
@@ -589,41 +547,15 @@ pub trait ExecutionBuilder {
         use syntax::block::execution::expr::ExprElement as RawExprElement;
         match input {
             RawExprElement::Value(syntax::Value::Number(src, value)) => Ok(
-                ExprElement::Value(ReadValue::Int(ExprNumber::new(src, value))),
+                ExprElement::Value(ExprValue::Int(ExprNumber::new(src, value))),
             ),
             RawExprElement::Value(syntax::Value::Ident(src, value)) => {
-                // some values have hidden properties
-                let value = match self.read_scope(&value, &src)? {
-                    ReadValue::TokenField(tf) => {
-                        // token_field and bitrange auto expand to the size required
-                        let field = self.sleigh().token_field(tf.id);
-                        return Ok(ExprElement::Op(ExprUnaryOp {
-                            location: tf.location.clone(),
-                            output_size: FieldSize::new_unsized()
-                                .set_min_bits(field.bits.len())
-                                .unwrap(),
-                            op: Unary::Zext,
-                            input: Box::new(Expr::Value(ExprElement::Value(
-                                ReadValue::TokenField(tf),
-                            ))),
-                        }));
-                    }
-                    ReadValue::Bitrange(bt) => {
-                        let bitrange = self.sleigh().bitrange(bt.id);
-                        return Ok(ExprElement::Op(ExprUnaryOp {
-                            location: bt.location.clone(),
-                            output_size: FieldSize::new_unsized()
-                                .set_min_bits(bitrange.bits.len())
-                                .unwrap(),
-                            op: Unary::Zext,
-                            input: Box::new(Expr::Value(ExprElement::Value(
-                                ReadValue::Bitrange(bt),
-                            ))),
-                        }));
-                    }
-                    value => value,
-                };
-                Ok(ExprElement::Value(value))
+                let value = self.read_scope(&value, &src)?;
+                Ok(ExprElement::Value(ExprValue::from_read_scope(
+                    self.sleigh(),
+                    src,
+                    value,
+                )))
             }
             RawExprElement::Reference(src, size, value) => {
                 let ref_bytes = size
@@ -634,69 +566,12 @@ pub trait ExecutionBuilder {
                         })
                     })
                     .transpose()?;
-                let value = match self.read_scope(&value, &src)? {
-                    ReadValue::TokenField(ass) => {
-                        ExprElement::Reference(Reference {
-                            location: src,
-                            len: ref_bytes
-                                .map(FieldSize::new_bytes)
-                                .unwrap_or_default(),
-                            value: ReferencedValue::TokenField(ass),
-                        })
-                    }
-                    //TODO What is a reference to inst_start/inst_next? Just the
-                    //value?
-                    ReadValue::InstStart(x) => {
-                        let element =
-                            ExprElement::Value(ReadValue::InstStart(x));
-                        if let Some(ref_bytes) = ref_bytes {
-                            ExprElement::Truncate(
-                                src,
-                                Truncate::new_lsb(ref_bytes),
-                                Box::new(Expr::Value(element)),
-                            )
-                        } else {
-                            element
-                        }
-                    }
-                    ReadValue::InstNext(x) => {
-                        let element =
-                            ExprElement::Value(ReadValue::InstNext(x));
-                        if let Some(ref_bytes) = ref_bytes {
-                            ExprElement::Truncate(
-                                src,
-                                Truncate::new_lsb(ref_bytes),
-                                Box::new(Expr::Value(element)),
-                            )
-                        } else {
-                            element
-                        }
-                    }
-                    ReadValue::Varnode(var) => {
-                        let varnode = self.sleigh().varnode(var.id);
-                        ExprElement::Value(ReadValue::Int(ExprNumber {
-                            location: src,
-                            size: ref_bytes
-                                .map(FieldSize::new_bytes)
-                                .unwrap_or_else(|| {
-                                    let space =
-                                        self.sleigh().space(varnode.space);
-                                    FieldSize::new_bytes(space.addr_bytes)
-                                }),
-                            number: Number::Positive(varnode.address),
-                        }))
-                    }
-                    ReadValue::Table(table) => {
-                        ExprElement::Reference(Reference {
-                            location: src,
-                            len: ref_bytes
-                                .map(FieldSize::new_bytes)
-                                .unwrap_or_default(),
-                            value: ReferencedValue::Table(table),
-                        })
-                    }
-                    _ => return Err(Box::new(ExecutionError::InvalidRef(src))),
-                };
+                let value = reference_scope(
+                    self.read_scope(&value, &src)?,
+                    src,
+                    ref_bytes,
+                    self.sleigh(),
+                )?;
                 Ok(value)
             }
             RawExprElement::Op(src, raw_op, input) => {
@@ -733,6 +608,11 @@ pub trait ExecutionBuilder {
                 //can be one of two possibilities:
                 if let Ok(value) = self.read_scope(&name, &param_src) {
                     //first: value with ByteRangeMsb operator
+                    let value = ExprValue::from_read_scope(
+                        self.sleigh(),
+                        param_src.clone(),
+                        value,
+                    );
                     Ok(ExprElement::new_truncate(
                         param_src,
                         Truncate::new_msb(param),
@@ -802,14 +682,14 @@ pub trait ExecutionBuilder {
             }
             Op::ByteRangeLsb(x) => match expr {
                 //NOTE, Lsb on and Int/DisassemblyVar just set the len
-                Expr::Value(ExprElement::Value(ReadValue::Int(
+                Expr::Value(ExprElement::Value(ExprValue::Int(
                     ExprNumber {
                         location: src,
                         size: len,
                         number: value,
                     },
                 ))) => {
-                    return Ok(ExprElement::Value(ReadValue::Int(
+                    return Ok(ExprElement::Value(ExprValue::Int(
                         ExprNumber {
                             location: src,
                             //TODO error
@@ -823,10 +703,10 @@ pub trait ExecutionBuilder {
                         },
                     )));
                 }
-                Expr::Value(ExprElement::Value(ReadValue::DisVar(
+                Expr::Value(ExprElement::Value(ExprValue::DisVar(
                     ExprDisVar { location, size, id },
                 ))) => {
-                    return Ok(ExprElement::Value(ReadValue::DisVar(
+                    return Ok(ExprElement::Value(ExprValue::DisVar(
                         ExprDisVar {
                             location,
                             //TODO error
@@ -909,5 +789,76 @@ pub trait ExecutionBuilder {
             size,
             src: input.src.clone(),
         })
+    }
+}
+
+fn reference_scope(
+    read: ReadScope,
+    src: Span,
+    ref_bytes: Option<NumberNonZeroUnsigned>,
+    sleigh: &Sleigh,
+) -> Result<ExprElement, Box<ExecutionError>> {
+    match read {
+        ReadScope::TokenField(id) => Ok(ExprElement::Reference(Reference {
+            location: src.clone(),
+            len: ref_bytes.map(FieldSize::new_bytes).unwrap_or_default(),
+            value: ReferencedValue::TokenField(RefTokenField {
+                location: src.clone(),
+                id,
+            }),
+        })),
+        //TODO What is a reference to inst_start/inst_next? Just the
+        //value?
+        ReadScope::InstStart => {
+            let element =
+                ExprElement::Value(ExprValue::InstStart(ExprInstStart {
+                    location: src.clone(),
+                    data: InstStart,
+                }));
+            if let Some(ref_bytes) = ref_bytes {
+                Ok(ExprElement::Truncate(
+                    src,
+                    Truncate::new_lsb(ref_bytes),
+                    Box::new(Expr::Value(element)),
+                ))
+            } else {
+                Ok(element)
+            }
+        }
+        ReadScope::InstNext => {
+            let element =
+                ExprElement::Value(ExprValue::InstNext(ExprInstNext {
+                    location: src.clone(),
+                    data: InstNext,
+                }));
+            if let Some(ref_bytes) = ref_bytes {
+                Ok(ExprElement::Truncate(
+                    src,
+                    Truncate::new_lsb(ref_bytes),
+                    Box::new(Expr::Value(element)),
+                ))
+            } else {
+                Ok(element)
+            }
+        }
+        ReadScope::Varnode(id) => {
+            let varnode = sleigh.varnode(id);
+            Ok(ExprElement::Value(ExprValue::Int(ExprNumber {
+                location: src,
+                size: ref_bytes.map(FieldSize::new_bytes).unwrap_or_else(
+                    || {
+                        let space = sleigh.space(varnode.space);
+                        FieldSize::new_bytes(space.addr_bytes)
+                    },
+                ),
+                number: Number::Positive(varnode.address),
+            })))
+        }
+        ReadScope::Table(id) => Ok(ExprElement::Reference(Reference {
+            location: src.clone(),
+            len: ref_bytes.map(FieldSize::new_bytes).unwrap_or_default(),
+            value: ReferencedValue::Table(RefTable { location: src, id }),
+        })),
+        _ => Err(Box::new(ExecutionError::InvalidRef(src))),
     }
 }

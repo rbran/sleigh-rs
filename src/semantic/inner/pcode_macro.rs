@@ -1,9 +1,6 @@
 use std::cell::RefCell;
 
-use crate::semantic::execution::{
-    BlockId, Build, ExprBitrange, ExprContext, ExprExeVar, ExprInstNext,
-    ExprInstStart, ExprTokenField, ExprVarnode, WriteValue,
-};
+use crate::semantic::execution::{BlockId, Build};
 use crate::semantic::pcode_macro::{
     Parameter, PcodeMacro as FinalPcodeMacro,
     PcodeMacroCallId as FinalPcodeMacroCallId,
@@ -11,11 +8,12 @@ use crate::semantic::pcode_macro::{
 };
 use crate::semantic::{GlobalScope, PcodeMacroId};
 use crate::{
-    disassembly, syntax, ExecutionError, NumberNonZeroUnsigned,
-    PcodeMacroError, SleighError, Span,
+    syntax, ExecutionError, NumberNonZeroUnsigned, PcodeMacroError,
+    SleighError, Span,
 };
 
-use super::execution::{Execution, ExecutionBuilder, ReadValue};
+use super::execution::{Execution, ExecutionBuilder, ReadScope, WriteScope};
+use super::pattern::Pattern;
 use super::{Sleigh, SolverStatus};
 
 #[derive(Debug, Clone, Copy)]
@@ -181,10 +179,7 @@ impl ExecutionBuilder for Builder<'_, '_> {
     fn sleigh(&self) -> &Sleigh {
         self.sleigh
     }
-    fn disassembly_var(
-        &mut self,
-        _id: disassembly::VariableId,
-    ) -> &mut disassembly::Variable {
+    fn pattern(&self) -> &Pattern {
         unreachable!()
     }
     fn execution(&self) -> &Execution {
@@ -197,13 +192,10 @@ impl ExecutionBuilder for Builder<'_, '_> {
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<ReadValue, Box<ExecutionError>> {
+    ) -> Result<ReadScope, Box<ExecutionError>> {
         //check local scope
         if let Some(var) = self.execution().variable_by_name(name) {
-            return Ok(ReadValue::ExeVar(ExprExeVar {
-                location: src.clone(),
-                id: var,
-            }));
+            return Ok(ReadScope::ExeVar(var));
         }
 
         // check global scope
@@ -213,30 +205,12 @@ impl ExecutionBuilder for Builder<'_, '_> {
             .get_global(name)
             .ok_or_else(|| Box::new(ExecutionError::MissingRef(src.clone())))?
         {
-            TokenField(x) => Ok(ReadValue::TokenField(ExprTokenField {
-                location: src.clone(),
-                id: x,
-            })),
-            InstStart(x) => Ok(ReadValue::InstStart(ExprInstStart {
-                location: src.clone(),
-                data: x,
-            })),
-            InstNext(x) => Ok(ReadValue::InstNext(ExprInstNext {
-                location: src.clone(),
-                data: x,
-            })),
-            Varnode(x) => Ok(ReadValue::Varnode(ExprVarnode {
-                location: src.clone(),
-                id: x,
-            })),
-            Context(x) => Ok(ReadValue::Context(ExprContext {
-                location: src.clone(),
-                id: x,
-            })),
-            Bitrange(x) => Ok(ReadValue::Bitrange(ExprBitrange {
-                location: src.clone(),
-                id: x,
-            })),
+            TokenField(x) => Ok(ReadScope::TokenField(x)),
+            InstStart(_) => Ok(ReadScope::InstStart),
+            InstNext(_) => Ok(ReadScope::InstNext),
+            Varnode(x) => Ok(ReadScope::Varnode(x)),
+            Context(x) => Ok(ReadScope::Context(x)),
+            Bitrange(x) => Ok(ReadScope::Bitrange(x)),
             _ => Err(Box::new(ExecutionError::InvalidRef(src.clone()))),
         }
     }
@@ -245,13 +219,10 @@ impl ExecutionBuilder for Builder<'_, '_> {
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<WriteValue, Box<ExecutionError>> {
+    ) -> Result<WriteScope, Box<ExecutionError>> {
         //check local scope
         if let Some(var) = self.execution().variable_by_name(name) {
-            return Ok(WriteValue::Local(ExprExeVar {
-                location: src.clone(),
-                id: var,
-            }));
+            return Ok(WriteScope::Local(var));
         }
         //
         //at last check the global scope
@@ -261,14 +232,8 @@ impl ExecutionBuilder for Builder<'_, '_> {
             .get_global(name)
             .ok_or_else(|| Box::new(ExecutionError::MissingRef(src.clone())))?
         {
-            Varnode(x) => Ok(WriteValue::Varnode(ExprVarnode {
-                location: src.clone(),
-                id: x,
-            })),
-            Bitrange(x) => Ok(WriteValue::Bitrange(ExprBitrange {
-                location: src.clone(),
-                id: x,
-            })),
+            Varnode(x) => Ok(WriteScope::Varnode(x)),
+            Bitrange(x) => Ok(WriteScope::Bitrange(x)),
             _ => Err(Box::new(ExecutionError::InvalidRef(src.clone()))),
         }
     }

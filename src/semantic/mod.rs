@@ -294,7 +294,7 @@ impl Sleigh {
         // unwrap because should be created on Sleigh::new
         let default_space = inner
             .default_space
-            .ok_or_else(|| SleighError::SpaceMissingDefault)?;
+            .ok_or(SleighError::SpaceMissingDefault)?;
         //TODO check all constructor for tables have export of the same size
         let token_fields = inner
             .token_fields

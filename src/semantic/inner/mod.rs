@@ -88,7 +88,7 @@ impl From<PrintFlags> for ValueFmt {
 }
 
 pub trait SolverStatus<T: SolverStatus = Self> {
-    fn iam_not_finished_location(
+    fn iam_not_finished(
         &mut self,
         location: &Span,
         file: &'static str,
@@ -108,7 +108,7 @@ pub struct Solved {
 }
 
 impl SolverStatus for Solved {
-    fn iam_not_finished_location(
+    fn iam_not_finished(
         &mut self,
         _location: &Span,
         _file: &'static str,
@@ -150,13 +150,13 @@ pub struct SolvedLocation {
 }
 
 impl SolverStatus for SolvedLocation {
-    fn iam_not_finished_location(
+    fn iam_not_finished(
         &mut self,
         location: &Span,
         file: &'static str,
         line: u32,
     ) {
-        self.solved.iam_not_finished_location(location, file, line);
+        self.solved.iam_not_finished(location, file, line);
         self.locations.push((location.clone(), file, line));
     }
     fn i_did_a_thing(&mut self) {

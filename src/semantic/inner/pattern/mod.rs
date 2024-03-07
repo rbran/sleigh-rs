@@ -395,7 +395,7 @@ impl Pattern {
 
         if !finished {
             //if not fully finished yet, request another run
-            solved.iam_not_finished_location(self.src(), file!(), line!());
+            solved.iam_not_finished(self.src(), file!(), line!());
         }
         //update self.len if found a more restricted value
         match final_len {

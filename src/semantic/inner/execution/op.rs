@@ -18,7 +18,7 @@ pub struct MemoryLocation {
 impl MemoryLocation {
     pub fn solve(&self, solved: &mut impl SolverStatus) {
         if !self.size.is_final() {
-            solved.iam_not_finished_location(&self.src, file!(), line!())
+            solved.iam_not_finished(&self.src, file!(), line!())
         }
     }
     pub fn convert(self) -> FinalMemoryLocation {
