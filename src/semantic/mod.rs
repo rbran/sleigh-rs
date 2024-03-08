@@ -264,23 +264,16 @@ impl Sleigh {
             if solved.we_finished() && !solved.we_did_a_thing() {
                 break;
             }
-            if i > 100 {
-                //TODO return an error, but for now force the conversion,
-                //so we can find where the error occour
-                //break;
-                panic!("Too many tries, unable to solve tables")
-            }
-            if !solved.we_did_a_thing() {
-                //print the location that where unable to solve
-                //TODO change solve functions to use <T: SolverStatus + ?Sized>
+            if i > 100 || !solved.we_did_a_thing() {
                 let mut solved = SolvedLocation::default();
                 for table in inner.tables.iter() {
                     table.solve(&inner, &mut solved)?;
                 }
-                //TODO return an error, but for now force the conversion,
-                //so we can find where the error occour
-                //break;
-                panic!("Unable to solve the table")
+                return Err(Box::new(SleighError::TableUnsolvable(
+                    solved.locations.iter().map(|(location, file, line)| {
+                        format!("{}:{}: {location}\n", file, line + 1)
+                    }).collect()
+                )));
             }
         }
         tracing::trace!("semantic table solving sucessfully");

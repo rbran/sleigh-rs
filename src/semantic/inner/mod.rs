@@ -145,8 +145,8 @@ impl Default for Solved {
 
 #[derive(Clone, Debug, Default)]
 pub struct SolvedLocation {
-    solved: Solved,
-    locations: Vec<(Span, &'static str, u32)>,
+    pub solved: Solved,
+    pub locations: Vec<(Span, &'static str, u32)>,
 }
 
 impl SolverStatus for SolvedLocation {

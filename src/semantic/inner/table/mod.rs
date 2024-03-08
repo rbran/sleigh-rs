@@ -25,8 +25,8 @@ pub mod execution;
 
 #[derive(Clone)]
 pub struct Table {
-    is_root: bool,
-    name: String,
+    pub is_root: bool,
+    pub name: String,
     pub constructors: RefCell<Vec<Constructor>>,
     /* TODO:
      * export need to be identified by type, such Varnode, Const, Value, etc.
