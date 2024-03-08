@@ -837,8 +837,11 @@ fn value_in_context(value_bit: usize, field_bits: usize) -> usize {
 
 pub fn file_to_sleigh(filename: &Path) -> Result<Sleigh, Box<SleighError>> {
     let mut pro = FilePreProcessor::new(filename)?;
+    tracing::trace!("preprocessor finished sucessfully");
     let mut buf = vec![];
     let syntax = crate::syntax::Sleigh::parse(&mut pro, &mut buf, false)?;
+    tracing::trace!("parser finished sucessfully");
     let sleigh = crate::semantic::Sleigh::new(syntax)?;
+    tracing::trace!("semantic analyzes finished sucessfully");
     Ok(sleigh)
 }

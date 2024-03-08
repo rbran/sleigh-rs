@@ -1,13 +1,10 @@
 use crate::semantic::execution::{
-    Assignment as FinalAssignment, Unary, WriteValue,
+    Assignment as FinalAssignment, WriteValue, WriteVarnode,
 };
 use crate::semantic::inner::{Sleigh, SolverStatus};
-use crate::{ExecutionError, Number, Span};
+use crate::{ExecutionError, Span};
 
-use super::{
-    restrict_field_same_size, Expr, ExprElement, ExprNumber, ExprUnaryOp,
-    ExprValue, FieldSize, Truncate, Variable,
-};
+use super::{restrict_field_same_size, Expr, Truncate, Variable};
 
 #[derive(Clone, Debug)]
 pub struct Assignment {
@@ -38,48 +35,13 @@ impl Assignment {
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
         let error_src = self.right.src().clone();
-        let error = || Box::new(ExecutionError::VarSize(error_src.clone()));
+        let error = move || ExecutionError::VarSize(error_src);
         self.right.solve(sleigh, variables, solved)?;
 
-        //exception in case the right result is 1 bit and the left is
-        //less then 1 byte, auto add zext the right side
-        let left_size = self
-            .op
-            .as_ref()
-            .map(|op| op.output_size())
-            .unwrap_or_else(|| self.var.size(sleigh, variables))
-            .final_value();
-        let right_size = self.right.size(sleigh, variables).final_value();
-        if left_size
-            .zip(right_size)
-            .map(|(left, right)| left.get() == 8 && right.get() < 8)
-            .unwrap_or(false)
-        {
-            //dummy value
-            let dummy_src = Span::File(crate::FileSpan {
-                start: crate::FileLocation {
-                    file: std::rc::Rc::from(std::path::Path::new("")),
-                    line: 0,
-                    column: 0,
-                },
-                end_line: 0,
-                end_column: 0,
-            });
-            let mut taken =
-                Expr::Value(ExprElement::Value(ExprValue::Int(ExprNumber {
-                    location: dummy_src,
-                    size: FieldSize::default(),
-                    number: Number::Positive(0),
-                })));
-            std::mem::swap(&mut self.right, &mut taken);
-            self.right = Expr::Value(ExprElement::Op(ExprUnaryOp {
-                location: taken.src().clone(),
-                output_size: FieldSize::new_bits(left_size.unwrap()),
-                op: Unary::Zext,
-                input: Box::new(taken),
-            }));
-            self.right.solve(sleigh, variables, solved)?;
-            solved.i_did_a_thing()
+        if hack_varnode_assignemnt_left_hand_truncation_implied(
+            self, sleigh, variables,
+        ) {
+            solved.i_did_a_thing();
         }
 
         //left and right sizes are the same
@@ -87,15 +49,22 @@ impl Assignment {
             let modified = restrict_field_same_size(&mut [
                 self.right.size_mut(sleigh, variables).as_dyn(),
                 trunc.output_size_mut(),
-            ]);
-            if modified.ok_or_else(error)? {
+            ])
+            .ok_or_else(error)?;
+
+            if modified {
                 solved.i_did_a_thing()
             }
         } else {
             let modified = restrict_field_same_size(&mut [
                 &mut *self.right.size_mut(sleigh, variables),
                 &mut *self.var.size_mut(sleigh, variables),
-            ]);
+            ])
+            .ok_or_else(error)?;
+
+            if modified {
+                solved.i_did_a_thing()
+            }
 
             //if right size is possible min, so does left if size is not defined
             if self.var.size(sleigh, variables).is_undefined()
@@ -107,9 +76,6 @@ impl Assignment {
                     .unwrap()
             {
                 solved.i_did_a_thing();
-            }
-            if modified.ok_or_else(error)? {
-                solved.i_did_a_thing()
             }
         }
 
@@ -129,4 +95,41 @@ impl Assignment {
             right: self.right.convert(),
         }
     }
+}
+
+// HACK: sometimes when assigning to varnodes, a value smaller then the
+// varnode size is provided, eg one bit registers are declare as one
+// byte instead of bitranges (eg flags on X86 like ZF), and assigned
+// binary values to it, when that happen, it's unclear if zext or a left
+// hand truncation happen, I'll stick with left hand operation for now
+fn hack_varnode_assignemnt_left_hand_truncation_implied(
+    ass: &mut Assignment,
+    sleigh: &Sleigh,
+    variables: &[Variable],
+) -> bool {
+    // left hand need to be an varnode
+    let WriteValue::Varnode(WriteVarnode { id, location: _ }) = ass.var else {
+        return false;
+    };
+
+    // can't have operators on the left side
+    if ass.op.is_some() {
+        return false;
+    }
+
+    // left side need to be smaller then the right side
+    let Some(right_size) = ass.right.size(sleigh, variables).max_bits() else {
+        return false;
+    };
+    let varnode = sleigh.varnode(id);
+    let left_size = varnode.len_bytes.get() * 8;
+    if left_size < right_size.get() {
+        return false;
+    }
+
+    // NOTE this could also be solved by adding a zext to the right side, but
+    // it seems that a left hand truncation is implied because this only happens
+    // if the rest of the varnode is not important.
+    ass.op = Some(Truncate::new(0, right_size));
+    true
 }

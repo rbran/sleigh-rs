@@ -51,7 +51,7 @@ impl MacroCall {
             if param
                 .size_mut(sleigh, variables)
                 .update_action(|size| size.intersection(macro_param.size.get()))
-                .ok_or_else(|| Box::new(ExecutionError::VarSize(src)))?
+                .ok_or(ExecutionError::VarSize(src))?
             {
                 solved.we_did_a_thing();
             }

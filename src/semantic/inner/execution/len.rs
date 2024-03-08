@@ -137,6 +137,7 @@ impl FieldSize {
             Self::Unsized { .. } => None,
         }
     }
+    #[must_use]
     pub fn update_action<F>(&mut self, mut action: F) -> Option<bool>
     where
         F: FnMut(Self) -> Option<Self>,
@@ -159,13 +160,10 @@ impl FieldSize {
                 .then_some(Self::Value(final_value)),
         }
     }
-    pub fn min_bits(&self) -> NumberNonZeroUnsigned {
+    pub fn min_bits(&self) -> Option<NumberNonZeroUnsigned> {
         match self {
-            Self::Value(value) => *value,
-            Self::Unsized { range, .. } => {
-                // field can't be smaller then 1
-                range.min.unwrap_or(NumberNonZeroUnsigned::new(1).unwrap())
-            }
+            Self::Value(value) => Some(*value),
+            Self::Unsized { range, .. } => range.min,
         }
     }
     pub fn set_min_bytes(self, min: NumberNonZeroUnsigned) -> Option<Self> {
@@ -185,13 +183,10 @@ impl FieldSize {
             }
         }
     }
-    pub fn max_bits(&self) -> NumberNonZeroUnsigned {
+    pub fn max_bits(&self) -> Option<NumberNonZeroUnsigned> {
         match self {
-            Self::Value(value) => *value,
-            Self::Unsized { range, .. } => {
-                // that will be technically true LOL
-                range.max.unwrap_or(NumberNonZeroUnsigned::MAX)
-            }
+            Self::Value(value) => Some(*value),
+            Self::Unsized { range, .. } => range.max,
         }
     }
     pub fn set_max_bytes(self, max: NumberNonZeroUnsigned) -> Option<Self> {
@@ -221,7 +216,7 @@ impl FieldSize {
             Self::Unsized {
                 possible: FieldAuto::Min,
                 ..
-            } => Some(self.min_bits()),
+            } => self.min_bits(),
             Self::Unsized {
                 possible: FieldAuto::None,
                 ..
@@ -250,24 +245,37 @@ impl FieldSize {
         }
         self
     }
-    pub fn set_possible_value(
+    pub fn set_possible_bytes(
+        self,
+        pos_bytes: NumberNonZeroUnsigned,
+    ) -> Option<Self> {
+        let pos_bits = (pos_bytes.get() * 8).try_into().unwrap();
+        self.set_possible_bits(pos_bits)
+    }
+    pub fn set_possible_bits(
         mut self,
-        pos_value: NumberNonZeroUnsigned,
+        pos_bits: NumberNonZeroUnsigned,
     ) -> Option<Self> {
         match self {
-            Self::Unsized { range, .. } if !range.contains(&pos_value) => None,
+            Self::Unsized { range, .. } if !range.contains(&pos_bits) => None,
             Self::Unsized {
                 ref mut possible, ..
             } => {
-                *possible = FieldAuto::Value(pos_value);
+                *possible = FieldAuto::Value(pos_bits);
                 Some(self)
             }
-            Self::Value(value) => (value == pos_value).then_some(self),
+            Self::Value(value) => (value == pos_bits).then_some(self),
         }
     }
     pub fn intersection(self, other: Self) -> Option<Self> {
-        self.set_min_bits(self.min_bits().max(other.min_bits()))?
-            .set_max_bits(self.max_bits().min(other.max_bits()))
+        let mut result = self;
+        if let Some(min_bits) = other.min_bits() {
+            result = result.set_min_bits(min_bits)?;
+        }
+        if let Some(max_bits) = other.max_bits() {
+            result = result.set_max_bits(max_bits)?;
+        }
+        Some(result)
     }
 }
 impl Default for FieldSize {
@@ -301,6 +309,7 @@ impl<'a> dyn FieldSizeMut + 'a {
     pub fn as_dyn(&mut self) -> &mut dyn FieldSizeMut {
         self
     }
+    #[must_use]
     pub fn update_action(
         &mut self,
         mut action: impl FnMut(FieldSize) -> Option<FieldSize>,

@@ -158,11 +158,13 @@ impl Expr {
         use Binary::*;
         let size = match op {
             Lsl | Lsr | Asr => {
-                //rotation is unlikelly to rotate more then 128 bits,
-                //so right element size only require 32bits max
-                right.size_mut(sleigh, variables).update_action(|size| {
-                    size.set_possible_value(32.try_into().unwrap())
-                });
+                // rotation is unlikelly to rotate more then 128 bits,
+                // so right element size only require 32bits max
+                // NOTE error is ignored
+                let _ =
+                    right.size_mut(sleigh, variables).update_action(|size| {
+                        size.set_possible_bits(32.try_into().unwrap())
+                    });
                 FieldSize::new_unsized()
             }
             SigLess | SigGreater | SigRem | SigLessEq | SigGreaterEq | Less
@@ -336,46 +338,38 @@ impl ExprElement {
                 let mut input_len = input.size_mut(sleigh, variables);
                 let output_len = &mut truncate.size;
 
-                // input len need to be (output_len truncate.lsb) or bigger
-                modified |= input_len
-                    .update_action(|input_len| {
-                        input_len.set_min_bits(
-                            (truncate.lsb + output_len.min_bits().get())
-                                .try_into()
-                                .unwrap(),
-                        )
-                    })
-                    .ok_or_else(error)?;
-                // input len can't be smaller then (truncate.lsb + 1)
-                if input_len.get().max_bits().get() <= truncate.lsb {
+                // input len need to be (output_len + truncate.lsb) or bigger
+                if let Some(min_bits) = output_len.min_bits() {
+                    modified |= input_len
+                        .update_action(|input_len| {
+                            input_len.set_min_bits(
+                                (truncate.lsb + min_bits.get())
+                                    .try_into()
+                                    .unwrap(),
+                            )
+                        })
+                        .ok_or_else(error)?;
+                }
+                // truncation can't return 0 bits, so input len need to be
+                // bigger then truncate.lsb, NOTE not equal
+                if matches!(input_len.get().max_bits(), Some(max_bits) if max_bits.get()
+                    <= truncate.lsb)
+                {
                     return Err(error());
                 }
-                // output_len need to me (input_len - truncate.lsb) or smaller
-                modified |= output_len
-                    .update_action(|output_len| {
-                        output_len.set_max_bits(
-                            (input_len.get().max_bits().get() - truncate.lsb)
-                                .try_into()
-                                .unwrap(),
-                        )
-                    })
-                    .ok_or_else(error)?;
-
-                // if the output len is known it auto ajusts to the remaining
-                // of the input
-                if output_len.final_value().is_none() {
-                    if let Some(input_len) = input_len.get().final_value() {
-                        modified |= output_len
-                            .update_action(|len| {
-                                len.set_possible_value(
-                                    (input_len.get() - truncate.lsb)
-                                        .try_into()
-                                        .unwrap(),
-                                )
-                            })
-                            .ok_or_else(error)?;
-                    }
+                // output_len need to be (input_len - truncate.lsb) or smaller
+                if let Some(max_bits) = input_len.get().max_bits() {
+                    modified |= output_len
+                        .update_action(|output_len| {
+                            output_len.set_max_bits(
+                                (max_bits.get() - truncate.lsb)
+                                    .try_into()
+                                    .unwrap(),
+                            )
+                        })
+                        .ok_or_else(error)?;
                 }
+
                 // if the input or output len are not possible, we are not done
                 if !input_len.get().is_possible() || !output_len.is_possible() {
                     solved.iam_not_finished(src, file!(), line!());
@@ -471,20 +465,19 @@ impl ExprElement {
             }) => {
                 let error = || ExecutionError::VarSize(src.clone());
                 //output size need to be bigger or eq to the value size
-                modified |= output_size
-                    .update_action(|size| {
-                        size.set_min_bits(
-                            value.size(sleigh, variables).min_bits(),
-                        )
-                    })
-                    .ok_or_else(error)?;
+                if let Some(min_bits) = value.size(sleigh, variables).min_bits()
+                {
+                    modified |= output_size
+                        .update_action(|size| size.set_min_bits(min_bits))
+                        .ok_or_else(error)?;
+                }
                 //and vise-versa
-                modified |= value
-                    .size_mut(sleigh, variables)
-                    .update_action(|size| {
-                        size.set_max_bits(output_size.max_bits())
-                    })
-                    .ok_or_else(error)?;
+                if let Some(max_bits) = output_size.max_bits() {
+                    modified |= value
+                        .size_mut(sleigh, variables)
+                        .update_action(|size| size.set_max_bits(max_bits))
+                        .ok_or_else(error)?;
+                }
 
                 mark_unfinished_size!(output_size, solved, src);
                 mark_unfinished_size!(
@@ -494,30 +487,21 @@ impl ExprElement {
                 );
                 value.solve(sleigh, variables, solved)?;
             }
+            // NOTE don't confuse signed truncation with regular truncation
+            // sleigh `trunc` function converts float into interger, both
+            // can have any size.
             Self::Op(ExprUnaryOp {
                 location,
                 output_size,
                 op: Unary::SignTrunc,
                 input,
             }) => {
-                let error = || ExecutionError::VarSize(location.clone());
-                let mut input_size = input.size_mut(sleigh, variables);
-                //output size need to be smaller or equal then the input size
-                modified |= output_size
-                    .update_action(|size| {
-                        size.set_max_bits(input_size.get().min_bits())
-                    })
-                    .ok_or_else(error)?;
-                //and vise-versa
-                modified |= input_size
-                    .update_action(|size| {
-                        size.set_min_bits(output_size.max_bits())
-                    })
-                    .ok_or_else(error)?;
-
                 mark_unfinished_size!(output_size, solved, location);
-                mark_unfinished_size!(&input_size.get(), solved, location);
-                drop(input_size);
+                mark_unfinished_size!(
+                    &input.size(sleigh, variables),
+                    solved,
+                    location
+                );
                 input.solve(sleigh, variables, solved)?;
             }
             Self::Op(ExprUnaryOp {
@@ -1107,9 +1091,9 @@ fn inner_expr_solve(
             //if the output have a possible size, make left/right also have
             if let Some(possible) = op.output_size.possible_value() {
                 let new_left =
-                    left.size(sleigh, variables).set_possible_value(possible);
+                    left.size(sleigh, variables).set_possible_bits(possible);
                 let new_right =
-                    right.size(sleigh, variables).set_possible_value(possible);
+                    right.size(sleigh, variables).set_possible_bits(possible);
                 if let Some((new_left, new_right)) = new_left.zip(new_right) {
                     left.size_mut(sleigh, variables).set(new_left);
                     right.size_mut(sleigh, variables).set(new_right);

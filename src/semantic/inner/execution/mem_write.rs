@@ -108,8 +108,7 @@ impl MemWrite {
                 .right
                 .size_mut(sleigh, variables)
                 .update_action(|size| {
-                    size.set_max_bits(write_size)?
-                        .set_possible_value(write_size)
+                    size.set_max_bits(write_size)?.set_possible_bits(write_size)
                 });
             if modified.ok_or_else(|| {
                 Box::new(ExecutionError::VarSize(self.mem.src.clone()))

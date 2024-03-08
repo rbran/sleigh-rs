@@ -417,7 +417,15 @@ pub trait ExecutionBuilder {
                     .size_mut(self.sleigh(), &self.execution().vars)
                     .update_action(|size| {
                         size.set_max_bytes(var_ele.len_bytes)
-                    });
+                            // optionally try to set a possible value
+                            .map(|size| {
+                                size.set_possible_bytes(var_ele.len_bytes)
+                                    .unwrap_or(size)
+                            })
+                    })
+                    .ok_or_else(|| {
+                        ExecutionError::VarSize(input.src.clone())
+                    })?;
                 Ok(Statement::Assignment(Assignment::new(
                     addr, op, input.src, right,
                 )))

@@ -233,6 +233,7 @@ impl Sleigh {
     }
     pub(crate) fn new(value: syntax::Sleigh) -> Result<Self, Box<SleighError>> {
         let inner = inner::Sleigh::new(value)?;
+        tracing::trace!("semantic tree constructed sucessfully");
         //HACK: verify that indirect recursion don't happen
         //NOTE we don't need to worry about direct (self) recursion.
         //AKA `Tablea` calling itself
@@ -282,6 +283,7 @@ impl Sleigh {
                 panic!("Unable to solve the table")
             }
         }
+        tracing::trace!("semantic table solving sucessfully");
         let context_memory = ContextMemoryMapping::map_all(&inner);
         let contexts: Box<[_]> = inner
             .contexts
