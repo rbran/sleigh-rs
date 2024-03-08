@@ -1,6 +1,7 @@
 use crate::semantic::execution::{
     BlockId, Build, ExprInstNext, ExprInstStart, ExprTable, RefTable,
     RefTokenField, ReferencedValue, Unary, VariableId, WriteExeVar, WriteValue,
+    WriteVarnode,
 };
 use crate::semantic::inner::execution::ExprNumber;
 use crate::semantic::inner::pattern::Pattern;
@@ -401,48 +402,24 @@ pub trait ExecutionBuilder {
             (Some(_), true) => {
                 Err(Box::new(ExecutionError::InvalidVarDeclare(input.src)))
             }
-            //Assign to varnode is actually a mem write
+            //Assign to varnode
             (Some(WriteScope::Varnode(var)), false) => {
                 let op =
                     input.op.map(|op| self.new_truncate(op)).transpose()?;
                 let var_ele = self.sleigh().varnode(var);
-                let mem = MemoryLocation {
-                    space: var_ele.space,
-                    size: FieldSize::new_bytes(var_ele.len_bytes),
-                    src: input.src.clone(),
-                };
-                let size = FieldSize::new_bytes(
-                    self.sleigh().addr_bytes().ok_or_else(|| {
-                        ExecutionError::InvalidRef(input.src.clone())
-                    })?,
-                );
-                let addr = Expr::Value(ExprElement::Value(ExprValue::Int(
-                    ExprNumber {
-                        location: input.src.clone(),
-                        size,
-                        number: Number::Positive(var_ele.address),
-                    },
-                )));
-                {
-                    let right = &mut right;
-                    let sleigh = self.sleigh();
-                    let execution = self.execution();
-                    right.size_mut(sleigh, &execution.vars).update_action(
-                        |size| {
-                            size.intersection(FieldSize::new_bytes(
-                                var_ele.len_bytes,
-                            ))
-                        },
-                    );
-                }
-                Ok(Statement::MemWrite(MemWrite::new(
-                    self.sleigh(),
-                    self.execution(),
-                    addr,
-                    op,
-                    mem,
-                    input.src,
-                    right,
+                let addr = WriteValue::Varnode(WriteVarnode {
+                    location: input.src.clone(),
+                    id: var,
+                });
+                // value can't be bigger then the varnode, although it can be
+                // smaller
+                right
+                    .size_mut(self.sleigh(), &self.execution().vars)
+                    .update_action(|size| {
+                        size.set_max_bytes(var_ele.len_bytes)
+                    });
+                Ok(Statement::Assignment(Assignment::new(
+                    addr, op, input.src, right,
                 )))
             }
             //variable exists, just return it
@@ -467,7 +444,6 @@ pub trait ExecutionBuilder {
             self.sleigh(),
             self.execution(),
             addr,
-            None,
             mem,
             input.src,
             right,

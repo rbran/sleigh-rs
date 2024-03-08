@@ -11,7 +11,6 @@ use super::{
 pub struct MemWrite {
     pub addr: Expr,
     mem: MemoryLocation,
-    truncate: Option<Truncate>,
     src: Span,
     pub right: Expr,
 }
@@ -21,7 +20,6 @@ impl MemWrite {
         sleigh: &Sleigh,
         execution: &Execution,
         mut addr: Expr,
-        truncate: Option<Truncate>,
         mem: MemoryLocation,
         src: Span,
         mut right: Expr,
@@ -55,7 +53,6 @@ impl MemWrite {
         Self {
             addr,
             mem,
-            truncate,
             src,
             right,
         }
@@ -144,7 +141,6 @@ impl MemWrite {
         FinalMemWrite {
             addr: self.addr.convert(),
             mem: self.mem.convert(),
-            truncate: self.truncate.map(Truncate::convert),
             right: self.right.convert(),
         }
     }

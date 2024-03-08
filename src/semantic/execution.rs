@@ -296,7 +296,6 @@ pub struct Assignment {
 pub struct MemWrite {
     pub addr: Expr,
     pub mem: MemoryLocation,
-    pub truncate: Option<Truncate>,
     pub right: Expr,
 }
 
