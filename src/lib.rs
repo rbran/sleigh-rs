@@ -324,6 +324,9 @@ pub enum SleighError {
     #[error("Context size is invalid {0}")]
     ContextInvalidSize(Span),
 
+    #[error("Unable to solve table (\n{0})")]
+    TableUnsolvable(String),
+
     //TODO doit better
     #[error("Table error at ({location}) Error: {error}")]
     Table { location: Span, error: TableError },
