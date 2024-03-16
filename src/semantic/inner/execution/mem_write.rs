@@ -75,11 +75,7 @@ impl MemWrite {
         {
             //dummy value
             let dummy_src = Span::File(crate::FileSpan {
-                start: crate::FileLocation {
-                    file: std::rc::Rc::from(std::path::Path::new("")),
-                    line: 0,
-                    column: 0,
-                },
+                start: crate::FileLocation::new_start(""),
                 end_line: 0,
                 end_column: 0,
             });

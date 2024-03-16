@@ -216,11 +216,7 @@ impl DrainingFile {
         Ok(Self {
             data,
             position: 0,
-            location: FileLocation {
-                file: Rc::from(file),
-                line: 0,
-                column: 0,
-            },
+            location: FileLocation::new_start(file),
             if_stack: vec![],
         })
     }

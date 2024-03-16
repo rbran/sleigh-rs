@@ -196,7 +196,7 @@ impl Export {
     }
     pub fn new_const(
         sleigh: &Sleigh,
-        pattern: &Pattern,
+        _pattern: &Pattern,
         read_scope: ReadScope,
         size: ByteRangeLsb,
         src: Span,
@@ -204,16 +204,16 @@ impl Export {
         let value =
             ExportConst::from_read_scope(sleigh, read_scope, src.clone())?;
         let size = NumberNonZeroUnsigned::new(size.value).unwrap(/*TODO*/);
-        // if the value is a disassembly variable, we define it's len
-        if let ExportConst::DisVar(id) = value {
-            let variable = &pattern.disassembly_variables[id.0];
-            let value_type = variable
-                .value_type
-                .get()
-                .set_len(size)
-                .ok_or(ExecutionError::InvalidExport)?;
-            variable.value_type.set(value_type);
-        }
+        // TODO: if the value is a disassembly variable, we define it's len
+        //if let ExportConst::DisVar(id) = value {
+        //    let variable = &pattern.disassembly_variables[id.0];
+        //    let value_type = variable
+        //        .value_type
+        //        .get()
+        //        .set_len(size)
+        //        .ok_or(ExecutionError::InvalidExport)?;
+        //    variable.value_type.set(value_type);
+        //}
         let size = FieldSize::new_bytes(size);
         Ok(Self::Const {
             len_bits: size,
@@ -223,24 +223,24 @@ impl Export {
     }
     pub fn new_reference(
         sleigh: &Sleigh,
-        pattern: &Pattern,
+        _pattern: &Pattern,
         execution: &Execution,
         mut addr: Expr,
         memory: MemoryLocation,
     ) -> Result<Self, Box<ExecutionError>> {
-        // if the addr is a single Disassembly variable, it affects
+        // TODO: if the addr is a single Disassembly variable, it affects
         // how it's printed
-        if let Expr::Value(ExprElement::Value(ExprValue::DisVar(variable))) =
-            &addr
-        {
-            let variable = &pattern.disassembly_variables[variable.id.0];
-            let value_type = variable
-                .value_type
-                .get()
-                .set_space(memory.space)
-                .ok_or(ExecutionError::InvalidExport)?;
-            variable.value_type.set(value_type);
-        }
+        //if let Expr::Value(ExprElement::Value(ExprValue::DisVar(variable))) =
+        //    &addr
+        //{
+        //    let variable = &pattern.disassembly_variables[variable.id.0];
+        //    let value_type = variable
+        //        .value_type
+        //        .get()
+        //        .set_space(memory.space)
+        //        .ok_or(ExecutionError::InvalidExport)?;
+        //    variable.value_type.set(value_type);
+        //}
         //addr expr is the addr to access the space, so it need to be space
         //addr size or smaller
         let space = sleigh.space(memory.space);

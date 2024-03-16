@@ -192,6 +192,19 @@ pub struct Sleigh {
 }
 
 impl Sleigh {
+    pub fn endian(&self) -> Endian {
+        self.endian
+    }
+    pub fn alignemnt(&self) -> u8 {
+        self.alignment
+    }
+    // TODO make it a const value 0, first table is always the instruction table
+    pub fn instruction_table(&self) -> TableId {
+        self.instruction_table
+    }
+    pub fn context_memory(&self) -> &ContextMemoryMapping {
+        &self.context_memory
+    }
     pub fn space(&self, space: SpaceId) -> &Space {
         &self.spaces[space.0]
     }

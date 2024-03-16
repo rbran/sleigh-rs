@@ -7,6 +7,9 @@ repository = "https://github.com/rbran/sleigh-rs"
 license = "MIT"
 description = "Ghidra Sleigh parser"
 
+[features]
+thread = []
+
 [dependencies]
 nom = "7"
 thiserror = "1"

@@ -1,7 +1,5 @@
-use std::cell::Cell;
 use std::collections::HashMap;
 
-use crate::disassembly::VariableType;
 use crate::semantic::disassembly::{
     AddrScope, Assertation, Expr, ExprElement, GlobalSet, ReadScope, WriteScope,
 };
@@ -223,7 +221,6 @@ impl<'a, 'b> Builder<'a, 'b> {
         //otherwise create the variable
         let var = Variable {
             location: src.clone(),
-            value_type: Cell::new(VariableType::Value(None)),
             name: name.to_owned().into(),
         };
         self.pattern.disassembly_variables.push(var);

@@ -1,6 +1,9 @@
 use std::ops::{Bound, RangeBounds};
 use std::path::Path;
+#[cfg(not(feature = "thread"))]
 use std::rc::Rc;
+#[cfg(feature = "thread")]
+use std::sync::Arc as Rc;
 
 use thiserror::Error;
 
@@ -25,8 +28,8 @@ pub use semantic::user_function;
 pub use semantic::varnode;
 pub use semantic::{
     AttachLiteralId, AttachNumberId, AttachVarnodeId, BitrangeId, ContextId,
-    GlobalScope, PcodeMacroId, Sleigh, SpaceId, TableId, TokenFieldId, TokenId,
-    UserFunctionId, VarnodeId,
+    GlobalScope, PcodeMacroId, PrintBase, Sleigh, SpaceId, TableId,
+    TokenFieldId, TokenId, UserFunctionId, ValueFmt, VarnodeId,
 };
 
 pub type FloatType = f64;
@@ -789,6 +792,13 @@ pub struct FileLocation {
 }
 
 impl FileLocation {
+    pub(crate) fn new_start<A: AsRef<Path>>(path: A) -> Self {
+        FileLocation {
+            file: Rc::from(path.as_ref()),
+            line: 0,
+            column: 0,
+        }
+    }
     fn end_span(&self, end_line: u64, end_column: u64) -> FileSpan {
         FileSpan {
             start: self.clone(),
