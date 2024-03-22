@@ -177,7 +177,8 @@ impl Sleigh {
         &mut self,
         input: syntax::define::UserFunction,
     ) -> Result<(), Box<SleighError>> {
-        let user_function = UserFunction(input.src);
+        let user_function =
+            UserFunction::new(input.name.clone().into(), input.src);
         self.user_functions.push(user_function);
         let user_function_id = UserFunctionId(self.user_functions.len() - 1);
         self.global_scope
