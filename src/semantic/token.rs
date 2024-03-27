@@ -26,6 +26,12 @@ impl Token {
     pub fn name(&self) -> &str {
         &self.name
     }
+    pub fn endian(&self) -> Endian {
+        self.endian
+    }
+    pub fn len_bytes(&self) -> NumberNonZeroUnsigned {
+        self.len_bytes
+    }
 }
 
 impl TokenField {
