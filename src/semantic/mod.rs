@@ -14,6 +14,8 @@ pub mod varnode;
 // represenatation
 mod inner;
 
+use std::collections::HashMap;
+
 use crate::semantic::inner::{SolvedLocation, SolverStatus};
 use crate::{syntax, Endian, NumberNonZeroUnsigned, SleighError, Span};
 
@@ -165,12 +167,12 @@ impl GlobalScope {
 
 #[derive(Clone, Debug)]
 pub struct Sleigh {
-    pub endian: Endian,
-    pub alignment: u8,
+    endian: Endian,
+    alignment: u8,
 
-    pub default_space: SpaceId,
+    default_space: SpaceId,
     // TODO make it a const value 0, first table is always the instruction table
-    pub instruction_table: TableId,
+    instruction_table: TableId,
 
     spaces: Box<[Space]>,
     varnodes: Box<[Varnode]>,
@@ -186,9 +188,9 @@ pub struct Sleigh {
     attach_literals: Box<[AttachLiteral]>,
     attach_numbers: Box<[AttachNumber]>,
     //scope with all the global identifiers
-    //pub global_scope: HashMap<String, GlobalScope>,
+    global_scope: HashMap<String, GlobalScope>,
     /// Context mapped into single and packed memory block
-    pub context_memory: ContextMemoryMapping,
+    context_memory: ContextMemoryMapping,
 }
 
 impl Sleigh {
@@ -204,6 +206,12 @@ impl Sleigh {
     }
     pub fn context_memory(&self) -> &ContextMemoryMapping {
         &self.context_memory
+    }
+    pub fn global_scope_by_name<'a>(
+        &'a self,
+        name: &str,
+    ) -> Option<&'a GlobalScope> {
+        self.global_scope.get(name)
     }
     pub fn space(&self, space: SpaceId) -> &Space {
         &self.spaces[space.0]
@@ -283,9 +291,13 @@ impl Sleigh {
                     table.solve(&inner, &mut solved)?;
                 }
                 return Err(Box::new(SleighError::TableUnsolvable(
-                    solved.locations.iter().map(|(location, file, line)| {
-                        format!("{}:{}: {location}\n", file, line + 1)
-                    }).collect()
+                    solved
+                        .locations
+                        .iter()
+                        .map(|(location, file, line)| {
+                            format!("{}:{}: {location}\n", file, line + 1)
+                        })
+                        .collect(),
                 )));
             }
         }
@@ -332,7 +344,7 @@ impl Sleigh {
             attach_literals: inner.attach_literals.into(),
             attach_numbers: inner.attach_numbers.into(),
             tables: Box::new([]),
-            //global_scope: inner.global_scope,
+            global_scope: inner.global_scope,
         };
         let tables = inner
             .tables
