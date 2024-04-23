@@ -12,7 +12,7 @@ pub mod varnode;
 
 // internal representation used to convert from syntax to semantic
 // represenatation
-mod inner;
+pub(crate) mod inner;
 
 use std::collections::HashMap;
 

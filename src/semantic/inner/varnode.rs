@@ -49,11 +49,12 @@ impl Context {
         Ok(())
     }
 
-    pub fn exec_out_value_bits(&self, sleigh: &Sleigh) -> FieldSize {
+    #[deprecated]
+    pub fn exec_value_size(&self, sleigh: &Sleigh) -> FieldSize {
         match self.attach {
-            //don't have speacial meaning, or the meaning just use the raw value
-            Some(ContextAttach::NoAttach(_)) => unreachable!(),
-            Some(ContextAttach::Literal(_)) | None => FieldSize::default()
+            Some(ContextAttach::NoAttach(_))
+            | Some(ContextAttach::Literal(_))
+            | None => FieldSize::default()
                 .set_min_bits(self.bitrange.bits.len())
                 .unwrap(),
             Some(ContextAttach::Varnode(attach_id)) => {

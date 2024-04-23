@@ -13,6 +13,7 @@ use super::{PrintBase, ValueFmt};
 #[derive(Clone, Debug)]
 pub struct AttachVarnode(pub Box<[(usize, VarnodeId)]>);
 impl AttachVarnode {
+    #[deprecated]
     pub(crate) fn execution_len(
         &self,
         sleigh: &super::inner::Sleigh,
@@ -36,6 +37,7 @@ pub struct AttachLiteral(pub Box<[(usize, String)]>);
 #[derive(Clone, Debug)]
 pub struct AttachNumber(pub Box<[(usize, Number)]>);
 impl AttachNumber {
+    #[deprecated]
     pub(crate) fn execution_len(&self) -> FieldSize {
         let len_bits = self
             .0
@@ -69,6 +71,7 @@ impl Meaning {
     pub fn is_number(&self) -> bool {
         matches!(self, Self::Number(_, _))
     }
+    #[deprecated]
     pub fn execution_len(
         &self,
         sleigh: &super::inner::Sleigh,

@@ -352,7 +352,7 @@ impl FieldSizeMut for &mut FieldSize {
     }
 }
 //don't allow mutation
-pub struct FieldSizeUnmutable(FieldSize);
+pub struct FieldSizeUnmutable(pub(crate) FieldSize);
 impl FieldSizeMut for FieldSizeUnmutable {
     fn get(&self) -> FieldSize {
         self.0

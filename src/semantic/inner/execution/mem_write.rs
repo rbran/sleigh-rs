@@ -1,10 +1,10 @@
 use crate::semantic::execution::{MemWrite as FinalMemWrite, Unary};
 use crate::semantic::inner::{Sleigh, SolverStatus};
-use crate::{ExecutionError, Number, Span};
+use crate::{ExecutionError, Number, Span, VarSizeError};
 
 use super::{
     Execution, Expr, ExprElement, ExprNumber, ExprValue, FieldSize,
-    MemoryLocation, Truncate, Variable,
+    MemoryLocation, Variable,
 };
 
 #[derive(Clone, Debug)]
@@ -86,10 +86,10 @@ impl MemWrite {
                     number: Number::Positive(0),
                 })));
             std::mem::swap(&mut self.right, &mut taken);
-            self.right = Expr::Value(ExprElement::Truncate(
+            self.right = Expr::Value(ExprElement::new_trunk_lsb(
                 taken.src().clone(),
-                Truncate::new(0, left_size.unwrap()),
-                Box::new(taken),
+                0,
+                taken,
             ));
             self.right.solve(sleigh, variables, solved)?;
             solved.i_did_a_thing()
@@ -100,26 +100,36 @@ impl MemWrite {
         if let Some(write_size) = self.mem.size.final_value() {
             //if left side size is known, right side will need to produce a
             //a value with size equal or smaller then that
+            let right_size = self.right.size(sleigh, variables);
             let modified = self
                 .right
                 .size_mut(sleigh, variables)
                 .update_action(|size| {
                     size.set_max_bits(write_size)?.set_possible_bits(write_size)
-                });
-            if modified.ok_or_else(|| {
-                Box::new(ExecutionError::VarSize(self.mem.src.clone()))
-            })? {
+                })
+                .ok_or_else(|| VarSizeError::AssignmentSides {
+                    left: FieldSize::Value(write_size),
+                    right: right_size,
+                    location: self.src.clone(),
+                })?;
+            if modified {
                 solved.i_did_a_thing();
             }
         } else {
             //if the left side is WriteAddr without a size, the only option is
             //to use the right side size
-            let modified = self.mem.size.update_action(|size| {
-                size.intersection(self.right.size(sleigh, variables))
-            });
-            if modified.ok_or_else(|| {
-                Box::new(ExecutionError::VarSize(self.src.clone()))
-            })? {
+            let modified = self
+                .mem
+                .size
+                .update_action(|size| {
+                    size.intersection(self.right.size(sleigh, variables))
+                })
+                .ok_or_else(|| VarSizeError::AssignmentSides {
+                    left: self.mem.size,
+                    right: self.right.size(sleigh, variables),
+                    location: self.src.clone(),
+                })?;
+            if modified {
                 solved.i_did_a_thing();
             }
         }

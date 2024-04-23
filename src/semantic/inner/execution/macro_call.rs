@@ -4,19 +4,25 @@ use crate::semantic::PcodeMacroId;
 use crate::semantic::{
     execution::MacroCall as FinalMacroCall, inner::SolverStatus,
 };
-use crate::ExecutionError;
+use crate::{ExecutionError, Span, VarSizeError};
 
 use super::{Expr, Variable};
 
 #[derive(Clone, Debug)]
 pub struct MacroCall {
+    location: Span,
     instance: PcodeMacroCallId,
     pub params: Vec<Expr>,
 }
 
 impl MacroCall {
-    pub fn new(params: Vec<Expr>, macro_id: PcodeMacroId) -> Self {
+    pub fn new(
+        params: Vec<Expr>,
+        macro_id: PcodeMacroId,
+        location: Span,
+    ) -> Self {
         Self {
+            location,
             params,
             instance: PcodeMacroCallId {
                 macro_id,
@@ -47,12 +53,15 @@ impl MacroCall {
             .iter()
             .map(|param| pcode_macro.execution.variable(param.variable_id));
         for (param, macro_param) in self.params.iter_mut().zip(params_iter) {
-            let src = param.src().clone();
-            if param
-                .size_mut(sleigh, variables)
-                .update_action(|size| size.intersection(macro_param.size.get()))
-                .ok_or(ExecutionError::VarSize(src))?
-            {
+            let modified =
+                param.size_mut(sleigh, variables).update_action(|size| {
+                    size.intersection(macro_param.size.get())
+                });
+            if modified.ok_or_else(|| VarSizeError::MacroParamWrongSize {
+                param: macro_param.size.get(),
+                input: param.size(sleigh, variables),
+                location: param.src().clone(),
+            })? {
                 solved.we_did_a_thing();
             }
             param.solve(sleigh, variables, solved)?;

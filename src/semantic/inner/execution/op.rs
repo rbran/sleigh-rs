@@ -1,11 +1,9 @@
 use crate::semantic::execution::{
-    Binary, MemoryLocation as FinalMemoryLocation, Truncate as FinalTruncate,
+    Binary, MemoryLocation as FinalMemoryLocation,
 };
 use crate::semantic::inner::SolverStatus;
 use crate::semantic::SpaceId;
-use crate::{
-    FloatType, NumberNonZeroUnsigned, NumberSigned, NumberUnsigned, Span,
-};
+use crate::{FloatType, NumberSigned, NumberUnsigned, Span};
 
 use super::FieldSize;
 
@@ -25,50 +23,6 @@ impl MemoryLocation {
         FinalMemoryLocation {
             len_bytes: self.size.possible_value().unwrap(),
             space: self.space,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Truncate {
-    /// least significant bit to truncate
-    pub lsb: NumberUnsigned,
-    /// number of bits to take (relative to lsb)
-    pub size: FieldSize,
-}
-
-impl Truncate {
-    pub fn new(lsb: NumberUnsigned, size: NumberNonZeroUnsigned) -> Self {
-        let size = FieldSize::new_bits(size);
-        Self { lsb, size }
-    }
-    pub fn new_lsb(size: NumberNonZeroUnsigned) -> Self {
-        let size = FieldSize::new_bytes(size);
-        Self { lsb: 0, size }
-    }
-    pub fn new_msb(lsb: NumberUnsigned) -> Self {
-        let size = FieldSize::new_unsized();
-        //* 8 because msb is in bytes
-        Self { lsb: lsb * 8, size }
-    }
-    pub fn input_min_bits(&self) -> Option<NumberNonZeroUnsigned> {
-        Some(
-            NumberNonZeroUnsigned::new(
-                self.size.possible_value()?.get() + self.lsb,
-            )
-            .unwrap(),
-        )
-    }
-    pub fn output_size(&self) -> FieldSize {
-        self.size
-    }
-    pub fn output_size_mut(&mut self) -> &mut FieldSize {
-        &mut self.size
-    }
-    pub fn convert(self) -> FinalTruncate {
-        FinalTruncate {
-            lsb: self.lsb,
-            len_bits: self.size.possible_value().unwrap(),
         }
     }
 }

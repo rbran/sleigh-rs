@@ -3,7 +3,9 @@ use crate::semantic::inner::pattern::Pattern;
 use crate::semantic::inner::{Sleigh, SolverStatus};
 use crate::semantic::table::ExecutionExport;
 use crate::syntax::block::execution::op::ByteRangeLsb;
-use crate::{ExecutionError, Number, NumberNonZeroUnsigned, Span};
+use crate::{
+    ExecutionError, Number, NumberNonZeroUnsigned, Span, VarSizeError,
+};
 
 use super::{
     Execution, Expr, ExprElement, ExprNumber, ExprValue, FieldSize,
@@ -245,9 +247,15 @@ impl Export {
         //addr size or smaller
         let space = sleigh.space(memory.space);
         let src = addr.src().clone();
-        addr.size_mut(sleigh, &execution.vars)
-            .update_action(|size| size.set_max_bytes(space.addr_bytes))
-            .ok_or(ExecutionError::VarSize(src))?;
+        let modified = addr
+            .size_mut(sleigh, &execution.vars)
+            .update_action(|size| size.set_max_bytes(space.addr_bytes));
+
+        let _ = modified.ok_or_else(|| VarSizeError::AddressTooBig {
+            address_size: addr.size(sleigh, &execution.vars),
+            space_bytes: space.addr_bytes,
+            location: src,
+        })?;
         Ok(Self::Reference { addr, memory })
     }
     pub fn return_type(

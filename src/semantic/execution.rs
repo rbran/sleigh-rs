@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use crate::{Number, NumberNonZeroUnsigned, NumberUnsigned, Span};
 
 use super::{
@@ -288,8 +290,15 @@ pub struct WriteExeVar {
 pub struct Assignment {
     pub location: Span,
     pub var: WriteValue,
-    pub op: Option<Truncate>,
+    pub op: Option<AssignmentOp>,
     pub right: Expr,
+}
+
+#[derive(Clone, Debug)]
+pub enum AssignmentOp {
+    TakeLsb(NumberNonZeroUnsigned),
+    TrunkLsb(NumberUnsigned),
+    BitRange(Range<NumberUnsigned>),
 }
 
 #[derive(Clone, Debug)]
@@ -347,17 +356,11 @@ pub struct MemoryLocation {
     pub len_bytes: NumberNonZeroUnsigned,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct Truncate {
-    pub lsb: NumberUnsigned,
-    pub len_bits: NumberNonZeroUnsigned,
-}
-
 #[derive(Clone, Debug)]
 pub enum Unary {
-    //NOTE: The ByteRangeMsb, ByteRangeLsb and BitRange from docs are all
-    //Truncate
-    Truncate(Truncate),
+    TakeLsb(NumberNonZeroUnsigned),
+    TrunkLsb(NumberUnsigned),
+    BitRange(Range<NumberUnsigned>),
     Dereference(MemoryLocation),
     //Reference(AddrReference),
     Negation,

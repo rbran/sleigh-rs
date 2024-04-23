@@ -13,12 +13,12 @@ use crate::semantic::inner::{FieldSize, Sleigh, Solved, SolverStatus};
 use crate::semantic::{disassembly, InstNext, InstStart};
 use crate::{
     BitrangeId, ContextId, ExecutionError, Number, NumberNonZeroUnsigned,
-    NumberUnsigned, Span, TokenFieldId,
+    NumberUnsigned, Span, TokenFieldId, VarSizeError,
 };
 
 use super::{
     ExportLen, FieldSizeMut, FieldSizeUnmutable, MemoryLocation, ReadScope,
-    Truncate, UserCall, Variable, FIELD_SIZE_BOOL,
+    UserCall, Variable, FIELD_SIZE_BOOL,
 };
 
 macro_rules! mark_unfinished_size {
@@ -60,7 +60,6 @@ pub enum ExprElement {
     UserCall(UserCall),
     Reference(Reference),
     DeReference(Span, MemoryLocation, Box<Expr>),
-    Truncate(Span, Truncate, Box<Expr>),
     Op(ExprUnaryOp),
     New(ExprNew),
     CPool(ExprCPool),
@@ -221,17 +220,7 @@ impl Expr {
         //TODO make this less akward and remove the unecessary deref
         //and recreation of Box's
         //akwardly move values from self, replacing with a dummy value
-        let dummy_src = Span::File(crate::FileSpan {
-            start: crate::FileLocation::new_start(""),
-            end_line: 0,
-            end_column: 0,
-        });
-        let mut slf_moved =
-            Expr::Value(ExprElement::Value(ExprValue::Int(ExprNumber {
-                location: dummy_src,
-                size: FieldSize::default(),
-                number: Number::Positive(0),
-            })));
+        let mut slf_moved = self.clone();
         std::mem::swap(self, &mut slf_moved);
 
         //TODO make the moves and mut ref more elegant
@@ -250,8 +239,45 @@ impl Expr {
 }
 
 impl ExprElement {
-    pub fn new_truncate(src: Span, truncate: Truncate, expr: Expr) -> Self {
-        Self::Truncate(src, truncate, Box::new(expr))
+    /// varnode:size
+    pub fn new_take_lsb(
+        location: Span,
+        bytes: NumberNonZeroUnsigned,
+        expr: Expr,
+    ) -> Self {
+        Self::Op(ExprUnaryOp {
+            location,
+            output_size: FieldSize::Value(bytes),
+            op: Unary::TakeLsb(bytes),
+            input: Box::new(expr),
+        })
+    }
+    /// varnode(size)
+    pub fn new_trunk_lsb(
+        location: Span,
+        bytes: NumberUnsigned,
+        expr: Expr,
+    ) -> Self {
+        Self::Op(ExprUnaryOp {
+            location,
+            output_size: FieldSize::default(),
+            op: Unary::TrunkLsb(bytes),
+            input: Box::new(expr),
+        })
+    }
+    // varnode[lsb, size]
+    pub fn new_bitrange(
+        location: Span,
+        lsb: NumberUnsigned,
+        size: NumberNonZeroUnsigned,
+        expr: Expr,
+    ) -> Self {
+        Self::Op(ExprUnaryOp {
+            location,
+            output_size: FieldSize::default(),
+            op: Unary::BitRange(lsb..lsb + size.get()),
+            input: Box::new(expr),
+        })
     }
     pub fn new_deref(
         sleigh: &Sleigh,
@@ -289,7 +315,7 @@ impl ExprElement {
             Self::Reference(reference) => &reference.location,
             Self::New(new) => &new.location,
             Self::CPool(cpool) => &cpool.location,
-            Self::DeReference(src, _, _) | Self::Truncate(src, _, _) => src,
+            Self::DeReference(src, _, _) => src,
         }
     }
     pub fn solve(
@@ -329,49 +355,133 @@ impl ExprElement {
                 value:
                     ReferencedValue::InstStart(_) | ReferencedValue::InstNext(_),
             }) => (/*TODO*/),
-            Self::Truncate(src, truncate, input) => {
-                let error = || Box::new(ExecutionError::VarSize(src.clone()));
-                let mut input_len = input.size_mut(sleigh, variables);
-                let output_len = &mut truncate.size;
+            Self::Op(ExprUnaryOp {
+                location,
+                output_size,
+                op: Unary::TakeLsb(bytes),
+                input,
+            }) => {
+                // the output_size is set at creation
+                debug_assert_eq!(
+                    output_size.final_value().map(|x| x.get()),
+                    Some(bytes.get() * 8)
+                );
+                // input need to be lsb bytes or bigger
+                let modified_result = input
+                    .size_mut(sleigh, variables)
+                    .update_action(|x| x.set_min_bytes(*bytes));
+                modified |= modified_result.ok_or_else(|| {
+                    VarSizeError::TakeLsbTooSmall {
+                        location: input.src().clone(),
+                        lsb: *bytes,
+                        input: input.size(sleigh, variables),
+                    }
+                })?;
 
-                // input len need to be (output_len + truncate.lsb) or bigger
-                if let Some(min_bits) = output_len.min_bits() {
-                    modified |= input_len
-                        .update_action(|input_len| {
-                            input_len.set_min_bits(
-                                (truncate.lsb + min_bits.get())
-                                    .try_into()
-                                    .unwrap(),
-                            )
-                        })
-                        .ok_or_else(error)?;
-                }
-                // truncation can't return 0 bits, so input len need to be
-                // bigger then truncate.lsb, NOTE not equal
-                if matches!(input_len.get().max_bits(), Some(max_bits) if max_bits.get()
-                    <= truncate.lsb)
+                // if the input or output len are not possible, we are not done
+                if !input.size(sleigh, variables).is_possible()
+                    || !output_size.is_possible()
                 {
-                    return Err(error());
+                    solved.iam_not_finished(&location, file!(), line!());
                 }
-                // output_len need to be (input_len - truncate.lsb) or smaller
-                if let Some(max_bits) = input_len.get().max_bits() {
-                    modified |= output_len
-                        .update_action(|output_len| {
-                            output_len.set_max_bits(
-                                (max_bits.get() - truncate.lsb)
-                                    .try_into()
-                                    .unwrap(),
-                            )
+
+                input.solve(sleigh, variables, solved)?;
+            }
+            Self::Op(ExprUnaryOp {
+                location,
+                output_size,
+                op: Unary::TrunkLsb(bytes),
+                input,
+            }) => {
+                // input need to be (op_bytes + 1bit) or bigger
+                // +1 because the operation can't return 0 bits
+                let modified_result =
+                    input.size_mut(sleigh, variables).update_action(|x| {
+                        x.set_min_bits((*bytes * 8 + 1).try_into().unwrap())
+                    });
+                modified |= modified_result.ok_or_else(|| {
+                    VarSizeError::TrunkLsbTooSmall {
+                        lsb: *bytes,
+                        output: *output_size,
+                        input: input.size(sleigh, variables),
+                        location: input.src().clone(),
+                    }
+                })?;
+
+                // output size need to be equal to (input_size - op_bytes)
+                let input_size = input.size(sleigh, variables);
+                if let Some(max_bits) = input_size.max_bits() {
+                    let max_bits = max_bits.get() - *bytes * 8;
+                    modified |= output_size
+                        .update_action(|x| {
+                            x.set_max_bits(max_bits.try_into().unwrap())
                         })
-                        .ok_or_else(error)?;
+                        .ok_or_else(|| VarSizeError::TrunkLsbTooSmall {
+                            lsb: *bytes,
+                            output: *output_size,
+                            input: input.size(sleigh, variables),
+                            location: input.src().clone(),
+                        })?;
+                }
+                if let Some(min_bits) = input_size.min_bits() {
+                    let min_bits = min_bits.get() - *bytes * 8;
+                    modified |= output_size
+                        .update_action(|x| {
+                            x.set_min_bits(min_bits.try_into().unwrap())
+                        })
+                        .ok_or_else(|| VarSizeError::TrunkLsbTooSmall {
+                            lsb: *bytes,
+                            output: *output_size,
+                            input: input.size(sleigh, variables),
+                            location: input.src().clone(),
+                        })?;
                 }
 
                 // if the input or output len are not possible, we are not done
-                if !input_len.get().is_possible() || !output_len.is_possible() {
-                    solved.iam_not_finished(src, file!(), line!());
+                if !input.size(sleigh, variables).is_possible()
+                    || !output_size.is_possible()
+                {
+                    solved.iam_not_finished(&location, file!(), line!());
                 }
-                // try to solve the input with the new information
-                drop(input_len);
+
+                input.solve(sleigh, variables, solved)?;
+            }
+            Self::Op(ExprUnaryOp {
+                location,
+                output_size,
+                op: Unary::BitRange(bitrange),
+                input,
+            }) => {
+                // output size need to be equal or bigger then the binary range
+                let bits = (bitrange.end - bitrange.start).try_into().unwrap();
+                modified |= output_size
+                    .update_action(|x| x.set_min_bits(bits))
+                    .ok_or_else(|| VarSizeError::BitRangeTooBig {
+                        location: input.src().clone(),
+                        output: *output_size,
+                        bits,
+                    })?;
+
+                // input len need to be equal to bitrange.end or bigger
+                let modified_result =
+                    input.size_mut(sleigh, variables).update_action(|x| {
+                        x.set_min_bits(bitrange.end.try_into().unwrap())
+                    });
+                modified |= modified_result.ok_or_else(|| {
+                    VarSizeError::BitRangeInputSmall {
+                        location: input.src().clone(),
+                        input: input.size(sleigh, variables),
+                        bits,
+                    }
+                })?;
+
+                // if the input or output len are not possible, we are not done
+                if !input.size(sleigh, variables).is_possible()
+                    || !output_size.is_possible()
+                {
+                    solved.iam_not_finished(&location, file!(), line!());
+                }
+
                 input.solve(sleigh, variables, solved)?;
             }
             Self::DeReference(_, deref, value) => {
@@ -407,12 +517,17 @@ impl ExprElement {
                 }
                 //the input and output have the same number of bits
                 {
-                    let mut input_size = input.size_mut(sleigh, variables);
-                    modified |=
-                        restrict_field_same_size(&mut [&mut *input_size, size])
-                            .ok_or_else(|| {
-                                ExecutionError::VarSize(location.clone())
-                            })?;
+                    let modified_result = restrict_field_same_size(&mut [
+                        &mut *input.size_mut(sleigh, variables),
+                        size,
+                    ]);
+                    modified |= modified_result.ok_or_else(|| {
+                        VarSizeError::UnaryOpDiffSize {
+                            input: input.size(sleigh, variables),
+                            output: *size,
+                            location: location.clone(),
+                        }
+                    })?;
                 }
                 mark_unfinished_size!(
                     &input.size(sleigh, variables),
@@ -422,8 +537,8 @@ impl ExprElement {
                 input.solve(sleigh, variables, solved)?;
             }
             Self::Op(ExprUnaryOp {
-                location: src,
-                output_size: size,
+                location,
+                output_size,
                 op: Unary::Popcount | Unary::Lzcount,
                 input,
             }) => {
@@ -437,51 +552,64 @@ impl ExprElement {
                     if let Some(output_min) =
                         NumberNonZeroUnsigned::new(output_min.into())
                     {
-                        if size
+                        if output_size
                             .update_action(|size| {
                                 size.set_possible_min().set_min_bits(output_min)
                             })
                             .ok_or_else(|| {
-                                ExecutionError::VarSize(src.clone())
+                                VarSizeError::BitCountInvalidOutput {
+                                    location: location.clone(),
+                                    output: *output_size,
+                                    bits: output_min,
+                                }
                             })?
                         {
                             solved.i_did_a_thing();
                         }
                     }
                 }
-                mark_unfinished_size!(size, solved, src);
+                mark_unfinished_size!(output_size, solved, location);
                 input.solve(sleigh, variables, solved)?;
             }
 
             Self::Op(ExprUnaryOp {
-                location: src,
+                location,
                 output_size,
                 op: Unary::Zext | Unary::Sext,
-                input: value,
+                input,
             }) => {
-                let error = || ExecutionError::VarSize(src.clone());
                 //output size need to be bigger or eq to the value size
-                if let Some(min_bits) = value.size(sleigh, variables).min_bits()
+                if let Some(min_bits) = input.size(sleigh, variables).min_bits()
                 {
                     modified |= output_size
                         .update_action(|size| size.set_min_bits(min_bits))
-                        .ok_or_else(error)?;
+                        .ok_or_else(|| VarSizeError::ExtShrink {
+                            input: input.size(sleigh, variables),
+                            output: *output_size,
+                            location: location.clone(),
+                        })?;
                 }
                 //and vise-versa
                 if let Some(max_bits) = output_size.max_bits() {
-                    modified |= value
+                    let modified_result = input
                         .size_mut(sleigh, variables)
-                        .update_action(|size| size.set_max_bits(max_bits))
-                        .ok_or_else(error)?;
+                        .update_action(|size| size.set_max_bits(max_bits));
+                    modified |= modified_result.ok_or_else(|| {
+                        VarSizeError::ExtShrink {
+                            input: input.size(sleigh, variables),
+                            output: *output_size,
+                            location: location.clone(),
+                        }
+                    })?;
                 }
 
-                mark_unfinished_size!(output_size, solved, src);
+                mark_unfinished_size!(output_size, solved, location);
                 mark_unfinished_size!(
-                    &value.size(sleigh, variables),
+                    &input.size(sleigh, variables),
                     solved,
-                    src
+                    location
                 );
-                value.solve(sleigh, variables, solved)?;
+                input.solve(sleigh, variables, solved)?;
             }
             // NOTE don't confuse signed truncation with regular truncation
             // sleigh `trunc` function converts float into interger, both
@@ -538,7 +666,7 @@ impl ExprElement {
             Self::New(_) => todo!(),
             Self::CPool(_) => todo!(),
             ExprElement::Op(ExprUnaryOp {
-                op: Unary::Truncate(_) | Unary::Dereference(_),
+                op: Unary::Dereference(_),
                 ..
             }) => unreachable!(),
         }
@@ -562,14 +690,6 @@ impl ExprElement {
                     input: Box::new(value.convert()),
                 })
             }
-            Self::Truncate(src, truncate, value) => {
-                FinalExprElement::Op(FinalExprUnaryOp {
-                    location: src,
-                    output_bits: truncate.size.final_value().unwrap(),
-                    op: Unary::Truncate(truncate.convert()),
-                    input: Box::new(value.convert()),
-                })
-            }
             Self::Op(op) => FinalExprElement::Op(op.convert()),
             Self::UserCall(call) => FinalExprElement::UserCall(call.convert()),
             Self::New(new) => FinalExprElement::New(new.convert()),
@@ -585,7 +705,6 @@ impl ExprElement {
         match self {
             Self::Value(value) => value.size_mut(sleigh, variables),
             Self::DeReference(_, deref, _) => Box::new(&mut deref.size),
-            Self::Truncate(_, trunc, _) => Box::new(&mut trunc.size),
             Self::Reference(x) => Box::new(&mut x.len),
             Self::Op(x) => Box::new(&mut x.output_size),
             Self::UserCall(x) => Box::new(&mut x.output_size),
@@ -597,7 +716,6 @@ impl ExprElement {
         match self {
             Self::Value(value) => value.size(sleigh, variables),
             Self::DeReference(_, deref, _) => deref.size,
-            Self::Truncate(_, trunc, _) => trunc.size,
             Self::Reference(x) => x.len,
             Self::Op(x) => x.output_size,
             Self::UserCall(x) => x.output_size,
@@ -615,10 +733,7 @@ impl ExprValue {
     ) -> Self {
         match value {
             ReadScope::TokenField(id) => {
-                let token_field = sleigh.token_field(id);
-                let size = FieldSize::new_unsized()
-                    .set_min_bits(token_field.bits.len())
-                    .unwrap();
+                let size = sleigh.token_field(id).exec_value_len(sleigh);
                 Self::TokenField(ExprTokenField { location, size, id })
             }
             ReadScope::InstStart => Self::InstStart(ExprInstStart {
@@ -633,10 +748,7 @@ impl ExprValue {
                 Self::Varnode(ExprVarnode { location, id })
             }
             ReadScope::Context(id) => {
-                let context = sleigh.context(id);
-                let size = FieldSize::new_unsized()
-                    .set_min_bits(context.bitrange.bits.len())
-                    .unwrap();
+                let size = sleigh.context(id).exec_value_size(sleigh);
                 Self::Context(ExprContext { location, size, id })
             }
             ReadScope::Bitrange(id) => {
@@ -695,15 +807,11 @@ impl ExprValue {
         match self {
             Self::Int(x) => x.size,
             Self::DisVar(x) => x.size,
-            Self::Context(x) => {
-                sleigh.context(x.id).exec_out_value_bits(sleigh)
-            }
+            Self::Context(x) => x.size,
             Self::Bitrange(x) => {
                 FieldSize::new_bits(sleigh.bitrange(x.id).bits.len())
             }
-            Self::TokenField(x) => {
-                sleigh.token_field(x.id).exec_value_len(sleigh)
-            }
+            Self::TokenField(x) => x.size,
             Self::InstStart(_) | Self::InstNext(_) => sleigh
                 .addr_bytes()
                 .map(FieldSize::new_bytes)
@@ -936,11 +1044,11 @@ fn inner_expr_solve(
             )))))
         }
 
-        //convert some kinds of bit_and into bitrange if the value is a an
-        //bitrange starting from 0 (eg: 0b1 0b11 0b111 0b1111 0b11111 etc)
-        //and the output size is expected to reduce the size of the input
-        //using the bitwise op.
-        //eg: `reg0[0,1] = value & 1; reg1[0,2] = value & 3`
+        // HACK: convert some kinds of bit_and into bitrange if the value is a
+        // an bitrange starting from 0 (eg: 0b1 0b11 0b111 0b1111 0b11111 etc)
+        // and the output size is expected to reduce the size of the input
+        // using the bitwise op.
+        // eg: `reg0[0,1] = value & 1; reg1[0,2] = value & 3`
         (
             value,
             BitAnd,
@@ -977,21 +1085,19 @@ fn inner_expr_solve(
             solved.i_did_a_thing();
             solved.iam_not_finished(&op.location, file!(), line!());
             let size = op.output_size.final_value().unwrap();
-            Ok(Expr::Value(ExprElement::Truncate(
-                location,
-                Truncate::new(0, size),
-                Box::new(value),
+            Ok(Expr::Value(ExprElement::new_bitrange(
+                location, 0, size, value,
             )))
         }
 
-        //TODO create an error if the value is too big, and as_unsigned
-        //fails for now let the unwrap so we can detect if ghidra uses
-        //value > u64
+        // TODO create an error if the value is too big, and as_unsigned
+        // fails for now let the unwrap so we can detect if ghidra uses
+        // value > u64
 
-        //convert if the output bit size, if the left hand is a value with
-        //an defined bit size and the right side an integer, the output
-        //can be a bitrange truncate from the left.
-        //eg `value` is 8bits: `tmp = value >> 7; => tmp = value[7,1]`
+        // HACK: convert if the output bit size, if the left hand is a value
+        // with an defined bit size and the right side an integer, the output
+        // can be a bitrange truncate from the left.
+        // eg `value` is 8bits: `tmp = value >> 7; => tmp = value[7,1]`
         (
             value,
             Lsr,
@@ -1016,10 +1122,11 @@ fn inner_expr_solve(
             let size = op.output_size.final_value().unwrap();
             //take the value from self, and put on the new self
             //safe because the self is overwriten after
-            Ok(Expr::Value(Ele::Truncate(
+            Ok(Expr::Value(Ele::new_bitrange(
                 src.clone(),
-                Truncate::new(lsb.as_unsigned().unwrap(), size),
-                Box::new(value),
+                lsb.as_unsigned().unwrap(),
+                size,
+                value,
             )))
         }
 
@@ -1034,8 +1141,14 @@ fn inner_expr_solve(
             let restricted = restrict_field_same_size(&mut [
                 left.size_mut(sleigh, variables).as_dyn(),
                 output_size,
-            ])
-            .ok_or_else(|| ExecutionError::VarSize(op.location.clone()))?;
+            ]);
+            let restricted = restricted.ok_or_else(|| {
+                VarSizeError::ShiftLeftOutputDiff {
+                    left: left.size(sleigh, variables),
+                    output: op.output_size,
+                    location: left.src().clone(),
+                }
+            })?;
             if restricted {
                 solved.i_did_a_thing();
             }
@@ -1078,8 +1191,14 @@ fn inner_expr_solve(
                 left.size_mut(sleigh, variables).as_dyn(),
                 right.size_mut(sleigh, variables).as_dyn(),
                 &mut op.output_size,
-            ])
-            .ok_or_else(|| ExecutionError::VarSize(op.location.clone()))?;
+            ]);
+            let restricted =
+                restricted.ok_or_else(|| VarSizeError::TriBinaryOp {
+                    left: left.size(sleigh, variables),
+                    right: right.size(sleigh, variables),
+                    output: op.output_size,
+                    location: op.location.clone(),
+                })?;
             if restricted {
                 solved.i_did_a_thing();
             }
@@ -1121,8 +1240,13 @@ fn inner_expr_solve(
             let restricted = restrict_field_same_size(&mut [
                 left.size_mut(sleigh, variables).as_dyn(),
                 right.size_mut(sleigh, variables).as_dyn(),
-            ])
-            .ok_or_else(|| ExecutionError::VarSize(op.location.clone()))?;
+            ]);
+            let restricted =
+                restricted.ok_or_else(|| VarSizeError::BoolBinaryOp {
+                    left: left.size(sleigh, variables),
+                    right: right.size(sleigh, variables),
+                    location: op.location.clone(),
+                })?;
             if restricted {
                 solved.i_did_a_thing();
             }

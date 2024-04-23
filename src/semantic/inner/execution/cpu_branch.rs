@@ -2,6 +2,7 @@ use crate::semantic::execution::BranchCall;
 use crate::semantic::execution::CpuBranch as FinalCpuBranch;
 use crate::semantic::inner::{Sleigh, SolverStatus};
 use crate::ExecutionError;
+use crate::VarSizeError;
 
 use super::{Execution, Expr, Variable};
 
@@ -50,14 +51,16 @@ impl CpuBranch {
             }
         }
         //correlate the addr execution size and the jmp dest addr size
-        let error = Box::new(ExecutionError::VarSize(self.dst.src().clone()));
-        modified |= self
-            .dst
-            .size_mut(sleigh, variables)
-            .update_action(|size| {
+        let size_update_res =
+            self.dst.size_mut(sleigh, variables).update_action(|size| {
                 size.set_max_bytes(sleigh.addr_bytes().unwrap())
-            })
-            .ok_or(error)?;
+            });
+        modified |=
+            size_update_res.ok_or_else(|| VarSizeError::AddressTooBig {
+                address_size: self.dst.size(sleigh, variables),
+                space_bytes: sleigh.addr_bytes().unwrap(),
+                location: self.dst.src().clone(),
+            })?;
 
         self.dst.solve(sleigh, variables, solved)?;
         if self.dst.size(sleigh, variables).is_undefined() {

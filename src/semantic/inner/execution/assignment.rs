@@ -1,15 +1,22 @@
+use std::ops::Range;
+
 use crate::semantic::execution::{
-    Assignment as FinalAssignment, WriteValue, WriteVarnode,
+    Assignment as FinalAssignment, AssignmentOp as FinalAssignmentOp,
+    WriteValue, WriteVarnode,
 };
 use crate::semantic::inner::{Sleigh, SolverStatus};
-use crate::{ExecutionError, Span};
+use crate::{
+    ExecutionError, NumberNonZeroUnsigned, NumberUnsigned, Span, VarSizeError,
+};
 
-use super::{restrict_field_same_size, Expr, Truncate, Variable};
+use super::{
+    restrict_field_same_size, Expr, FieldSize, FieldSizeMut, Variable,
+};
 
 #[derive(Clone, Debug)]
 pub struct Assignment {
     pub var: WriteValue,
-    op: Option<Truncate>,
+    op: Option<AssignmentOp>,
     src: Span,
     pub right: Expr,
 }
@@ -17,7 +24,7 @@ pub struct Assignment {
 impl Assignment {
     pub fn new(
         var: WriteValue,
-        op: Option<Truncate>,
+        op: Option<AssignmentOp>,
         src: Span,
         right: Expr,
     ) -> Self {
@@ -34,8 +41,6 @@ impl Assignment {
         variables: &[Variable],
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
-        let error_src = self.right.src().clone();
-        let error = move || ExecutionError::VarSize(error_src);
         self.right.solve(sleigh, variables, solved)?;
 
         if hack_varnode_assignemnt_left_hand_truncation_implied(
@@ -48,21 +53,27 @@ impl Assignment {
         if let Some(trunc) = &mut self.op {
             let modified = restrict_field_same_size(&mut [
                 self.right.size_mut(sleigh, variables).as_dyn(),
-                trunc.output_size_mut(),
-            ])
-            .ok_or_else(error)?;
+                trunc.output_size_mut().as_dyn(),
+            ]);
 
-            if modified {
+            if modified.ok_or_else(|| VarSizeError::AssignmentSides {
+                left: trunc.output_size(),
+                right: self.right.size(sleigh, variables),
+                location: self.src.clone(),
+            })? {
                 solved.i_did_a_thing()
             }
         } else {
             let modified = restrict_field_same_size(&mut [
                 &mut *self.right.size_mut(sleigh, variables),
                 &mut *self.var.size_mut(sleigh, variables),
-            ])
-            .ok_or_else(error)?;
+            ]);
 
-            if modified {
+            if modified.ok_or_else(|| VarSizeError::AssignmentSides {
+                left: self.var.size(sleigh, variables),
+                right: self.right.size(sleigh, variables),
+                location: self.src.clone(),
+            })? {
                 solved.i_did_a_thing()
             }
 
@@ -93,6 +104,57 @@ impl Assignment {
             var: self.var,
             op: self.op.map(|op| op.convert()),
             right: self.right.convert(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum AssignmentOp {
+    TakeLsb(NumberNonZeroUnsigned),
+    TrunkLsb {
+        bytes: NumberUnsigned,
+        output_size: FieldSize,
+    },
+    BitRange(Range<NumberUnsigned>),
+}
+
+impl AssignmentOp {
+    pub fn output_size_mut(&mut self) -> Box<dyn FieldSizeMut + '_> {
+        match self {
+            AssignmentOp::TakeLsb(bytes) => Box::new(FieldSize::from(
+                FieldSize::Value((bytes.get() * 8).try_into().unwrap()),
+            )),
+            AssignmentOp::TrunkLsb {
+                bytes: _,
+                output_size,
+            } => Box::new(output_size),
+            AssignmentOp::BitRange(bits) => Box::new(FieldSize::Value(
+                (bits.end - bits.start).try_into().unwrap(),
+            )),
+        }
+    }
+    pub fn output_size(&mut self) -> FieldSize {
+        match self {
+            AssignmentOp::TakeLsb(bytes) => {
+                FieldSize::Value((bytes.get() * 8).try_into().unwrap())
+            }
+            AssignmentOp::TrunkLsb {
+                bytes: _,
+                output_size,
+            } => *output_size,
+            AssignmentOp::BitRange(bits) => {
+                FieldSize::Value((bits.end - bits.start).try_into().unwrap())
+            }
+        }
+    }
+    pub fn convert(self) -> FinalAssignmentOp {
+        match self {
+            AssignmentOp::TakeLsb(x) => FinalAssignmentOp::TakeLsb(x),
+            AssignmentOp::TrunkLsb {
+                bytes,
+                output_size: _,
+            } => FinalAssignmentOp::TrunkLsb(bytes),
+            AssignmentOp::BitRange(x) => FinalAssignmentOp::BitRange(x),
         }
     }
 }
@@ -130,6 +192,6 @@ fn hack_varnode_assignemnt_left_hand_truncation_implied(
     // NOTE this could also be solved by adding a zext to the right side, but
     // it seems that a left hand truncation is implied because this only happens
     // if the rest of the varnode is not important.
-    ass.op = Some(Truncate::new(0, right_size));
+    ass.op = Some(AssignmentOp::BitRange(0..right_size.get()));
     true
 }

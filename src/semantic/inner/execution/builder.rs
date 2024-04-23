@@ -9,14 +9,14 @@ use crate::semantic::inner::Sleigh;
 use crate::semantic::{GlobalScope, InstNext, InstStart, SpaceId, TableId};
 use crate::{
     disassembly, syntax, BitrangeId, ContextId, Number, NumberNonZeroUnsigned,
-    NumberUnsigned, Span, TokenFieldId, VarnodeId,
+    NumberUnsigned, Span, TokenFieldId, VarSizeError, VarnodeId,
 };
 
 use super::{
-    Assignment, BranchCall, CpuBranch, Execution, ExecutionError, Export,
-    ExportLen, Expr, ExprCPool, ExprDisVar, ExprElement, ExprNew, ExprValue,
-    FieldSize, LocalGoto, MacroCall, MemWrite, MemoryLocation, Reference,
-    Statement, Truncate, UserCall,
+    Assignment, AssignmentOp, BranchCall, CpuBranch, Execution, ExecutionError,
+    Export, ExportLen, Expr, ExprCPool, ExprDisVar, ExprElement, ExprNew,
+    ExprValue, FieldSize, LocalGoto, MacroCall, MemWrite, MemoryLocation,
+    Reference, Statement, UserCall,
 };
 
 #[derive(Clone, Debug)]
@@ -324,7 +324,7 @@ pub trait ExecutionBuilder {
                 )))
             }
             GlobalScope::PcodeMacro(x) => {
-                Ok(Statement::MacroCall(MacroCall::new(params, x)))
+                Ok(Statement::MacroCall(MacroCall::new(params, x, input.src)))
             }
             _ => Err(Box::new(ExecutionError::InvalidRef(input.src))),
         }
@@ -411,9 +411,10 @@ pub trait ExecutionBuilder {
                     location: input.src.clone(),
                     id: var,
                 });
+                // TODO move this into solve?
                 // value can't be bigger then the varnode, although it can be
                 // smaller
-                right
+                let result = right
                     .size_mut(self.sleigh(), &self.execution().vars)
                     .update_action(|size| {
                         size.set_max_bytes(var_ele.len_bytes)
@@ -422,9 +423,13 @@ pub trait ExecutionBuilder {
                                 size.set_possible_bytes(var_ele.len_bytes)
                                     .unwrap_or(size)
                             })
-                    })
-                    .ok_or_else(|| {
-                        ExecutionError::VarSize(input.src.clone())
+                    });
+                let _ =
+                    result.ok_or_else(|| VarSizeError::AssignmentSides {
+                        left: FieldSize::Value(var_ele.len_bytes),
+                        right: right
+                            .size(self.sleigh(), &self.execution().vars),
+                        location: input.src.clone(),
                     })?;
                 Ok(Statement::Assignment(Assignment::new(
                     addr, op, input.src, right,
@@ -460,7 +465,7 @@ pub trait ExecutionBuilder {
     fn new_truncate(
         &self,
         input: syntax::block::execution::assignment::OpLeft,
-    ) -> Result<Truncate, Box<ExecutionError>> {
+    ) -> Result<AssignmentOp, Box<ExecutionError>> {
         use syntax::block::execution::assignment::OpLeft;
         //TODO genertic error here
         let error = Box::new(ExecutionError::BitRangeZero);
@@ -468,13 +473,16 @@ pub trait ExecutionBuilder {
             OpLeft::BitRange(range) => {
                 let size =
                     NumberNonZeroUnsigned::new(range.n_bits).ok_or(error)?;
-                Truncate::new(range.lsb_bit, size)
+                AssignmentOp::BitRange(
+                    range.lsb_bit..range.lsb_bit + size.get(),
+                )
             }
-            OpLeft::ByteRangeMsb(msb) => Truncate::new_msb(msb.value),
+            OpLeft::ByteRangeMsb(msb) => AssignmentOp::TrunkLsb {
+                bytes: msb.value,
+                output_size: FieldSize::default(),
+            },
             OpLeft::ByteRangeLsb(lsb) => {
-                let size =
-                    NumberNonZeroUnsigned::new(lsb.value).ok_or(error)?;
-                Truncate::new_lsb(size)
+                AssignmentOp::TakeLsb(lsb.value.try_into().unwrap())
             }
         };
         Ok(ass)
@@ -597,9 +605,9 @@ pub trait ExecutionBuilder {
                         param_src.clone(),
                         value,
                     );
-                    Ok(ExprElement::new_truncate(
+                    Ok(ExprElement::new_trunk_lsb(
                         param_src,
-                        Truncate::new_msb(param),
+                        param,
                         Expr::Value(ExprElement::Value(value)),
                     ))
                 } else {
@@ -658,11 +666,7 @@ pub trait ExecutionBuilder {
             |x: NumberUnsigned| NumberNonZeroUnsigned::new(x).ok_or_else(||Box::new(ExecutionError::BitRangeZero));
         let op = match input {
             Op::ByteRangeMsb(x) => {
-                return Ok(ExprElement::Truncate(
-                    src,
-                    Truncate::new_msb(x.value),
-                    Box::new(expr),
-                ))
+                return Ok(ExprElement::new_trunk_lsb(src, x.value, expr))
             }
             Op::ByteRangeLsb(x) => match expr {
                 //NOTE, Lsb on and Int/DisassemblyVar just set the len
@@ -705,18 +709,19 @@ pub trait ExecutionBuilder {
                     )));
                 }
                 _ => {
-                    return Ok(ExprElement::Truncate(
+                    return Ok(ExprElement::new_take_lsb(
                         src,
-                        Truncate::new_lsb(to_nonzero(x.value)?),
-                        Box::new(expr),
+                        to_nonzero(x.value)?,
+                        expr,
                     ));
                 }
             },
             Op::BitRange(range) => {
-                return Ok(ExprElement::Truncate(
+                return Ok(ExprElement::new_bitrange(
                     src,
-                    Truncate::new(range.lsb_bit, to_nonzero(range.n_bits)?),
-                    Box::new(expr),
+                    range.lsb_bit,
+                    to_nonzero(range.n_bits)?,
+                    expr,
                 ))
             }
             Op::Dereference(x) => {
@@ -800,10 +805,10 @@ fn reference_scope(
                     data: InstStart,
                 }));
             if let Some(ref_bytes) = ref_bytes {
-                Ok(ExprElement::Truncate(
+                Ok(ExprElement::new_take_lsb(
                     src,
-                    Truncate::new_lsb(ref_bytes),
-                    Box::new(Expr::Value(element)),
+                    ref_bytes,
+                    Expr::Value(element),
                 ))
             } else {
                 Ok(element)
@@ -816,10 +821,10 @@ fn reference_scope(
                     data: InstNext,
                 }));
             if let Some(ref_bytes) = ref_bytes {
-                Ok(ExprElement::Truncate(
+                Ok(ExprElement::new_take_lsb(
                     src,
-                    Truncate::new_lsb(ref_bytes),
-                    Box::new(Expr::Value(element)),
+                    ref_bytes,
+                    Expr::Value(element),
                 ))
             } else {
                 Ok(element)

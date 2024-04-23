@@ -8,9 +8,7 @@ pub struct UserFunction {
 
 impl UserFunction {
     pub(crate) fn new(name: Box<str>, location: Span) -> Self {
-        Self {
-            name, location
-        }
+        Self { name, location }
     }
     pub fn name(&self) -> &str {
         &self.name

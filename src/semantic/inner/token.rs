@@ -16,6 +16,7 @@ pub struct TokenField {
     pub print_flags: PrintFlags,
     pub attach: Option<TokenFieldAttach>,
 }
+
 impl std::fmt::Debug for TokenField {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "TokenField bit_range: ({:?})", self.bits,)
@@ -51,11 +52,12 @@ impl TokenField {
         Ok(())
     }
 
+    #[deprecated]
     pub fn exec_value_len(&self, sleigh: &Sleigh) -> FieldSize {
         // return the meaning len, or if not meaning len, the raw field len
         match self.attach {
             // is only created after the finalization if attach is None
-            Some(TokenFieldAttach::NoAttach(_)) => unreachable!(),
+            Some(TokenFieldAttach::NoAttach(_)) |
             // does not affect the token_field len
             Some(TokenFieldAttach::Literal(_)) | None => {
                 FieldSize::default().set_min_bits(self.bits.len()).unwrap()
