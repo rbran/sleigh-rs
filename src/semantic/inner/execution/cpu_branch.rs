@@ -43,33 +43,24 @@ impl CpuBranch {
         variables: &[Variable],
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
-        let mut modified = false;
         if let Some(cond) = self.cond.as_mut() {
             cond.solve(sleigh, variables, solved)?;
-            if cond.size(sleigh, variables).is_undefined() {
-                solved.iam_not_finished(cond.src(), file!(), line!());
-            }
         }
-        //correlate the addr execution size and the jmp dest addr size
-        let size_update_res =
+        // jmp dst addr can be equal or smaller then space address size
+        let modified =
             self.dst.size_mut(sleigh, variables).update_action(|size| {
                 size.set_max_bytes(sleigh.addr_bytes().unwrap())
             });
-        modified |=
-            size_update_res.ok_or_else(|| VarSizeError::AddressTooBig {
-                address_size: self.dst.size(sleigh, variables),
-                space_bytes: sleigh.addr_bytes().unwrap(),
-                location: self.dst.src().clone(),
-            })?;
 
-        self.dst.solve(sleigh, variables, solved)?;
-        if self.dst.size(sleigh, variables).is_undefined() {
-            solved.iam_not_finished(self.dst.src(), file!(), line!());
-        }
-
-        if modified {
+        if modified.ok_or_else(|| VarSizeError::AddressTooBig {
+            address_size: self.dst.size(sleigh, variables),
+            space_bytes: sleigh.addr_bytes().unwrap(),
+            location: self.dst.src().clone(),
+        })? {
             solved.i_did_a_thing();
         }
+
+        self.dst.solve(sleigh, variables, solved)?;
         Ok(())
     }
     pub fn convert(self) -> FinalCpuBranch {

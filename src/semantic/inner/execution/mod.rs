@@ -116,14 +116,11 @@ impl Execution {
             entry_block: BlockId(0),
         }
     }
-    pub fn solve<T>(
+    pub fn solve<T: SolverStatus>(
         &mut self,
         sleigh: &Sleigh,
         solved: &mut T,
-    ) -> Result<(), Box<ExecutionError>>
-    where
-        T: SolverStatus + Default,
-    {
+    ) -> Result<(), Box<ExecutionError>> {
         self.blocks
             .iter_mut()
             .try_for_each(|block| block.solve(sleigh, &self.vars, solved))?;

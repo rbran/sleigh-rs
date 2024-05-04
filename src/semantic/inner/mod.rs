@@ -87,7 +87,7 @@ impl From<PrintFlags> for ValueFmt {
     }
 }
 
-pub trait SolverStatus {
+pub trait SolverStatus: Default {
     fn iam_not_finished(
         &mut self,
         location: &Span,

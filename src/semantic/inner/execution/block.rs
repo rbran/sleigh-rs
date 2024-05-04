@@ -24,19 +24,17 @@ impl Block {
         }
     }
 
-    pub fn solve<T>(
+    pub fn solve<T: SolverStatus>(
         &mut self,
         sleigh: &Sleigh,
         variables: &[Variable],
         solved: &mut T,
-    ) -> Result<(), Box<ExecutionError>>
-    where
-        T: SolverStatus + Default,
-    {
+    ) -> Result<(), Box<ExecutionError>> {
         self.statements.iter_mut().try_for_each(|statements| {
             statements.solve(sleigh, variables, solved)
         })
     }
+
     pub fn convert(self) -> FinalBlock {
         let statements = self
             .statements

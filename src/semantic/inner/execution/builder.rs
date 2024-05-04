@@ -324,7 +324,10 @@ pub trait ExecutionBuilder {
                 )))
             }
             GlobalScope::PcodeMacro(x) => {
-                Ok(Statement::MacroCall(MacroCall::new(params, x, input.src)))
+                let pmacro = self.sleigh().pcode_macro(x);
+                Ok(Statement::MacroCall(MacroCall::new(
+                    params, x, pmacro, input.src,
+                )))
             }
             _ => Err(Box::new(ExecutionError::InvalidRef(input.src))),
         }
@@ -379,8 +382,7 @@ pub trait ExecutionBuilder {
                         syntax::block::execution::assignment::OpLeft::ByteRangeLsb(x),
                     ) => {
                         let new_len = new_var.size.get().set_final_value(
-                                NumberNonZeroUnsigned::new(x.value * 8)
-                                    .unwrap(),
+                                (x.value * 8).try_into().unwrap(),
                             )
                             .unwrap();
                         new_var.size.set(new_len);
@@ -686,7 +688,8 @@ pub trait ExecutionBuilder {
                                     NumberNonZeroUnsigned::new(x.value)
                                         .unwrap(),
                                 ))
-                                .unwrap(),
+                                .unwrap()
+                                .set_possible_min(),
                             number: value,
                         },
                     )));

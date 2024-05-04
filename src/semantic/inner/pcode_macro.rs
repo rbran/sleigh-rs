@@ -3,7 +3,6 @@ use std::cell::RefCell;
 use crate::semantic::execution::{BlockId, Build};
 use crate::semantic::pcode_macro::{
     Parameter, PcodeMacro as FinalPcodeMacro,
-    PcodeMacroCallId as FinalPcodeMacroCallId,
     PcodeMacroInstance as FinalPcodeMacroInstance, PcodeMacroInstanceId,
 };
 use crate::semantic::{GlobalScope, PcodeMacroId};
@@ -16,10 +15,10 @@ use super::execution::{Execution, ExecutionBuilder, ReadScope, WriteScope};
 use super::pattern::Pattern;
 use super::{Sleigh, SolverStatus};
 
-#[derive(Debug, Clone, Copy)]
-pub struct PcodeMacroCallId {
-    pub macro_id: PcodeMacroId,
-    pub instance_id: Option<PcodeMacroInstanceId>,
+#[derive(Debug, Clone)]
+pub struct PcodeMacroTmpInst {
+    pub params: Vec<Parameter>,
+    pub execution: Execution,
 }
 
 #[derive(Debug, Clone)]
@@ -46,13 +45,18 @@ impl PcodeMacroInstance {
     }
     pub fn solve<T>(
         &mut self,
-        sleigh: &Sleigh,
-        solved: &mut T,
+        _sleigh: &Sleigh,
+        _solved: &mut T,
     ) -> Result<(), Box<ExecutionError>>
     where
         T: SolverStatus + Default,
     {
-        self.execution.solve(sleigh, solved)
+        // TODO improve that, create a step to solve macros, only then try solve
+        // tables that call those macros using tmp instances.
+        // Don't need to solve the macro, it's just used to create tmp instances
+        // solve that instead
+        //self.execution.solve(sleigh, solved)
+        Ok(())
     }
     pub fn convert(self) -> FinalPcodeMacroInstance {
         FinalPcodeMacroInstance {
@@ -67,7 +71,7 @@ pub struct PcodeMacro {
     pub name: String,
     pub params: Vec<Parameter>,
     pub execution: Execution,
-    instances: RefCell<Vec<PcodeMacroInstance>>,
+    pub(crate) instances: RefCell<Vec<PcodeMacroInstance>>,
     pub location: Span,
     //TODO: export macro is a thing?
 }
@@ -88,8 +92,16 @@ impl PcodeMacro {
         }
     }
 
+    pub fn tmp_inst(&self) -> PcodeMacroTmpInst {
+        // create a new instance
+        let execution = self.execution.clone();
+        let params = self.params.clone();
+        PcodeMacroTmpInst { execution, params }
+    }
+
     pub fn specialize(
         &self,
+        tmp_inst: PcodeMacroTmpInst,
         param_sizes: &[NumberNonZeroUnsigned],
     ) -> Result<PcodeMacroInstanceId, Box<PcodeMacroError>> {
         //check if this instance already exists
@@ -102,7 +114,7 @@ impl PcodeMacro {
             return Ok(PcodeMacroInstanceId(id));
         }
         // create a new instance
-        let mut execution = self.execution.clone();
+        let mut execution = tmp_inst.execution;
         let params = self.params.clone();
         //update the size of variables associated with params
         for (param, size) in params.iter().zip(param_sizes) {
@@ -298,14 +310,5 @@ impl Sleigh {
             .insert(pcode.name, GlobalScope::PcodeMacro(pcode_macro_id))
             .map(|_| Err(Box::new(SleighError::NameDuplicated)))
             .unwrap_or(Ok(()))
-    }
-}
-
-impl PcodeMacroCallId {
-    pub fn convert(self) -> FinalPcodeMacroCallId {
-        FinalPcodeMacroCallId {
-            macro_id: self.macro_id,
-            instance_id: self.instance_id.unwrap(),
-        }
     }
 }

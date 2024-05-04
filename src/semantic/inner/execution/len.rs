@@ -70,37 +70,22 @@ impl RangeBounds<NumberNonZeroUnsigned> for FieldRange {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum FieldAuto {
-    None,
-    Min,
-    Value(NumberNonZeroUnsigned),
-}
-impl FieldAuto {
-    fn in_range(self, range: &FieldRange) -> Self {
-        match &self {
-            Self::None | Self::Min => self,
-            Self::Value(value) if range.contains(value) => self,
-            Self::Value(_) => Self::None,
-        }
-    }
-}
-
-pub const FIELD_SIZE_BOOL: FieldSize = FieldSize::Unsized {
-    range: FieldRange {
-        min: Some(unsafe { NumberNonZeroUnsigned::new_unchecked(1) }),
-        max: None,
-    },
-    possible: FieldAuto::Min,
-};
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum FieldSize {
     Unsized {
         range: FieldRange,
-        possible: FieldAuto,
+        possible_min: bool,
+        possible_value: Option<NumberNonZeroUnsigned>,
     },
     Value(NumberNonZeroUnsigned),
 }
+
 impl FieldSize {
+    pub fn new_bool() -> Self {
+        Self::default()
+            .set_min_bits(1.try_into().unwrap())
+            .unwrap()
+            .set_possible_min()
+    }
     pub fn new_bits(bits: NumberNonZeroUnsigned) -> Self {
         Self::Value(bits)
     }
@@ -113,20 +98,50 @@ impl FieldSize {
     pub fn new_unsized() -> Self {
         Self::Unsized {
             range: FieldRange::new_unsize(),
-            possible: FieldAuto::None,
+            possible_min: false,
+            possible_value: None,
         }
     }
-    pub fn is_undefined(&self) -> bool {
+    pub fn is_unrestricted(&self) -> bool {
         matches!(
             self,
             Self::Unsized {
-                possible: FieldAuto::None,
+                range: FieldRange {
+                    min: None,
+                    max: None
+                },
                 ..
             }
         )
     }
+    pub fn is_undefined(&self) -> bool {
+        !self.is_possible()
+    }
+    pub fn is_fully_undefined(&self) -> bool {
+        matches!(
+            self,
+            Self::Unsized {
+                possible_min: _,
+                possible_value: None,
+                range: FieldRange {
+                    min: None,
+                    max: None
+                }
+            }
+        )
+    }
     pub fn is_possible(&self) -> bool {
-        !self.is_undefined()
+        matches!(
+            self,
+            Self::Unsized {
+                possible_value: Some(_),
+                ..
+            } | Self::Unsized {
+                range: FieldRange { min: Some(_), .. },
+                possible_min: true,
+                ..
+            } | Self::Value(_)
+        )
     }
     pub fn is_final(&self) -> bool {
         self.final_value().is_some()
@@ -173,13 +188,22 @@ impl FieldSize {
     pub fn set_min_bits(self, min: NumberNonZeroUnsigned) -> Option<Self> {
         match self {
             Self::Value(value) => (min <= value).then_some(self),
-            Self::Unsized { range, possible } => {
+            Self::Unsized {
+                range,
+                possible_value,
+                possible_min,
+            } => {
                 let range = range.set_min(min)?;
                 if let Some(value) = range.single_value() {
                     return Some(Self::Value(value));
                 }
-                let possible = possible.in_range(&range);
-                Some(Self::Unsized { range, possible })
+                let possible_value =
+                    possible_value.filter(|value| range.contains(&value));
+                Some(Self::Unsized {
+                    range,
+                    possible_min,
+                    possible_value,
+                })
             }
         }
     }
@@ -196,13 +220,22 @@ impl FieldSize {
     pub fn set_max_bits(self, max: NumberNonZeroUnsigned) -> Option<Self> {
         match self {
             Self::Value(value) => (max >= value).then_some(self),
-            Self::Unsized { range, possible } => {
+            Self::Unsized {
+                range,
+                possible_min,
+                possible_value,
+            } => {
                 let range = range.set_max(max)?;
                 if let Some(value) = range.single_value() {
                     return Some(Self::Value(value));
                 }
-                let possible = possible.in_range(&range);
-                Some(Self::Unsized { range, possible })
+                let possible_value =
+                    possible_value.filter(|value| range.contains(&value));
+                Some(Self::Unsized {
+                    range,
+                    possible_value,
+                    possible_min,
+                })
             }
         }
     }
@@ -210,38 +243,25 @@ impl FieldSize {
         match self {
             Self::Value(value) => Some(*value),
             Self::Unsized {
-                possible: FieldAuto::Value(value),
+                possible_value: Some(value),
                 ..
             } => Some(*value),
             Self::Unsized {
-                possible: FieldAuto::Min,
-                ..
+                possible_min: true, ..
             } => self.min_bits(),
-            Self::Unsized {
-                possible: FieldAuto::None,
-                ..
-            } => None,
+            Self::Unsized { .. } => None,
         }
     }
     pub fn possible_min(&self) -> bool {
-        matches!(
-            self,
-            Self::Unsized {
-                possible: FieldAuto::Min,
-                ..
-            }
-        )
+        match self {
+            Self::Value(_) => false,
+            Self::Unsized { possible_min, .. } => *possible_min,
+        }
     }
     pub fn set_possible_min(mut self) -> Self {
-        match self {
-            Self::Value(_)
-            | Self::Unsized {
-                possible: FieldAuto::Value(_),
-                ..
-            } => {}
-            Self::Unsized {
-                ref mut possible, ..
-            } => *possible = FieldAuto::Min,
+        match &mut self {
+            Self::Value(_) => {}
+            Self::Unsized { possible_min, .. } => *possible_min = true,
         }
         self
     }
@@ -259,9 +279,10 @@ impl FieldSize {
         match self {
             Self::Unsized { range, .. } if !range.contains(&pos_bits) => None,
             Self::Unsized {
-                ref mut possible, ..
+                ref mut possible_value,
+                ..
             } => {
-                *possible = FieldAuto::Value(pos_bits);
+                *possible_value = Some(pos_bits);
                 Some(self)
             }
             Self::Value(value) => (value == pos_bits).then_some(self),
@@ -282,21 +303,6 @@ impl Default for FieldSize {
     fn default() -> Self {
         Self::new_unsized()
     }
-}
-
-pub fn restrict_field_same_size(
-    fields: &mut [&mut dyn FieldSizeMut],
-) -> Option<bool> {
-    let final_len = fields
-        .iter_mut()
-        .map(|x| x.get())
-        .try_fold(FieldSize::default(), |me, new_len| {
-            me.intersection(new_len)
-        })?;
-    fields
-        .iter_mut()
-        .map(|size_mut| size_mut.set(final_len))
-        .try_fold(false, |acc, x| Some(acc | x?))
 }
 
 //TODO make it a enum, that is better
@@ -365,4 +371,190 @@ impl From<FieldSize> for FieldSizeUnmutable {
     fn from(input: FieldSize) -> Self {
         Self(input)
     }
+}
+
+fn intersect_all(fields: &mut [&mut dyn FieldSizeMut]) -> Option<bool> {
+    let final_len = fields
+        .iter_mut()
+        .map(|x| x.get())
+        .try_fold(FieldSize::default(), |me, new_len| {
+            me.intersection(new_len)
+        })?;
+    // update all the fields with the final size
+    fields
+        .iter_mut()
+        .map(|size_mut| {
+            size_mut
+                .get()
+                .intersection(final_len)
+                .map(|s| size_mut.set(s))
+                .flatten()
+        })
+        .try_fold(false, |acc, x| Some(acc | x?))
+}
+
+fn set_possible(
+    x: &mut dyn FieldSizeMut,
+    possible_min: bool,
+    possible_value: Option<NumberNonZeroUnsigned>,
+) -> Option<bool> {
+    if !possible_min && possible_value.is_none() {
+        return Some(false);
+    }
+    x.update_action(|mut x| {
+        if possible_min {
+            x = x.set_possible_min();
+        }
+        if let Some(value) = possible_value {
+            x = x.set_possible_bits(value)?;
+        }
+        Some(x)
+    })
+}
+
+/// comparison between a and b
+pub fn a_cmp_b(
+    a: &mut dyn FieldSizeMut,
+    b: &mut dyn FieldSizeMut,
+) -> Option<bool> {
+    let mut modified = false;
+    // a and b have the same size
+    modified |= intersect_all(&mut [a, b])?;
+
+    // TODO both should have the same possible value?
+
+    Some(modified)
+}
+
+/// a and b are the same value
+pub fn a_equivalent_b(
+    a: &mut dyn FieldSizeMut,
+    b: &mut dyn FieldSizeMut,
+) -> Option<bool> {
+    let mut modified = false;
+    // a and b have the same size
+    modified |= intersect_all(&mut [a, b])?;
+
+    let a_value = a.get();
+    let b_value = b.get();
+    // if one is possible min, both are
+    let possible_min = a_value.possible_min() | b_value.possible_min();
+
+    let possible_value = match (a_value.possible_value(), b_value.possible_value()) {
+        (None, None) => None,
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (Some(a), Some(b)) if a== b => Some(a),
+        (Some(_a), Some(_b)) /*if _a != _b*/ => None,
+    };
+
+    modified |= set_possible(a, possible_min, possible_value).unwrap();
+    modified |= set_possible(b, possible_min, possible_value).unwrap();
+
+    Some(modified)
+}
+
+/// value b is put into a, AKA a = b;
+pub fn a_receive_b(
+    a: &mut dyn FieldSizeMut,
+    b: &mut dyn FieldSizeMut,
+) -> Option<bool> {
+    let mut modified = false;
+
+    // if a size is unrestructed and no possible value is set, use b
+    if a.get().is_fully_undefined() {
+        modified |= a.set(b.get())?;
+    } else {
+        // a and b have the same size
+        modified |= intersect_all(&mut [a, b])?;
+    }
+
+    Some(modified)
+}
+
+/// a operation that result into b, don't change size
+pub fn a_generate_b(
+    a: &mut dyn FieldSizeMut,
+    b: &mut dyn FieldSizeMut,
+) -> Option<bool> {
+    let mut modified = false;
+    // both have the same size
+    modified |= intersect_all(&mut [a, b])?;
+
+    // any possible value that a have, b will also have
+    if let FieldSize::Unsized {
+        range: _,
+        possible_min,
+        possible_value,
+    } = a.get()
+    {
+        modified |= b
+            .update_action(|mut x| {
+                if possible_min {
+                    x = x.set_possible_min();
+                }
+                if let Some(value) = possible_value {
+                    // NOTE same value will always be possible
+                    x = x.set_possible_bits(value).unwrap();
+                }
+                Some(x)
+            })
+            .unwrap();
+    }
+
+    Some(modified)
+}
+
+/// a extend into b
+pub fn a_extend_b(
+    a: &mut dyn FieldSizeMut,
+    b: &mut dyn FieldSizeMut,
+) -> Option<bool> {
+    let mut modified = false;
+    // a need to be smaller or equal to b
+    if let Some(max_bits) = b.get().max_bits() {
+        modified |= a.set(a.get().set_max_bits(max_bits)?)?;
+    }
+
+    // b need to be smaller or equal to a
+    if let Some(min_bits) = b.get().min_bits() {
+        modified |= b.set(b.get().set_min_bits(min_bits)?)?;
+    }
+
+    Some(modified)
+}
+
+/// operation with a and b, outputing c
+pub fn a_b_generate_c(
+    a: &mut dyn FieldSizeMut,
+    b: &mut dyn FieldSizeMut,
+    c: &mut dyn FieldSizeMut,
+) -> Option<bool> {
+    let mut modified = false;
+    // both have the same size
+    modified |= intersect_all(&mut [a, b, c])?;
+
+    let a_value = a.get();
+    let b_value = b.get();
+    let c_value = c.get();
+    //TODO is that really right?
+    match c_value {
+        // any possible value that c have, a and b will also have
+        FieldSize::Unsized {
+            range: _,
+            possible_min,
+            possible_value,
+        } if possible_min || possible_value.is_some() => {
+            modified |= set_possible(a, possible_min, possible_value).unwrap();
+            modified |= set_possible(b, possible_min, possible_value).unwrap();
+        }
+        // if c un fully undefined, get the possible values from a and b
+        _ if c_value.is_undefined() => {
+            if a_value.possible_min() && b_value.possible_min() {
+                c.update_action(|c| Some(c.set_possible_min())).unwrap();
+            }
+        }
+        _ => {}
+    }
+
+    Some(modified)
 }

@@ -9,9 +9,7 @@ use crate::{
     ExecutionError, NumberNonZeroUnsigned, NumberUnsigned, Span, VarSizeError,
 };
 
-use super::{
-    restrict_field_same_size, Expr, FieldSize, FieldSizeMut, Variable,
-};
+use super::{len, Expr, FieldSize, FieldSizeMut, Variable};
 
 #[derive(Clone, Debug)]
 pub struct Assignment {
@@ -43,51 +41,30 @@ impl Assignment {
     ) -> Result<(), Box<ExecutionError>> {
         self.right.solve(sleigh, variables, solved)?;
 
+        // identify the implicity truncation for varnodes
         if hack_varnode_assignemnt_left_hand_truncation_implied(
             self, sleigh, variables,
         ) {
             solved.i_did_a_thing();
         }
 
-        //left and right sizes are the same
-        if let Some(trunc) = &mut self.op {
-            let modified = restrict_field_same_size(&mut [
-                self.right.size_mut(sleigh, variables).as_dyn(),
-                trunc.output_size_mut().as_dyn(),
-            ]);
+        // TODO check left size can be truncated correctly
 
-            if modified.ok_or_else(|| VarSizeError::AssignmentSides {
-                left: trunc.output_size(),
-                right: self.right.size(sleigh, variables),
-                location: self.src.clone(),
-            })? {
-                solved.i_did_a_thing()
-            }
-        } else {
-            let modified = restrict_field_same_size(&mut [
-                &mut *self.right.size_mut(sleigh, variables),
-                &mut *self.var.size_mut(sleigh, variables),
-            ]);
-
-            if modified.ok_or_else(|| VarSizeError::AssignmentSides {
-                left: self.var.size(sleigh, variables),
-                right: self.right.size(sleigh, variables),
-                location: self.src.clone(),
-            })? {
-                solved.i_did_a_thing()
-            }
-
-            //if right size is possible min, so does left if size is not defined
-            if self.var.size(sleigh, variables).is_undefined()
-                && self.right.size(sleigh, variables).possible_min()
-                && self
-                    .var
-                    .size_mut(sleigh, variables)
-                    .update_action(|size| Some(size.set_possible_min()))
-                    .unwrap()
-            {
-                solved.i_did_a_thing();
-            }
+        // left and right sizes are the same
+        let modified = len::a_receive_b(
+            self.op
+                .as_mut()
+                .map(|trunc| trunc.output_size_mut())
+                .unwrap_or_else(|| self.var.size_mut(sleigh, variables))
+                .as_dyn(),
+            self.right.size_mut(sleigh, variables).as_dyn(),
+        );
+        if modified.ok_or_else(|| VarSizeError::AssignmentSides {
+            left: self.var.size(sleigh, variables),
+            right: self.right.size(sleigh, variables),
+            location: self.src.clone(),
+        })? {
+            solved.i_did_a_thing()
         }
 
         if self.var.size(sleigh, variables).is_undefined()
@@ -170,7 +147,7 @@ fn hack_varnode_assignemnt_left_hand_truncation_implied(
     variables: &[Variable],
 ) -> bool {
     // left hand need to be an varnode
-    let WriteValue::Varnode(WriteVarnode { id, location: _ }) = ass.var else {
+    let WriteValue::Varnode(WriteVarnode { id, location: _ }) = &ass.var else {
         return false;
     };
 
@@ -183,7 +160,7 @@ fn hack_varnode_assignemnt_left_hand_truncation_implied(
     let Some(right_size) = ass.right.size(sleigh, variables).max_bits() else {
         return false;
     };
-    let varnode = sleigh.varnode(id);
+    let varnode = sleigh.varnode(*id);
     let left_size = varnode.len_bytes.get() * 8;
     if left_size < right_size.get() {
         return false;
