@@ -6,7 +6,7 @@ use crate::semantic::inner::Sleigh;
 use crate::Span;
 
 use super::{
-    FieldSize, FieldSizeMut, FieldSizeUnmutable, Variable, WriteScope,
+    Execution, FieldSize, FieldSizeMut, FieldSizeUnmutable, WriteScope,
 };
 
 impl WriteValue {
@@ -27,7 +27,7 @@ impl WriteValue {
             WriteScope::Local(id) => Self::Local(WriteExeVar { location, id }),
         }
     }
-    pub fn size(&self, sleigh: &Sleigh, variables: &[Variable]) -> FieldSize {
+    pub fn size(&self, sleigh: &Sleigh, execution: &Execution) -> FieldSize {
         match self {
             Self::Varnode(var) => {
                 FieldSize::new_bytes(sleigh.varnode(var.id).len_bytes)
@@ -42,13 +42,13 @@ impl WriteValue {
             Self::TokenField(ass) => {
                 sleigh.token_field(ass.id).exec_value_len(sleigh)
             }
-            Self::Local(var) => variables[var.id.0].size.get(),
+            Self::Local(var) => execution.variable(var.id).size.get(),
         }
     }
     pub fn size_mut<'a>(
         &'a mut self,
         sleigh: &'a Sleigh,
-        variables: &'a [Variable],
+        execution: &'a Execution,
     ) -> Box<dyn FieldSizeMut + 'a> {
         match self {
             Self::Varnode(var) => Box::new(FieldSizeUnmutable::from(
@@ -61,7 +61,7 @@ impl WriteValue {
                 sleigh.token_field(ass.id).exec_value_len(sleigh),
             )),
             Self::TableExport(table) => Box::new(sleigh.table(table.id)),
-            Self::Local(local) => Box::new(&variables[local.id.0].size),
+            Self::Local(local) => Box::new(&execution.variable(local.id).size),
         }
     }
 }

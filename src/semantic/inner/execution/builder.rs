@@ -1,12 +1,14 @@
+use std::cell::RefCell;
+
 use crate::semantic::execution::{
     BlockId, Build, ExprInstNext, ExprInstStart, ExprTable, RefTable,
     RefTokenField, ReferencedValue, Unary, VariableId, WriteExeVar, WriteValue,
     WriteVarnode,
 };
-use crate::semantic::inner::execution::ExprNumber;
+use crate::semantic::inner::execution::{Block, ExprNumber};
 use crate::semantic::inner::pattern::Pattern;
-use crate::semantic::inner::Sleigh;
-use crate::semantic::{GlobalScope, InstNext, InstStart, SpaceId, TableId};
+use crate::semantic::inner::{GlobalScope, Sleigh};
+use crate::semantic::{InstNext, InstStart, SpaceId, TableId};
 use crate::{
     disassembly, syntax, BitrangeId, ContextId, Number, NumberNonZeroUnsigned,
     NumberUnsigned, Span, TokenFieldId, VarSizeError, VarnodeId,
@@ -15,8 +17,8 @@ use crate::{
 use super::{
     Assignment, AssignmentOp, BranchCall, CpuBranch, Execution, ExecutionError,
     Export, ExportLen, Expr, ExprCPool, ExprDisVar, ExprElement, ExprNew,
-    ExprValue, FieldSize, LocalGoto, MacroCall, MemWrite, MemoryLocation,
-    Reference, Statement, UserCall,
+    ExprValue, FieldSize, LocalGoto, MemWrite, MemoryLocation, Reference,
+    Statement, UserCall,
 };
 
 #[derive(Clone, Debug)]
@@ -113,7 +115,7 @@ pub trait ExecutionBuilder {
         self.execution_mut()
             .block_mut(current_block_id)
             .statements
-            .push(statement);
+            .push(RefCell::new(statement));
     }
     fn extend(
         &mut self,
@@ -167,8 +169,7 @@ pub trait ExecutionBuilder {
                     }
                 }
                 syntax::block::execution::Statement::Call(x) => {
-                    let call = self.new_call_statement(x)?;
-                    self.insert_statement(call);
+                    self.new_call_statement(x)?;
                 }
                 syntax::block::execution::Statement::Declare(x) => {
                     let var_id = self.create_variable(&x.name, &x.src, true)?;
@@ -195,23 +196,30 @@ pub trait ExecutionBuilder {
             }
         }
         //update blocks based on the last statement
-        for block in self.execution_mut().blocks.iter_mut() {
-            let last_statement = block.statements.last();
-            match last_statement {
+        for block in &mut self.execution_mut().blocks {
+            let Some(last_statement) = block.statements.last() else {
+                continue;
+            };
+            let next = match &*last_statement.borrow() {
                 //this block ends with unconditional local_jmp, this replace the
                 //next block
-                Some(Statement::LocalGoto(LocalGoto { cond: None, dst })) => {
+                Statement::LocalGoto(LocalGoto { cond: None, dst }) => {
                     //remove the goto, the next block will tha it's place
-                    block.next = Some(*dst);
-                    block.statements.pop();
+                    Some(Some(*dst))
                 }
                 //If the last is export or unconditional cpu branch,
                 //this becames an return block, so next is None
-                Some(Statement::Export(_))
-                | Some(Statement::CpuBranch(CpuBranch {
-                    cond: None, ..
-                })) => block.next = None,
-                _ => (),
+                Statement::Export(_)
+                | Statement::CpuBranch(CpuBranch { cond: None, .. }) => {
+                    Some(None)
+                }
+                _ => None,
+            };
+            if let Some(next_block) = next {
+                block.next = next_block;
+                if let Some(_block_id) = next_block {
+                    block.statements.pop();
+                }
             }
         }
         //find the return type for this execution
@@ -222,11 +230,12 @@ pub trait ExecutionBuilder {
                 .iter()
                 //only blocks with no next block can export
                 .filter(|block| block.next.is_none())
+                .filter_map(|block| block.statements.last())
                 //if the last statement is export, convert to export size
-                .filter_map(|block| match block.statements.last() {
-                    Some(Statement::Export(exp)) => Some(
-                        exp.return_type(self.sleigh(), &self.execution().vars),
-                    ),
+                .filter_map(|statement| match &*statement.borrow() {
+                    Statement::Export(exp) => {
+                        Some(exp.return_type(self.sleigh(), self.execution()))
+                    }
                     _ => None,
                 });
             //FUTURE: replace this with try_reduce:
@@ -303,7 +312,7 @@ pub trait ExecutionBuilder {
     fn new_call_statement(
         &mut self,
         input: syntax::block::execution::UserCall,
-    ) -> Result<Statement, Box<ExecutionError>> {
+    ) -> Result<(), Box<ExecutionError>> {
         let params = input
             .params
             .into_iter()
@@ -315,19 +324,156 @@ pub trait ExecutionBuilder {
             .ok_or_else(|| ExecutionError::MissingRef(input.src.clone()))?;
         match global {
             GlobalScope::UserFunction(x) => {
-                Ok(Statement::UserCall(UserCall::new(
+                self.insert_statement(Statement::UserCall(UserCall::new(
                     self.sleigh(),
                     self.execution(),
                     params,
                     x,
                     input.src,
-                )))
+                )));
+                Ok(())
             }
             GlobalScope::PcodeMacro(x) => {
-                let pmacro = self.sleigh().pcode_macro(x);
-                Ok(Statement::MacroCall(MacroCall::new(
-                    params, x, pmacro, input.src,
-                )))
+                // TODO create an alias system, so variable and block names
+                // don't colide
+                // TODO make pcode_macro use RefCell to avoid this clone
+                let pmacro = self.sleigh().pcode_macro(x).clone();
+
+                // if the macro have more then one block, split blocks
+                let (block_offset, next_block) =
+                    if pmacro.execution.blocks.len() == 1 {
+                        (None, None)
+                    } else {
+                        let current_block_name = self
+                            .execution()
+                            .block(self.current_block())
+                            .name
+                            .to_owned();
+                        // block to go after the pmacro
+                        let next_block = BlockId(self.execution().blocks.len());
+                        self.execution_mut().blocks.push(Block::new_empty(
+                            Some(current_block_name.unwrap_or_else(|| {
+                                format!("{}_after", &pmacro.name)
+                                    .into_boxed_str()
+                            })),
+                        ));
+
+                        // mapping macro -> execution blocks
+                        let block_offset = self.execution().blocks.len();
+                        // create all the macro blocks
+                        self.execution_mut().blocks.extend(
+                            pmacro.execution.blocks.iter().map(|b| {
+                                Block::new_empty(Some(
+                                    b.name.clone().unwrap_or_else(|| {
+                                        format!("{}_entry", &pmacro.name)
+                                            .into_boxed_str()
+                                    }),
+                                ))
+                            }),
+                        );
+                        (Some(block_offset), Some(next_block))
+                    };
+
+                // mapping variable -> execution variable
+                let variables_offset = self.execution().variables.len();
+                // create variables, and map then
+                for var in &pmacro.execution.variables {
+                    let id = self.execution_mut().create_variable(
+                        format!("{}_{}", &pmacro.name, &var.name),
+                        var.src.clone(),
+                        var.explicit,
+                    )?;
+                    let var = self.execution_mut().variable_mut(id);
+                    var.size.set(var.size.get());
+                }
+
+                // populate the blocks
+                for (i, block) in
+                    pmacro.execution.blocks.as_slice().iter().enumerate()
+                {
+                    if let Some(block_offset) = block_offset {
+                        let block_id = BlockId(i + block_offset);
+                        self.set_current_block(block_id);
+                    }
+
+                    for statement in block.statements.iter() {
+                        let statement = statement.borrow();
+                        let new_statement = match &*statement {
+                            Statement::LocalGoto(goto) => {
+                                let block_id =
+                                    BlockId(goto.dst.0 + block_offset.unwrap());
+                                let cond = goto.cond.as_ref().map(|cond| {
+                                    translate_expr(cond, variables_offset)
+                                });
+                                Statement::LocalGoto(LocalGoto {
+                                    cond,
+                                    dst: block_id,
+                                })
+                            }
+                            Statement::CpuBranch(x) => {
+                                Statement::CpuBranch(CpuBranch {
+                                    cond: x.cond.as_ref().map(|x| {
+                                        translate_expr(x, variables_offset)
+                                    }),
+                                    dst: translate_expr(
+                                        &x.dst,
+                                        variables_offset,
+                                    ),
+                                    ..x.clone()
+                                })
+                            }
+                            Statement::UserCall(x) => {
+                                Statement::UserCall(UserCall {
+                                    params: x
+                                        .params
+                                        .iter()
+                                        .map(|x| {
+                                            translate_expr(x, variables_offset)
+                                        })
+                                        .collect(),
+                                    ..x.clone()
+                                })
+                            }
+                            Statement::Assignment(x) => {
+                                Statement::Assignment(Assignment {
+                                    right: translate_expr(
+                                        &x.right,
+                                        variables_offset,
+                                    ),
+                                    var: translate_write(
+                                        &x.var,
+                                        variables_offset,
+                                    ),
+                                    ..x.clone()
+                                })
+                            }
+                            Statement::MemWrite(x) => {
+                                Statement::MemWrite(MemWrite {
+                                    right: translate_expr(
+                                        &x.right,
+                                        variables_offset,
+                                    ),
+                                    ..x.clone()
+                                })
+                            }
+                            Statement::Declare(old_id) => {
+                                let new_id =
+                                    VariableId(old_id.0 + variables_offset);
+                                Statement::Declare(new_id)
+                            }
+                            x @ Statement::Delayslot(_) => x.clone(),
+                            Statement::Export(_) | Statement::Build(_) => {
+                                unreachable!()
+                            }
+                        };
+                        self.insert_statement(new_statement);
+                    }
+                }
+                // next block after the call is the previous block
+                if let Some(next_block) = next_block {
+                    self.set_current_block(next_block);
+                }
+                Ok(())
             }
             _ => Err(Box::new(ExecutionError::InvalidRef(input.src))),
         }
@@ -417,7 +563,7 @@ pub trait ExecutionBuilder {
                 // value can't be bigger then the varnode, although it can be
                 // smaller
                 let result = right
-                    .size_mut(self.sleigh(), &self.execution().vars)
+                    .size_mut(self.sleigh(), self.execution())
                     .update_action(|size| {
                         size.set_max_bytes(var_ele.len_bytes)
                             // optionally try to set a possible value
@@ -429,8 +575,7 @@ pub trait ExecutionBuilder {
                 let _ =
                     result.ok_or_else(|| VarSizeError::AssignmentSides {
                         left: FieldSize::Value(var_ele.len_bytes),
-                        right: right
-                            .size(self.sleigh(), &self.execution().vars),
+                        right: right.size(self.sleigh(), self.execution()),
                         location: input.src.clone(),
                     })?;
                 Ok(Statement::Assignment(Assignment::new(
@@ -647,7 +792,7 @@ pub trait ExecutionBuilder {
                 let right = self.new_expr(*right)?;
                 Ok(Expr::new_op(
                     self.sleigh(),
-                    &self.execution().vars,
+                    self.execution(),
                     src,
                     op,
                     left,
@@ -852,5 +997,104 @@ fn reference_scope(
             value: ReferencedValue::Table(RefTable { location: src, id }),
         })),
         _ => Err(Box::new(ExecutionError::InvalidRef(src))),
+    }
+}
+
+fn translate_expr(expr: &Expr, variables_offset: usize) -> Expr {
+    match expr {
+        Expr::Value(value) => {
+            Expr::Value(translate_expr_element(value, variables_offset))
+        }
+        Expr::Op(op) => {
+            let left = translate_expr(&op.left, variables_offset);
+            let right = translate_expr(&op.right, variables_offset);
+            Expr::Op(crate::semantic::inner::execution::ExprBinaryOp {
+                location: op.location.clone(),
+                output_size: op.output_size.clone(),
+                op: op.op.clone(),
+                left: Box::new(left),
+                right: Box::new(right),
+            })
+        }
+    }
+}
+
+fn translate_expr_element(
+    expr: &ExprElement,
+    variables_offset: usize,
+) -> ExprElement {
+    match expr {
+        ExprElement::Value(value) => {
+            ExprElement::Value(translate_value(value, variables_offset))
+        }
+        ExprElement::UserCall(call) => ExprElement::UserCall(UserCall {
+            params: call
+                .params
+                .iter()
+                .map(|x| translate_expr(x, variables_offset))
+                .collect(),
+            ..call.clone()
+        }),
+        ExprElement::DeReference(a, b, c) => ExprElement::DeReference(
+            a.clone(),
+            b.clone(),
+            Box::new(translate_expr(c, variables_offset)),
+        ),
+        ExprElement::Op(x) => ExprElement::Op(super::ExprUnaryOp {
+            input: Box::new(translate_expr(&x.input, variables_offset)),
+            ..x.clone()
+        }),
+        ExprElement::New(x) => ExprElement::New(ExprNew {
+            first: Box::new(translate_expr(&x.first, variables_offset)),
+            second: x
+                .second
+                .as_ref()
+                .map(|x| Box::new(translate_expr(x, variables_offset))),
+            location: x.location.clone(),
+        }),
+        ExprElement::CPool(x) => ExprElement::CPool(ExprCPool {
+            location: x.location.clone(),
+            params: x
+                .params
+                .iter()
+                .map(|x| translate_expr(x, variables_offset))
+                .collect(),
+        }),
+        x @ ExprElement::Reference(_) => x.clone(),
+    }
+}
+
+fn translate_value(expr: &ExprValue, variables_offset: usize) -> ExprValue {
+    match expr {
+        ExprValue::TokenField(_)
+        | ExprValue::Table(_)
+        | ExprValue::DisVar(_) => unreachable!(),
+
+        ExprValue::ExeVar(var) => {
+            ExprValue::ExeVar(crate::semantic::execution::ExprExeVar {
+                location: var.location.clone(),
+                id: VariableId(var.id.0 + variables_offset),
+            })
+        }
+
+        x @ (ExprValue::Varnode(_)
+        | ExprValue::Context(_)
+        | ExprValue::Bitrange(_)
+        | ExprValue::InstStart(_)
+        | ExprValue::InstNext(_)
+        | ExprValue::Int(_)) => x.clone(),
+    }
+}
+
+fn translate_write(expr: &WriteValue, variables_offset: usize) -> WriteValue {
+    match expr {
+        WriteValue::Local(var) => WriteValue::Local(WriteExeVar {
+            location: var.location.clone(),
+            id: VariableId(var.id.0 + variables_offset),
+        }),
+        x @ (WriteValue::Varnode(_)
+        | WriteValue::Bitrange(_)
+        | WriteValue::TokenField(_)
+        | WriteValue::TableExport(_)) => x.clone(),
     }
 }

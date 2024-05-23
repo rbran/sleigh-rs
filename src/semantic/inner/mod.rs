@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::semantic::meaning::{AttachLiteral, AttachNumber, AttachVarnode};
 use crate::semantic::{
     AttachLiteralId, AttachNumberId, AttachVarnodeId, BitrangeId, ContextId,
-    GlobalScope, PcodeMacroId, SpaceId, TableId, TokenFieldId, TokenId,
+    SpaceId, TableId, TokenFieldId, TokenId,
     UserFunctionId, VarnodeId,
 };
 use crate::syntax::define::TokenFieldAttribute;
@@ -37,6 +37,84 @@ use self::table::Table;
 use self::token::TokenField;
 use self::varnode::Context;
 use self::with_block::WithBlockCurrent;
+
+#[derive(Copy, Clone, Debug)]
+pub struct PcodeMacroId(pub usize);
+
+#[derive(Clone, Copy, Debug)]
+pub enum GlobalScope {
+    Space(SpaceId),
+    Varnode(VarnodeId),
+    Context(ContextId),
+    Bitrange(BitrangeId),
+    Token(TokenId),
+    TokenField(TokenFieldId),
+    InstStart(InstStart),
+    InstNext(InstNext),
+    Epsilon(Epsilon),
+    UserFunction(UserFunctionId),
+    Table(TableId),
+
+    PcodeMacro(PcodeMacroId),
+}
+
+impl GlobalScope {
+    pub fn token_field(&self) -> Option<TokenFieldId> {
+        match self {
+            GlobalScope::TokenField(x) => Some(*x),
+            _ => None,
+        }
+    }
+    pub fn token(&self) -> Option<TokenId> {
+        match self {
+            GlobalScope::Token(x) => Some(*x),
+            _ => None,
+        }
+    }
+    pub fn space(&self) -> Option<SpaceId> {
+        match self {
+            GlobalScope::Space(x) => Some(*x),
+            _ => None,
+        }
+    }
+    pub fn varnode(&self) -> Option<VarnodeId> {
+        match self {
+            GlobalScope::Varnode(x) => Some(*x),
+            _ => None,
+        }
+    }
+    pub fn context(&self) -> Option<ContextId> {
+        match self {
+            GlobalScope::Context(x) => Some(*x),
+            _ => None,
+        }
+    }
+    pub fn bitrange(&self) -> Option<BitrangeId> {
+        match self {
+            GlobalScope::Bitrange(x) => Some(*x),
+            _ => None,
+        }
+    }
+    pub fn table(&self) -> Option<TableId> {
+        match self {
+            GlobalScope::Table(x) => Some(*x),
+            _ => None,
+        }
+    }
+    pub fn user_function(&self) -> Option<UserFunctionId> {
+        match self {
+            GlobalScope::UserFunction(x) => Some(*x),
+            _ => None,
+        }
+    }
+    pub fn pcode_macro(&self) -> Option<PcodeMacroId> {
+        match self {
+            GlobalScope::PcodeMacro(x) => Some(*x),
+            _ => None,
+        }
+    }
+}
+
 
 #[derive(Copy, Clone, Debug)]
 pub struct PrintFlags {

@@ -4,14 +4,14 @@ use crate::semantic::inner::{Sleigh, SolverStatus};
 use crate::ExecutionError;
 use crate::VarSizeError;
 
-use super::{Execution, Expr, Variable};
+use super::{Execution, Expr};
 
 #[derive(Clone, Debug)]
 pub struct CpuBranch {
     pub cond: Option<Expr>,
     pub call: BranchCall,
     //TODO delete direct?
-    direct: bool,
+    pub(crate) direct: bool,
     pub dst: Expr,
 }
 
@@ -26,7 +26,7 @@ impl CpuBranch {
     ) -> Self {
         //condition can have any size, preferencially 1 bit for true/false
         cond.iter_mut().for_each(|cond| {
-            cond.size_mut(sleigh, &execution.vars)
+            cond.size_mut(sleigh, execution)
                 .update_action(|size| Some(size.set_possible_min()))
                 .unwrap();
         });
@@ -40,27 +40,27 @@ impl CpuBranch {
     pub fn solve(
         &mut self,
         sleigh: &Sleigh,
-        variables: &[Variable],
+        execution: &Execution,
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
         if let Some(cond) = self.cond.as_mut() {
-            cond.solve(sleigh, variables, solved)?;
+            cond.solve(sleigh, execution, solved)?;
         }
         // jmp dst addr can be equal or smaller then space address size
         let modified =
-            self.dst.size_mut(sleigh, variables).update_action(|size| {
+            self.dst.size_mut(sleigh, execution).update_action(|size| {
                 size.set_max_bytes(sleigh.addr_bytes().unwrap())
             });
 
         if modified.ok_or_else(|| VarSizeError::AddressTooBig {
-            address_size: self.dst.size(sleigh, variables),
+            address_size: self.dst.size(sleigh, execution),
             space_bytes: sleigh.addr_bytes().unwrap(),
             location: self.dst.src().clone(),
         })? {
             solved.i_did_a_thing();
         }
 
-        self.dst.solve(sleigh, variables, solved)?;
+        self.dst.solve(sleigh, execution, solved)?;
         Ok(())
     }
     pub fn convert(self) -> FinalCpuBranch {

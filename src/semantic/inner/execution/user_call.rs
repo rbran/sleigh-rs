@@ -3,7 +3,7 @@ use crate::semantic::UserFunctionId;
 use crate::ExecutionError;
 use crate::Span;
 
-use super::{Execution, Expr, FieldSize, Sleigh, SolverStatus, Variable};
+use super::{Execution, Expr, FieldSize, Sleigh, SolverStatus};
 
 #[derive(Clone, Debug)]
 pub struct UserCall {
@@ -28,7 +28,7 @@ impl UserCall {
         params.iter_mut().for_each(|param| {
             //TODO improve the size speculation
             param
-                .size_mut(sleigh, &execution.vars)
+                .size_mut(sleigh, execution)
                 .update_action(|size| Some(size.set_possible_min()))
                 .unwrap();
         });
@@ -42,12 +42,12 @@ impl UserCall {
     pub fn solve(
         &mut self,
         sleigh: &Sleigh,
-        variable: &[Variable],
+        execution: &Execution,
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
         self.params
             .iter_mut()
-            .try_for_each(|x| x.solve(sleigh, variable, solved))
+            .try_for_each(|x| x.solve(sleigh, execution, solved))
     }
     pub fn convert(self) -> FinalUserCall {
         let params = self.params.into_iter().map(|x| x.convert()).collect();

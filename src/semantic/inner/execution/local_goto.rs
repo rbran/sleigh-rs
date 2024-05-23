@@ -2,7 +2,7 @@ use crate::semantic::execution::LocalGoto as FinalLocalGoto;
 use crate::semantic::inner::{Sleigh, SolverStatus};
 use crate::{semantic::execution::BlockId, ExecutionError};
 
-use super::{Execution, Expr, Variable};
+use super::{Execution, Expr};
 
 #[derive(Clone, Debug)]
 pub struct LocalGoto {
@@ -19,7 +19,7 @@ impl LocalGoto {
     ) -> Result<Self, Box<ExecutionError>> {
         //condition can have any size, preferencially 1 bit for true/false
         cond.iter_mut().for_each(|cond| {
-            cond.size_mut(sleigh, &execution.vars)
+            cond.size_mut(sleigh, &execution)
                 .update_action(|size| Some(size.set_possible_min()))
                 .unwrap();
         });
@@ -28,12 +28,12 @@ impl LocalGoto {
     pub fn solve(
         &mut self,
         sleigh: &Sleigh,
-        variables: &[Variable],
+        execution: &Execution,
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
         if let Some(cond) = self.cond.as_mut() {
-            cond.solve(sleigh, variables, solved)?;
-            if cond.size(sleigh, variables).is_undefined() {
+            cond.solve(sleigh, execution, solved)?;
+            if cond.size(sleigh, execution).is_undefined() {
                 solved.iam_not_finished(cond.src(), file!(), line!());
             }
         }

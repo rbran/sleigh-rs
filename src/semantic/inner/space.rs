@@ -1,8 +1,8 @@
 use crate::semantic::space::SpaceType;
-use crate::semantic::{GlobalScope, Space, SpaceId};
+use crate::semantic::{Space, SpaceId};
 use crate::{syntax, SleighError};
 
-use super::Sleigh;
+use super::{GlobalScope, Sleigh};
 
 impl Sleigh {
     pub fn create_space(

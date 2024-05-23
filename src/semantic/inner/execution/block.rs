@@ -1,8 +1,10 @@
+use std::cell::RefCell;
+
 use crate::semantic::execution::{Block as FinalBlock, BlockId};
 use crate::semantic::inner::{Sleigh, SolverStatus};
 use crate::ExecutionError;
 
-use super::{Statement, Variable};
+use super::{Execution, Statement};
 
 #[derive(Clone, Debug)]
 pub struct Block {
@@ -12,7 +14,7 @@ pub struct Block {
     //parent: RefCell<Vec<Weak<Block>>>,
     // None means the block is an return
     pub next: Option<BlockId>,
-    pub statements: Vec<Statement>,
+    pub statements: Vec<RefCell<Statement>>,
 }
 
 impl Block {
@@ -25,13 +27,13 @@ impl Block {
     }
 
     pub fn solve<T: SolverStatus>(
-        &mut self,
+        &self,
         sleigh: &Sleigh,
-        variables: &[Variable],
+        execution: &Execution,
         solved: &mut T,
     ) -> Result<(), Box<ExecutionError>> {
-        self.statements.iter_mut().try_for_each(|statements| {
-            statements.solve(sleigh, variables, solved)
+        self.statements.iter().try_for_each(|statements| {
+            statements.borrow_mut().solve(sleigh, execution, solved)
         })
     }
 
@@ -39,7 +41,7 @@ impl Block {
         let statements = self
             .statements
             .into_iter()
-            .map(|statement| statement.convert())
+            .map(|statement| statement.into_inner().convert())
             .collect();
         let statements = statements;
         FinalBlock {

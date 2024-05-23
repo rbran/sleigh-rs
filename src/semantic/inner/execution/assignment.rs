@@ -9,13 +9,13 @@ use crate::{
     ExecutionError, NumberNonZeroUnsigned, NumberUnsigned, Span, VarSizeError,
 };
 
-use super::{len, Expr, FieldSize, FieldSizeMut, Variable};
+use super::{len, Execution, Expr, FieldSize, FieldSizeMut};
 
 #[derive(Clone, Debug)]
 pub struct Assignment {
     pub var: WriteValue,
-    op: Option<AssignmentOp>,
-    src: Span,
+    pub(crate) op: Option<AssignmentOp>,
+    pub(crate) src: Span,
     pub right: Expr,
 }
 
@@ -36,14 +36,14 @@ impl Assignment {
     pub fn solve(
         &mut self,
         sleigh: &Sleigh,
-        variables: &[Variable],
+        execution: &Execution,
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
-        self.right.solve(sleigh, variables, solved)?;
+        self.right.solve(sleigh, execution, solved)?;
 
         // identify the implicity truncation for varnodes
         if hack_varnode_assignemnt_left_hand_truncation_implied(
-            self, sleigh, variables,
+            self, sleigh, execution,
         ) {
             solved.i_did_a_thing();
         }
@@ -55,20 +55,20 @@ impl Assignment {
             self.op
                 .as_mut()
                 .map(|trunc| trunc.output_size_mut())
-                .unwrap_or_else(|| self.var.size_mut(sleigh, variables))
+                .unwrap_or_else(|| self.var.size_mut(sleigh, execution))
                 .as_dyn(),
-            self.right.size_mut(sleigh, variables).as_dyn(),
+            self.right.size_mut(sleigh, execution).as_dyn(),
         );
         if modified.ok_or_else(|| VarSizeError::AssignmentSides {
-            left: self.var.size(sleigh, variables),
-            right: self.right.size(sleigh, variables),
+            left: self.var.size(sleigh, execution),
+            right: self.right.size(sleigh, execution),
             location: self.src.clone(),
         })? {
             solved.i_did_a_thing()
         }
 
-        if self.var.size(sleigh, variables).is_undefined()
-            || self.right.size(sleigh, variables).is_undefined()
+        if self.var.size(sleigh, execution).is_undefined()
+            || self.right.size(sleigh, execution).is_undefined()
         {
             solved.iam_not_finished(self.right.src(), file!(), line!())
         }
@@ -144,7 +144,7 @@ impl AssignmentOp {
 fn hack_varnode_assignemnt_left_hand_truncation_implied(
     ass: &mut Assignment,
     sleigh: &Sleigh,
-    variables: &[Variable],
+    execution: &Execution,
 ) -> bool {
     // left hand need to be an varnode
     let WriteValue::Varnode(WriteVarnode { id, location: _ }) = &ass.var else {
@@ -157,7 +157,7 @@ fn hack_varnode_assignemnt_left_hand_truncation_implied(
     }
 
     // left side need to be smaller then the right side
-    let Some(right_size) = ass.right.size(sleigh, variables).max_bits() else {
+    let Some(right_size) = ass.right.size(sleigh, execution).max_bits() else {
         return false;
     };
     let varnode = sleigh.varnode(*id);

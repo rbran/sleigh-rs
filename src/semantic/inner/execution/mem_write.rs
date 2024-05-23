@@ -4,14 +4,14 @@ use crate::{ExecutionError, Number, Span, VarSizeError};
 
 use super::{
     Execution, Expr, ExprElement, ExprNumber, ExprValue, FieldSize,
-    MemoryLocation, Variable,
+    MemoryLocation,
 };
 
 #[derive(Clone, Debug)]
 pub struct MemWrite {
     pub addr: Expr,
-    mem: MemoryLocation,
-    src: Span,
+    pub(crate) mem: MemoryLocation,
+    pub(crate) src: Span,
     pub right: Expr,
 }
 
@@ -33,7 +33,7 @@ impl MemWrite {
             .map(|size| size.get() == 8)
             .unwrap_or(false)
             && right
-                .size(sleigh, &execution.vars)
+                .size(sleigh, &execution)
                 .final_value()
                 .map(|size| size.get() == 1)
                 .unwrap_or(false)
@@ -48,7 +48,7 @@ impl MemWrite {
         //addr expr is the addr to access the space, so it need to be space
         //addr size
         let space = sleigh.space(mem.space);
-        addr.size_mut(sleigh, &execution.vars)
+        addr.size_mut(sleigh, &execution)
             .set(FieldSize::new_bytes(space.addr_bytes));
         Self {
             addr,
@@ -60,14 +60,14 @@ impl MemWrite {
     pub fn solve(
         &mut self,
         sleigh: &Sleigh,
-        variables: &[Variable],
+        execution: &Execution,
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
-        self.right.solve(sleigh, variables, solved)?;
+        self.right.solve(sleigh, execution, solved)?;
         // HACK: exception in case the right size is smaller then the left size,
         // truncate the right size with a msb(0)
         let left_size = self.mem.size.final_value();
-        let right_size = self.right.size(sleigh, variables).final_value();
+        let right_size = self.right.size(sleigh, execution).final_value();
         if left_size
             .zip(right_size)
             .map(|(left, right)| left.get() < right.get())
@@ -91,7 +91,7 @@ impl MemWrite {
                 0,
                 taken,
             ));
-            self.right.solve(sleigh, variables, solved)?;
+            self.right.solve(sleigh, execution, solved)?;
             solved.i_did_a_thing()
         }
 
@@ -100,10 +100,10 @@ impl MemWrite {
         if let Some(write_size) = self.mem.size.final_value() {
             //if left side size is known, right side will need to produce a
             //a value with size equal or smaller then that
-            let right_size = self.right.size(sleigh, variables);
+            let right_size = self.right.size(sleigh, execution);
             let modified = self
                 .right
-                .size_mut(sleigh, variables)
+                .size_mut(sleigh, execution)
                 .update_action(|size| {
                     size.set_max_bits(write_size)?.set_possible_bits(write_size)
                 })
@@ -122,11 +122,11 @@ impl MemWrite {
                 .mem
                 .size
                 .update_action(|size| {
-                    size.intersection(self.right.size(sleigh, variables))
+                    size.intersection(self.right.size(sleigh, execution))
                 })
                 .ok_or_else(|| VarSizeError::AssignmentSides {
                     left: self.mem.size,
-                    right: self.right.size(sleigh, variables),
+                    right: self.right.size(sleigh, execution),
                     location: self.src.clone(),
                 })?;
             if modified {
@@ -134,8 +134,8 @@ impl MemWrite {
             }
         }
 
-        if self.addr.size(sleigh, variables).is_undefined()
-            || self.right.size(sleigh, variables).is_undefined()
+        if self.addr.size(sleigh, execution).is_undefined()
+            || self.right.size(sleigh, execution).is_undefined()
         {
             solved.iam_not_finished(self.right.src(), file!(), line!())
         }

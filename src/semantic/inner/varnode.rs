@@ -2,13 +2,13 @@ use crate::semantic::meaning::Meaning;
 use crate::semantic::varnode::ContextAttach;
 use crate::semantic::Context as FinalContext;
 use crate::semantic::{
-    syntax, Bitrange, BitrangeId, ContextId, GlobalScope, UserFunction,
-    UserFunctionId, Varnode, VarnodeId,
+    syntax, Bitrange, BitrangeId, ContextId, UserFunction, UserFunctionId,
+    Varnode, VarnodeId,
 };
 use crate::{FieldBits, NumberNonZeroUnsigned, NumberUnsigned, SleighError};
 
 use super::execution::FieldSize;
-use super::{PrintFlags, Sleigh};
+use super::{GlobalScope, PrintFlags, Sleigh};
 
 #[derive(Debug)]
 pub struct Context {

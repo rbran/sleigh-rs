@@ -3,15 +3,14 @@ use std::ops::Range;
 use crate::{Number, NumberNonZeroUnsigned, NumberUnsigned, Span};
 
 use super::{
-    disassembly, pcode_macro::PcodeMacroCallId, BitrangeId, ContextId,
-    InstNext, InstStart, SpaceId, TableId, TokenFieldId, UserFunctionId,
-    VarnodeId,
+    disassembly, BitrangeId, ContextId, InstNext, InstStart, SpaceId, TableId,
+    TokenFieldId, UserFunctionId, VarnodeId,
 };
 
 #[derive(Clone, Debug)]
 pub struct Execution {
-    pub(crate) blocks: Box<[Block]>,
     pub(crate) variables: Box<[Variable]>,
+    pub(crate) blocks: Box<[Block]>,
 
     // TODO make this a const, the first block is always the entry block
     //entry_block have no name and is not on self.labels
@@ -23,7 +22,7 @@ pub struct BlockId(pub(crate) usize);
 
 #[derive(Clone, Debug)]
 pub struct Block {
-    //None is entry block
+    //None is entry block, NOTE name may not be unique due to macro expansions
     pub name: Option<Box<str>>,
     pub next: Option<BlockId>,
     pub statements: Box<[Statement]>,
@@ -36,7 +35,6 @@ pub enum Statement {
     CpuBranch(CpuBranch),
     LocalGoto(LocalGoto),
     UserCall(UserCall),
-    MacroCall(MacroCall),
     Build(Build),
     Declare(VariableId),
     Assignment(Assignment),
@@ -314,12 +312,6 @@ pub struct Build {
 }
 
 #[derive(Clone, Debug)]
-pub struct MacroCall {
-    pub params: Box<[Expr]>,
-    pub function: PcodeMacroCallId,
-}
-
-#[derive(Clone, Debug)]
 pub enum ExportConst {
     DisVar(disassembly::VariableId),
     /// Attach values are limited
@@ -435,9 +427,6 @@ impl Variable {
 }
 
 impl Execution {
-    pub fn variable(&self, id: VariableId) -> &Variable {
-        &self.variables[id.0]
-    }
     pub fn block(&self, id: BlockId) -> &Block {
         &self.blocks[id.0]
     }

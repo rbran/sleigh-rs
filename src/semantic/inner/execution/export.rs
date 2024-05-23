@@ -9,7 +9,7 @@ use crate::{
 
 use super::{
     Execution, Expr, ExprElement, ExprNumber, ExprValue, FieldSize,
-    FieldSizeMut, MemoryLocation, ReadScope, Variable,
+    FieldSizeMut, MemoryLocation, ReadScope,
 };
 
 /// Changes allowed:
@@ -248,11 +248,11 @@ impl Export {
         let space = sleigh.space(memory.space);
         let src = addr.src().clone();
         let modified = addr
-            .size_mut(sleigh, &execution.vars)
+            .size_mut(sleigh, &execution)
             .update_action(|size| size.set_max_bytes(space.addr_bytes));
 
         let _ = modified.ok_or_else(|| VarSizeError::AddressTooBig {
-            address_size: addr.size(sleigh, &execution.vars),
+            address_size: addr.size(sleigh, &execution),
             space_bytes: space.addr_bytes,
             location: src,
         })?;
@@ -261,11 +261,11 @@ impl Export {
     pub fn return_type(
         &self,
         sleigh: &Sleigh,
-        variables: &[Variable],
+        execution: &Execution,
     ) -> ExportLen {
         match self {
             Export::Value(value) => {
-                ExportLen::Value(value.size(sleigh, variables))
+                ExportLen::Value(value.size(sleigh, execution))
             }
             Export::Reference { addr: _, memory } => {
                 ExportLen::Reference(memory.size)
@@ -291,7 +291,7 @@ impl Export {
         execution: &Execution,
     ) -> FieldSize {
         match self {
-            Self::Value(expr) => expr.size(sleigh, &execution.vars),
+            Self::Value(expr) => expr.size(sleigh, execution),
             //TODO verify this
             Self::Reference { addr: _, memory } => memory.size,
             Self::Const { len_bits: len, .. } => *len,
@@ -300,7 +300,7 @@ impl Export {
     pub fn output_size_mut<'a>(
         &'a mut self,
         sleigh: &'a Sleigh,
-        variables: &'a [Variable],
+        variables: &'a Execution,
     ) -> Box<dyn FieldSizeMut + 'a> {
         match self {
             Self::Value(expr) => expr.size_mut(sleigh, variables),
@@ -312,7 +312,7 @@ impl Export {
     pub fn solve(
         &mut self,
         sleigh: &Sleigh,
-        variables: &[Variable],
+        variables: &Execution,
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
         match self {

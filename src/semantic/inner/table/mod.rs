@@ -5,9 +5,7 @@ use crate::pattern::BitConstraint;
 use crate::semantic::display::Display;
 use crate::semantic::pattern::PatternLen;
 use crate::semantic::table::Constructor as FinalConstructor;
-use crate::semantic::{
-    GlobalScope, Sleigh as FinalSleigh, Table as FinalTable, TableId,
-};
+use crate::semantic::{Sleigh as FinalSleigh, Table as FinalTable, TableId};
 use crate::table::{ConstructorId, Matcher, VariantId};
 use crate::{
     syntax, ExecutionError, PatternError, SleighError, Span, TableError,
@@ -19,7 +17,7 @@ use super::execution::{
 };
 use super::pattern::{Pattern, PatternWalker};
 use super::with_block::WithBlockCurrent;
-use super::{Sleigh, SolverStatus};
+use super::{GlobalScope, Sleigh, SolverStatus};
 
 pub mod execution;
 

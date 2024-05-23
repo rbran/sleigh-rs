@@ -1,7 +1,8 @@
+use crate::semantic::inner::GlobalScope;
 use crate::semantic::pattern::{
     CmpOp, PatternLen, Verification as FinalVerification,
 };
-use crate::semantic::{ContextId, GlobalScope, TableId, TokenFieldId};
+use crate::semantic::{ContextId, TableId, TokenFieldId};
 use crate::{syntax, PatternError, Span};
 
 use super::{

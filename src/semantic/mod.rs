@@ -3,7 +3,6 @@ pub mod display;
 pub mod execution;
 pub mod meaning;
 pub mod pattern;
-pub mod pcode_macro;
 pub mod space;
 pub mod table;
 pub mod token;
@@ -21,7 +20,6 @@ use crate::{syntax, Endian, NumberNonZeroUnsigned, SleighError, Span};
 
 use self::inner::Solved;
 use self::meaning::{AttachLiteral, AttachNumber, AttachVarnode};
-use self::pcode_macro::PcodeMacro;
 use self::space::Space;
 use self::table::Table;
 use self::token::{Token, TokenField};
@@ -55,9 +53,6 @@ pub struct InstNext;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Epsilon;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PcodeMacroId(pub usize);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct SpaceId(pub usize);
@@ -104,8 +99,27 @@ pub enum GlobalScope {
     InstNext(InstNext),
     Epsilon(Epsilon),
     UserFunction(UserFunctionId),
-    PcodeMacro(PcodeMacroId),
     Table(TableId),
+}
+
+impl From<inner::GlobalScope> for GlobalScope {
+    fn from(value: inner::GlobalScope) -> Self {
+        match value {
+            inner::GlobalScope::Space(x) => Self::Space(x),
+            inner::GlobalScope::Varnode(x) => Self::Varnode(x),
+            inner::GlobalScope::Context(x) => Self::Context(x),
+            inner::GlobalScope::Bitrange(x) => Self::Bitrange(x),
+            inner::GlobalScope::Token(x) => Self::Token(x),
+            inner::GlobalScope::TokenField(x) => Self::TokenField(x),
+            inner::GlobalScope::InstStart(x) => Self::InstStart(x),
+            inner::GlobalScope::InstNext(x) => Self::InstNext(x),
+            inner::GlobalScope::Epsilon(x) => Self::Epsilon(x),
+            inner::GlobalScope::UserFunction(x) => Self::UserFunction(x),
+            inner::GlobalScope::Table(x) => Self::Table(x),
+
+            inner::GlobalScope::PcodeMacro(_) => unreachable!(),
+        }
+    }
 }
 
 impl GlobalScope {
@@ -145,12 +159,6 @@ impl GlobalScope {
             _ => None,
         }
     }
-    pub fn pcode_macro(&self) -> Option<PcodeMacroId> {
-        match self {
-            GlobalScope::PcodeMacro(x) => Some(*x),
-            _ => None,
-        }
-    }
     pub fn table(&self) -> Option<TableId> {
         match self {
             GlobalScope::Table(x) => Some(*x),
@@ -181,7 +189,6 @@ pub struct Sleigh {
     tokens: Box<[Token]>,
     token_fields: Box<[TokenField]>,
     user_functions: Box<[UserFunction]>,
-    pcode_macros: Box<[PcodeMacro]>,
     tables: Box<[Table]>,
 
     attach_varnodes: Box<[AttachVarnode]>,
@@ -237,9 +244,6 @@ impl Sleigh {
     ) -> &UserFunction {
         &self.user_functions[user_function.0]
     }
-    pub fn pcode_macro(&self, pcode_macro: PcodeMacroId) -> &PcodeMacro {
-        &self.pcode_macros[pcode_macro.0]
-    }
     pub fn table(&self, table: TableId) -> &Table {
         &self.tables[table.0]
     }
@@ -258,9 +262,11 @@ impl Sleigh {
         //HACK: verify that indirect recursion don't happen
         //NOTE we don't need to worry about direct (self) recursion.
         //AKA `Tablea` calling itself
-        for table_id in
-            inner.global_scope.values().filter_map(GlobalScope::table)
-        {
+        let tables = inner
+            .global_scope
+            .values()
+            .filter_map(inner::GlobalScope::table);
+        for table_id in tables {
             use std::ops::ControlFlow;
             let table = inner.table(table_id);
             if let ControlFlow::Break(rec) =
@@ -321,11 +327,6 @@ impl Sleigh {
             .into_iter()
             .map(|x| x.convert())
             .collect();
-        let pcode_macros = inner
-            .pcode_macros
-            .into_iter()
-            .map(|x| x.convert())
-            .collect();
         let mut sleigh = Self {
             endian,
             alignment,
@@ -333,7 +334,6 @@ impl Sleigh {
             context_memory,
             contexts,
             token_fields,
-            pcode_macros,
             tokens: inner.tokens.into(),
             instruction_table: inner.instruction_table,
             spaces: inner.spaces.into(),
@@ -344,7 +344,15 @@ impl Sleigh {
             attach_literals: inner.attach_literals.into(),
             attach_numbers: inner.attach_numbers.into(),
             tables: Box::new([]),
-            global_scope: inner.global_scope,
+            global_scope: inner
+                .global_scope
+                .into_iter()
+                .filter_map(|(k, v)| match v {
+                    // PcodeMacro is fully replaced at this point
+                    inner::GlobalScope::PcodeMacro(_) => None,
+                    v => Some((k, v.into())),
+                })
+                .collect(),
         };
         let tables = inner
             .tables
@@ -374,9 +382,6 @@ impl Sleigh {
     }
     pub fn user_functions(&self) -> &[UserFunction] {
         &self.user_functions
-    }
-    pub fn pcode_macros(&self) -> &[PcodeMacro] {
-        &self.pcode_macros
     }
     pub fn tables(&self) -> &[Table] {
         &self.tables

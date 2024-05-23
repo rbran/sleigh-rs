@@ -22,7 +22,6 @@ pub use semantic::disassembly;
 pub use semantic::display;
 pub use semantic::meaning;
 pub use semantic::pattern;
-pub use semantic::pcode_macro;
 pub use semantic::space;
 pub use semantic::table;
 pub use semantic::token;
@@ -30,8 +29,8 @@ pub use semantic::user_function;
 pub use semantic::varnode;
 pub use semantic::{
     AttachLiteralId, AttachNumberId, AttachVarnodeId, BitrangeId, ContextId,
-    GlobalScope, PcodeMacroId, PrintBase, Sleigh, SpaceId, TableId,
-    TokenFieldId, TokenId, UserFunctionId, ValueFmt, VarnodeId,
+    GlobalScope, PrintBase, Sleigh, SpaceId, TableId, TokenFieldId, TokenId,
+    UserFunctionId, ValueFmt, VarnodeId,
 };
 
 pub type FloatType = f64;

@@ -22,8 +22,6 @@ mod block;
 pub use block::*;
 mod assignment;
 pub use assignment::*;
-mod macro_call;
-pub use macro_call::*;
 mod user_call;
 pub use user_call::*;
 mod local_goto;
@@ -38,8 +36,8 @@ mod write_value;
 #[derive(Clone, Debug)]
 pub struct Execution {
     pub src: Span,
+    pub variables: Vec<Variable>,
     pub blocks: Vec<Block>,
-    pub vars: Vec<Variable>,
 
     pub return_value: ExportLen,
 
@@ -53,7 +51,6 @@ pub enum Statement {
     Export(Export),
     CpuBranch(CpuBranch),
     LocalGoto(LocalGoto),
-    MacroCall(MacroCall),
     UserCall(UserCall),
     Build(Build),
     Declare(VariableId),
@@ -65,7 +62,7 @@ impl Statement {
     pub fn solve<T>(
         &mut self,
         sleigh: &Sleigh,
-        variables: &[Variable],
+        execution: &Execution,
         solved: &mut T,
     ) -> Result<(), Box<ExecutionError>>
     where
@@ -74,14 +71,13 @@ impl Statement {
         match self {
             Self::Build(_x) => (),
             Self::Delayslot(_) => (),
-            Self::Export(x) => x.solve(sleigh, variables, solved)?,
+            Self::Export(x) => x.solve(sleigh, execution, solved)?,
             Self::Declare(_x) => (),
-            Self::CpuBranch(x) => x.solve(sleigh, variables, solved)?,
-            Self::LocalGoto(x) => x.solve(sleigh, variables, solved)?,
-            Self::MacroCall(x) => x.solve(sleigh, variables, solved)?,
-            Self::UserCall(x) => x.solve(sleigh, variables, solved)?,
-            Self::Assignment(x) => x.solve(sleigh, variables, solved)?,
-            Self::MemWrite(x) => x.solve(sleigh, variables, solved)?,
+            Self::CpuBranch(x) => x.solve(sleigh, execution, solved)?,
+            Self::LocalGoto(x) => x.solve(sleigh, execution, solved)?,
+            Self::UserCall(x) => x.solve(sleigh, execution, solved)?,
+            Self::Assignment(x) => x.solve(sleigh, execution, solved)?,
+            Self::MemWrite(x) => x.solve(sleigh, execution, solved)?,
         }
         Ok(())
     }
@@ -92,7 +88,6 @@ impl Statement {
             Self::Export(x) => New::Export(x.convert()),
             Self::CpuBranch(x) => New::CpuBranch(x.convert()),
             Self::LocalGoto(x) => New::LocalGoto(x.convert()),
-            Self::MacroCall(x) => New::MacroCall(x.convert()),
             Self::UserCall(x) => New::UserCall(x.convert()),
             Self::Build(x) => New::Build(x),
             Self::Declare(x) => New::Declare(x),
@@ -111,7 +106,7 @@ impl Execution {
         Execution {
             src,
             blocks: vec![entry_block],
-            vars: vec![],
+            variables: vec![],
             return_value: ExportLen::default(),
             entry_block: BlockId(0),
         }
@@ -122,8 +117,8 @@ impl Execution {
         solved: &mut T,
     ) -> Result<(), Box<ExecutionError>> {
         self.blocks
-            .iter_mut()
-            .try_for_each(|block| block.solve(sleigh, &self.vars, solved))?;
+            .iter()
+            .try_for_each(|block| block.solve(sleigh, &self, solved))?;
 
         //get the export sizes, otherwise we are finished
         let mut return_size =
@@ -137,9 +132,14 @@ impl Execution {
             .blocks
             .iter()
             .filter(|block| block.next.is_none())
-            .filter_map(|block| match block.statements.last()? {
-                Statement::Export(exp) => Some(exp.output_size(sleigh, self)),
-                _ => None,
+            .filter_map(|block| {
+                let last = block.statements.last()?.borrow();
+                match &*last {
+                    Statement::Export(exp) => {
+                        Some(exp.output_size(sleigh, self))
+                    }
+                    _ => None,
+                }
             })
             .try_fold(false, |acc, out_size| {
                 return_size
@@ -149,13 +149,14 @@ impl Execution {
             })?;
         //update all the export output sizes
         self.blocks
-            .iter_mut()
+            .iter()
             .filter(|block| block.next.is_none())
-            .for_each(|block| {
-                let statements = &mut block.statements;
-                if let Some(Statement::Export(export)) = statements.last_mut() {
+            .filter_map(|block| block.statements.last())
+            .for_each(|statement| {
+                let mut statement = statement.borrow_mut();
+                if let Statement::Export(export) = &mut *statement {
                     modified |= export
-                        .output_size_mut(sleigh, &self.vars)
+                        .output_size_mut(sleigh, &self)
                         .update_action(|size| size.intersection(return_size))
                         .unwrap();
                 }
@@ -176,12 +177,16 @@ impl Execution {
     }
     pub fn convert(self) -> FinalExecution {
         FinalExecution {
+            variables: self
+                .variables
+                .into_iter()
+                .map(|x| x.convert())
+                .collect(),
             blocks: self
                 .blocks
                 .into_iter()
                 .map(|block| block.convert())
                 .collect(),
-            variables: self.vars.into_iter().map(|var| var.convert()).collect(),
             entry_block: self.entry_block,
         }
     }
@@ -212,16 +217,18 @@ impl Execution {
         Some(())
     }
     pub fn variable(&self, id: VariableId) -> &Variable {
-        &self.vars[id.0]
+        &self.variables[id.0]
     }
     pub fn variable_mut(&mut self, id: VariableId) -> &mut Variable {
-        &mut self.vars[id.0]
+        &mut self.variables[id.0]
     }
     pub fn variable_by_name(&self, name: &str) -> Option<VariableId> {
-        self.vars
-            .iter()
-            .position(|vars| vars.name == name)
-            .map(VariableId)
+        for (var_id, var) in self.variables.iter().enumerate() {
+            if var.name == name {
+                return Some(VariableId(var_id));
+            }
+        }
+        None
     }
     pub fn create_variable(
         &mut self,
@@ -229,13 +236,14 @@ impl Execution {
         src: Span,
         explicit: bool,
     ) -> Result<VariableId, Box<ExecutionError>> {
-        // don't allow duplicated name
-        if self.variable_by_name(&name).is_some() {
-            return Err(Box::new(ExecutionError::InvalidRef(src)));
-        }
+        //// don't allow duplicated name
+        //if self.variable_by_name(&name).is_some() {
+        //    return Err(Box::new(ExecutionError::InvalidRef(src)));
+        //}
         //TODO src
-        let var = Variable::new(name, explicit.then_some(src));
-        self.vars.push(var);
-        Ok(VariableId(self.vars.len() - 1))
+        let var_id = self.variables.len();
+        let var = Variable::new(name, src, explicit);
+        self.variables.push(var);
+        Ok(VariableId(var_id))
     }
 }
