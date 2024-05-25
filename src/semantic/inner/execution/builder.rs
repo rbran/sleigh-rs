@@ -2,9 +2,9 @@ use std::cell::RefCell;
 use std::ops::Range;
 
 use crate::semantic::execution::{
-    BlockId, Build, ExprInstNext, ExprInstStart, ExprTable, ExprVarnode,
-    RefTable, RefTokenField, ReferencedValue, Unary, VariableId, WriteExeVar,
-    WriteTable, WriteTokenField, WriteValue, WriteVarnode,
+    BlockId, Build, ExprInstNext, ExprInstStart, ExprTable, RefTable,
+    RefTokenField, ReferencedValue, Unary, VariableId, WriteExeVar, WriteTable,
+    WriteTokenField, WriteValue, WriteVarnode,
 };
 use crate::semantic::inner::execution::{Block, ExprNumber};
 use crate::semantic::inner::pattern::Pattern;
@@ -402,26 +402,8 @@ pub trait ExecutionBuilder {
                                 },
                             ));
                         }
-                        VariableAlias::SubVarnode(varnode, bits) => {
-                            let location = &pmacro
-                                .execution
-                                .variable(pmacro.params[param_id])
-                                .src;
-                            self.insert_statement(Statement::Assignment(
-                                Assignment {
-                                    op: Some(AssignmentOp::BitRange(
-                                        bits.clone(),
-                                    )),
-                                    right: param.clone(),
-                                    var: WriteValue::Varnode(WriteVarnode {
-                                        location: location.clone(),
-                                        id: varnode.id,
-                                    }),
-                                    src: location.clone(),
-                                },
-                            ));
-                        }
-                        VariableAlias::Alias(_)
+                        VariableAlias::SubVarnode(_, _)
+                        | VariableAlias::Alias(_)
                         | VariableAlias::NewVariable(_) => {}
                     }
                 }
@@ -1044,7 +1026,7 @@ fn reference_scope(
 #[derive(Clone)]
 enum VariableAlias<'a> {
     Alias(&'a ExprValue),
-    SubVarnode(&'a ExprVarnode, Range<NumberUnsigned>),
+    SubVarnode(&'a ExprValue, Range<NumberUnsigned>),
     Parameter(VariableId),
     NewVariable(VariableId),
 }
@@ -1082,11 +1064,14 @@ fn map_variables<'a>(
                         ..
                     })) if matches!(
                         &input.as_ref(),
-                        Expr::Value(ExprElement::Value(ExprValue::Varnode(_)))
+                        Expr::Value(ExprElement::Value(
+                            ExprValue::Varnode(_) | ExprValue::TokenField(_),
+                        ))
                     ) =>
                     {
                         let Expr::Value(ExprElement::Value(
-                            ExprValue::Varnode(varnode_expr),
+                            varnode_expr @ (ExprValue::Varnode(_)
+                            | ExprValue::TokenField(_)),
                         )) = &input.as_ref()
                         else {
                             unreachable!();
@@ -1203,10 +1188,7 @@ fn translate_value(
                         .unwrap()
                         .set_possible_min(),
                     input: Box::new(Expr::Value(ExprElement::Value(
-                        ExprValue::Varnode(ExprVarnode {
-                            location: var.location.clone(),
-                            id: varnode.id,
-                        }),
+                        varnode.clone(),
                     ))),
                 })
             }
@@ -1235,13 +1217,21 @@ fn translate_write(
 ) -> (WriteValue, Option<AssignmentOp>) {
     match expr {
         WriteValue::Local(var) => match variables_map[var.id.0].clone() {
-            VariableAlias::SubVarnode(varnode, bits) => {
+            VariableAlias::SubVarnode(ExprValue::Varnode(varnode), bits) => {
                 let value = WriteValue::Varnode(WriteVarnode {
                     location: varnode.location.clone(),
                     id: varnode.id,
                 });
                 (value, Some(AssignmentOp::BitRange(bits)))
             }
+            VariableAlias::SubVarnode(ExprValue::TokenField(token), bits) => {
+                let value = WriteValue::TokenField(WriteTokenField {
+                    location: token.location.clone(),
+                    id: token.id,
+                });
+                (value, Some(AssignmentOp::BitRange(bits)))
+            }
+            VariableAlias::SubVarnode(_, _) => todo!(),
             VariableAlias::Alias(value) => {
                 match value {
                     // TODO verify those assumptions
