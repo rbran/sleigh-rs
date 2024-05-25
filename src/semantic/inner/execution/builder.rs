@@ -1,9 +1,10 @@
 use std::cell::RefCell;
+use std::ops::Range;
 
 use crate::semantic::execution::{
-    BlockId, Build, ExprInstNext, ExprInstStart, ExprTable, RefTable,
-    RefTokenField, ReferencedValue, Unary, VariableId, WriteExeVar, WriteTable,
-    WriteTokenField, WriteValue, WriteVarnode,
+    BlockId, Build, ExprInstNext, ExprInstStart, ExprTable, ExprVarnode,
+    RefTable, RefTokenField, ReferencedValue, Unary, VariableId, WriteExeVar,
+    WriteTable, WriteTokenField, WriteValue, WriteVarnode,
 };
 use crate::semantic::inner::execution::{Block, ExprNumber};
 use crate::semantic::inner::pattern::Pattern;
@@ -18,8 +19,8 @@ use crate::{
 use super::{
     Assignment, AssignmentOp, BranchCall, CpuBranch, Execution, ExecutionError,
     Export, ExportLen, Expr, ExprCPool, ExprDisVar, ExprElement, ExprNew,
-    ExprValue, FieldSize, LocalGoto, MemWrite, MemoryLocation, Reference,
-    Statement, UserCall,
+    ExprUnaryOp, ExprValue, FieldSize, LocalGoto, MemWrite, MemoryLocation,
+    Reference, Statement, UserCall,
 };
 
 #[derive(Clone, Debug)]
@@ -401,6 +402,25 @@ pub trait ExecutionBuilder {
                                 },
                             ));
                         }
+                        VariableAlias::SubVarnode(varnode, bits) => {
+                            let location = &pmacro
+                                .execution
+                                .variable(pmacro.params[param_id])
+                                .src;
+                            self.insert_statement(Statement::Assignment(
+                                Assignment {
+                                    op: Some(AssignmentOp::BitRange(
+                                        bits.clone(),
+                                    )),
+                                    right: param.clone(),
+                                    var: WriteValue::Varnode(WriteVarnode {
+                                        location: location.clone(),
+                                        id: varnode.id,
+                                    }),
+                                    src: location.clone(),
+                                },
+                            ));
+                        }
                         VariableAlias::Alias(_)
                         | VariableAlias::NewVariable(_) => {}
                     }
@@ -451,15 +471,15 @@ pub trait ExecutionBuilder {
                                 })
                             }
                             Statement::Assignment(x) => {
+                                let (var, op) =
+                                    translate_write(&x.var, &variables_map);
                                 Statement::Assignment(Assignment {
                                     right: translate_expr(
                                         &x.right,
                                         &variables_map,
                                     ),
-                                    var: translate_write(
-                                        &x.var,
-                                        &variables_map,
-                                    ),
+                                    var,
+                                    op,
                                     ..x.clone()
                                 })
                             }
@@ -473,8 +493,9 @@ pub trait ExecutionBuilder {
                                 })
                             }
                             Statement::Declare(old_id) => {
-                                match variables_map[old_id.0] {
-                                    VariableAlias::Parameter(_)
+                                match variables_map[old_id.0].clone() {
+                                    VariableAlias::SubVarnode(_, _)
+                                    | VariableAlias::Parameter(_)
                                     | VariableAlias::Alias(_) => panic!(),
                                     VariableAlias::NewVariable(id) => {
                                         Statement::Declare(id)
@@ -1020,8 +1041,10 @@ fn reference_scope(
     }
 }
 
+#[derive(Clone)]
 enum VariableAlias<'a> {
     Alias(&'a ExprValue),
+    SubVarnode(&'a ExprVarnode, Range<NumberUnsigned>),
     Parameter(VariableId),
     NewVariable(VariableId),
 }
@@ -1045,19 +1068,41 @@ fn map_variables<'a>(
                 .iter()
                 .position(|param_id| *param_id == var_id);
             if let Some(param_id) = param_id {
-                if let Expr::Value(ExprElement::Value(value)) =
-                    &params[param_id]
-                {
-                    return VariableAlias::Alias(value);
-                } else {
-                    let id = execution
-                        .create_variable(
-                            format!("{}_{}", &pmacro.name, &var.name),
-                            var.src.clone(),
-                            var.explicit,
-                        )
-                        .unwrap();
-                    VariableAlias::Parameter(id)
+                match &params[param_id] {
+                    // HACK those exeptions are not listed
+                    // if the parameter is a single value, the param is simply
+                    // replaced
+                    Expr::Value(ExprElement::Value(value)) => {
+                        VariableAlias::Alias(value)
+                    }
+                    // a varnode with bitrange, became a bitrange assignment
+                    Expr::Value(ExprElement::Op(ExprUnaryOp {
+                        op: Unary::BitRange(bit),
+                        input,
+                        ..
+                    })) if matches!(
+                        &input.as_ref(),
+                        Expr::Value(ExprElement::Value(ExprValue::Varnode(_)))
+                    ) =>
+                    {
+                        let Expr::Value(ExprElement::Value(
+                            ExprValue::Varnode(varnode_expr),
+                        )) = &input.as_ref()
+                        else {
+                            unreachable!();
+                        };
+                        VariableAlias::SubVarnode(varnode_expr, bit.clone())
+                    }
+                    _ => {
+                        let id = execution
+                            .create_variable(
+                                format!("{}_{}", &pmacro.name, &var.name),
+                                var.src.clone(),
+                                var.explicit,
+                            )
+                            .unwrap();
+                        VariableAlias::Parameter(id)
+                    }
                 }
             } else {
                 // if just a variable, create a new variable
@@ -1074,14 +1119,14 @@ fn map_variables<'a>(
         .collect()
 }
 
-fn translate_expr(expr: &Expr, variables_offset: &[VariableAlias<'_>]) -> Expr {
+fn translate_expr(expr: &Expr, variables_map: &[VariableAlias<'_>]) -> Expr {
     match expr {
         Expr::Value(value) => {
-            Expr::Value(translate_expr_element(value, variables_offset))
+            Expr::Value(translate_expr_element(value, variables_map))
         }
         Expr::Op(op) => {
-            let left = translate_expr(&op.left, variables_offset);
-            let right = translate_expr(&op.right, variables_offset);
+            let left = translate_expr(&op.left, variables_map);
+            let right = translate_expr(&op.right, variables_map);
             Expr::Op(crate::semantic::inner::execution::ExprBinaryOp {
                 location: op.location.clone(),
                 output_size: op.output_size.clone(),
@@ -1098,9 +1143,7 @@ fn translate_expr_element(
     variables_map: &[VariableAlias<'_>],
 ) -> ExprElement {
     match expr {
-        ExprElement::Value(value) => {
-            ExprElement::Value(translate_value(value, variables_map))
-        }
+        ExprElement::Value(value) => translate_value(value, variables_map),
         ExprElement::UserCall(call) => ExprElement::UserCall(UserCall {
             params: call
                 .params
@@ -1141,19 +1184,39 @@ fn translate_expr_element(
 fn translate_value(
     expr: &ExprValue,
     variables_map: &[VariableAlias<'_>],
-) -> ExprValue {
+) -> ExprElement {
     match expr {
         ExprValue::TokenField(_)
         | ExprValue::Table(_)
         | ExprValue::DisVar(_) => unreachable!(),
 
-        ExprValue::ExeVar(var) => match variables_map[var.id.0] {
-            VariableAlias::Alias(x) => x.clone(),
-            VariableAlias::Parameter(id) | VariableAlias::NewVariable(id) => {
-                ExprValue::ExeVar(crate::semantic::execution::ExprExeVar {
+        ExprValue::ExeVar(var) => match variables_map[var.id.0].clone() {
+            VariableAlias::Alias(x) => ExprElement::Value(x.clone()),
+            VariableAlias::SubVarnode(varnode, bits) => {
+                ExprElement::Op(ExprUnaryOp {
                     location: var.location.clone(),
-                    id,
+                    op: Unary::BitRange(bits.clone()),
+                    output_size: FieldSize::new_unsized()
+                        .set_min_bits(
+                            (bits.end - bits.start).try_into().unwrap(),
+                        )
+                        .unwrap()
+                        .set_possible_min(),
+                    input: Box::new(Expr::Value(ExprElement::Value(
+                        ExprValue::Varnode(ExprVarnode {
+                            location: var.location.clone(),
+                            id: varnode.id,
+                        }),
+                    ))),
                 })
+            }
+            VariableAlias::Parameter(id) | VariableAlias::NewVariable(id) => {
+                ExprElement::Value(ExprValue::ExeVar(
+                    crate::semantic::execution::ExprExeVar {
+                        location: var.location.clone(),
+                        id,
+                    },
+                ))
             }
         },
 
@@ -1162,16 +1225,23 @@ fn translate_value(
         | ExprValue::Bitrange(_)
         | ExprValue::InstStart(_)
         | ExprValue::InstNext(_)
-        | ExprValue::Int(_)) => x.clone(),
+        | ExprValue::Int(_)) => ExprElement::Value(x.clone()),
     }
 }
 
 fn translate_write(
     expr: &WriteValue,
     variables_map: &[VariableAlias<'_>],
-) -> WriteValue {
+) -> (WriteValue, Option<AssignmentOp>) {
     match expr {
-        WriteValue::Local(var) => match variables_map[var.id.0] {
+        WriteValue::Local(var) => match variables_map[var.id.0].clone() {
+            VariableAlias::SubVarnode(varnode, bits) => {
+                let value = WriteValue::Varnode(WriteVarnode {
+                    location: varnode.location.clone(),
+                    id: varnode.id,
+                });
+                (value, Some(AssignmentOp::BitRange(bits)))
+            }
             VariableAlias::Alias(value) => {
                 match value {
                     // TODO verify those assumptions
@@ -1183,41 +1253,46 @@ fn translate_write(
                     | ExprValue::DisVar(_) => panic!(),
 
                     ExprValue::ExeVar(write) => {
-                        WriteValue::Local(WriteExeVar {
+                        let value = WriteValue::Local(WriteExeVar {
                             location: write.location.clone(),
                             id: write.id,
-                        })
+                        });
+                        (value, None)
                     }
                     ExprValue::Varnode(write) => {
-                        WriteValue::Varnode(WriteVarnode {
+                        let value = WriteValue::Varnode(WriteVarnode {
                             location: write.location.clone(),
                             id: write.id,
-                        })
+                        });
+                        (value, None)
                     }
                     ExprValue::TokenField(write) => {
-                        WriteValue::TokenField(WriteTokenField {
+                        let value = WriteValue::TokenField(WriteTokenField {
                             location: write.location.clone(),
                             id: write.id,
-                        })
+                        });
+                        (value, None)
                     }
                     ExprValue::Table(write) => {
-                        WriteValue::TableExport(WriteTable {
+                        let value = WriteValue::TableExport(WriteTable {
                             location: write.location.clone(),
                             id: write.id,
-                        })
+                        });
+                        (value, None)
                     }
                 }
             }
             VariableAlias::Parameter(id) | VariableAlias::NewVariable(id) => {
-                WriteValue::Local(WriteExeVar {
+                let value = WriteValue::Local(WriteExeVar {
                     location: var.location.clone(),
                     id,
-                })
+                });
+                (value, None)
             }
         },
         x @ (WriteValue::Varnode(_)
         | WriteValue::Bitrange(_)
         | WriteValue::TokenField(_)
-        | WriteValue::TableExport(_)) => x.clone(),
+        | WriteValue::TableExport(_)) => (x.clone(), None),
     }
 }
