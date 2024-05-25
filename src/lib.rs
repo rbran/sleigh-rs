@@ -499,6 +499,9 @@ pub enum ExecutionError {
     #[error("BitRange can't be zero")]
     BitRangeZero, //TODO src
 
+    #[error("Operation result in overflow {0}")]
+    OperationOverflow(Span),
+
     #[error("Can't apply op to variable due to size at {0}")]
     VarSize(#[from] VarSizeError), //TODO sub-type error
 

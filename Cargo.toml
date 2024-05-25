@@ -9,6 +9,8 @@ description = "Ghidra Sleigh parser"
 
 [features]
 thread = []
+# don't allow any overflow in inline operations
+no_overflow_inline = []
 
 [dependencies]
 nom = "7"

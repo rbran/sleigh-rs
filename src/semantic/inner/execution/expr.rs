@@ -1006,8 +1006,9 @@ fn inner_expr_solve(
                     left.number.as_unsigned().unwrap(),
                     right.number.as_unsigned().unwrap(),
                 )
-                //TODO better error
-                .ok_or(ExecutionError::InvalidExport)?;
+                .ok_or_else(|| {
+                    ExecutionError::OperationOverflow(op.location.clone())
+                })?;
             //replace self with our new value
             Ok(Expr::Value(Ele::Value(Value::Int(ExprNumber::new(
                 op.location,
