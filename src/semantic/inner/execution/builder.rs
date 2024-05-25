@@ -2,11 +2,12 @@ use std::cell::RefCell;
 
 use crate::semantic::execution::{
     BlockId, Build, ExprInstNext, ExprInstStart, ExprTable, RefTable,
-    RefTokenField, ReferencedValue, Unary, VariableId, WriteExeVar, WriteValue,
-    WriteVarnode,
+    RefTokenField, ReferencedValue, Unary, VariableId, WriteExeVar, WriteTable,
+    WriteTokenField, WriteValue, WriteVarnode,
 };
 use crate::semantic::inner::execution::{Block, ExprNumber};
 use crate::semantic::inner::pattern::Pattern;
+use crate::semantic::inner::pcode_macro::PcodeMacro;
 use crate::semantic::inner::{GlobalScope, Sleigh};
 use crate::semantic::{InstNext, InstStart, SpaceId, TableId};
 use crate::{
@@ -333,11 +334,11 @@ pub trait ExecutionBuilder {
                 )));
                 Ok(())
             }
-            GlobalScope::PcodeMacro(x) => {
+            GlobalScope::PcodeMacro(macro_id) => {
                 // TODO create an alias system, so variable and block names
                 // don't colide
                 // TODO make pcode_macro use RefCell to avoid this clone
-                let pmacro = self.sleigh().pcode_macro(x).clone();
+                let pmacro = self.sleigh().pcode_macro(macro_id).clone();
 
                 // if the macro have more then one block, split blocks
                 let (block_offset, next_block) =
@@ -375,16 +376,34 @@ pub trait ExecutionBuilder {
                     };
 
                 // mapping variable -> execution variable
-                let variables_offset = self.execution().variables.len();
-                // create variables, and map then
-                for var in &pmacro.execution.variables {
-                    let id = self.execution_mut().create_variable(
-                        format!("{}_{}", &pmacro.name, &var.name),
-                        var.src.clone(),
-                        var.explicit,
-                    )?;
-                    let var = self.execution_mut().variable_mut(id);
-                    var.size.set(var.size.get());
+                let variables_map =
+                    map_variables(&pmacro, &params, self.execution_mut());
+
+                // assign the values to the params
+                for (param_id, param) in params.iter().enumerate() {
+                    let old_var_id = pmacro.params[param_id];
+                    let new_var = &variables_map[old_var_id.0];
+                    match new_var {
+                        VariableAlias::Parameter(variable_id) => {
+                            let location = &pmacro
+                                .execution
+                                .variable(pmacro.params[param_id])
+                                .src;
+                            self.insert_statement(Statement::Assignment(
+                                Assignment {
+                                    op: None,
+                                    right: param.clone(),
+                                    var: WriteValue::Local(WriteExeVar {
+                                        location: location.clone(),
+                                        id: *variable_id,
+                                    }),
+                                    src: location.clone(),
+                                },
+                            ));
+                        }
+                        VariableAlias::Alias(_)
+                        | VariableAlias::NewVariable(_) => {}
+                    }
                 }
 
                 // populate the blocks
@@ -403,7 +422,7 @@ pub trait ExecutionBuilder {
                                 let block_id =
                                     BlockId(goto.dst.0 + block_offset.unwrap());
                                 let cond = goto.cond.as_ref().map(|cond| {
-                                    translate_expr(cond, variables_offset)
+                                    translate_expr(cond, &variables_map)
                                 });
                                 Statement::LocalGoto(LocalGoto {
                                     cond,
@@ -413,12 +432,9 @@ pub trait ExecutionBuilder {
                             Statement::CpuBranch(x) => {
                                 Statement::CpuBranch(CpuBranch {
                                     cond: x.cond.as_ref().map(|x| {
-                                        translate_expr(x, variables_offset)
+                                        translate_expr(x, &variables_map)
                                     }),
-                                    dst: translate_expr(
-                                        &x.dst,
-                                        variables_offset,
-                                    ),
+                                    dst: translate_expr(&x.dst, &variables_map),
                                     ..x.clone()
                                 })
                             }
@@ -428,7 +444,7 @@ pub trait ExecutionBuilder {
                                         .params
                                         .iter()
                                         .map(|x| {
-                                            translate_expr(x, variables_offset)
+                                            translate_expr(x, &variables_map)
                                         })
                                         .collect(),
                                     ..x.clone()
@@ -438,11 +454,11 @@ pub trait ExecutionBuilder {
                                 Statement::Assignment(Assignment {
                                     right: translate_expr(
                                         &x.right,
-                                        variables_offset,
+                                        &variables_map,
                                     ),
                                     var: translate_write(
                                         &x.var,
-                                        variables_offset,
+                                        &variables_map,
                                     ),
                                     ..x.clone()
                                 })
@@ -451,15 +467,19 @@ pub trait ExecutionBuilder {
                                 Statement::MemWrite(MemWrite {
                                     right: translate_expr(
                                         &x.right,
-                                        variables_offset,
+                                        &variables_map,
                                     ),
                                     ..x.clone()
                                 })
                             }
                             Statement::Declare(old_id) => {
-                                let new_id =
-                                    VariableId(old_id.0 + variables_offset);
-                                Statement::Declare(new_id)
+                                match variables_map[old_id.0] {
+                                    VariableAlias::Parameter(_)
+                                    | VariableAlias::Alias(_) => panic!(),
+                                    VariableAlias::NewVariable(id) => {
+                                        Statement::Declare(id)
+                                    }
+                                }
                             }
                             x @ Statement::Delayslot(_) => x.clone(),
                             Statement::Export(_) | Statement::Build(_) => {
@@ -1000,7 +1020,61 @@ fn reference_scope(
     }
 }
 
-fn translate_expr(expr: &Expr, variables_offset: usize) -> Expr {
+enum VariableAlias<'a> {
+    Alias(&'a ExprValue),
+    Parameter(VariableId),
+    NewVariable(VariableId),
+}
+
+fn map_variables<'a>(
+    pmacro: &PcodeMacro,
+    params: &'a [Expr],
+    execution: &mut Execution,
+) -> Vec<VariableAlias<'a>> {
+    pmacro
+        .execution
+        .variables
+        .iter()
+        .enumerate()
+        .map(|(var_id, var)| {
+            let var_id = VariableId(var_id);
+            // if the variable is a parameter and the parameter is a value,
+            // just make the variable an alias to the original value
+            let param_id = pmacro
+                .params
+                .iter()
+                .position(|param_id| *param_id == var_id);
+            if let Some(param_id) = param_id {
+                if let Expr::Value(ExprElement::Value(value)) =
+                    &params[param_id]
+                {
+                    return VariableAlias::Alias(value);
+                } else {
+                    let id = execution
+                        .create_variable(
+                            format!("{}_{}", &pmacro.name, &var.name),
+                            var.src.clone(),
+                            var.explicit,
+                        )
+                        .unwrap();
+                    VariableAlias::Parameter(id)
+                }
+            } else {
+                // if just a variable, create a new variable
+                let id = execution
+                    .create_variable(
+                        format!("{}_{}", &pmacro.name, &var.name),
+                        var.src.clone(),
+                        var.explicit,
+                    )
+                    .unwrap();
+                VariableAlias::NewVariable(id)
+            }
+        })
+        .collect()
+}
+
+fn translate_expr(expr: &Expr, variables_offset: &[VariableAlias<'_>]) -> Expr {
     match expr {
         Expr::Value(value) => {
             Expr::Value(translate_expr_element(value, variables_offset))
@@ -1021,35 +1095,35 @@ fn translate_expr(expr: &Expr, variables_offset: usize) -> Expr {
 
 fn translate_expr_element(
     expr: &ExprElement,
-    variables_offset: usize,
+    variables_map: &[VariableAlias<'_>],
 ) -> ExprElement {
     match expr {
         ExprElement::Value(value) => {
-            ExprElement::Value(translate_value(value, variables_offset))
+            ExprElement::Value(translate_value(value, variables_map))
         }
         ExprElement::UserCall(call) => ExprElement::UserCall(UserCall {
             params: call
                 .params
                 .iter()
-                .map(|x| translate_expr(x, variables_offset))
+                .map(|x| translate_expr(x, variables_map))
                 .collect(),
             ..call.clone()
         }),
         ExprElement::DeReference(a, b, c) => ExprElement::DeReference(
             a.clone(),
             b.clone(),
-            Box::new(translate_expr(c, variables_offset)),
+            Box::new(translate_expr(c, variables_map)),
         ),
         ExprElement::Op(x) => ExprElement::Op(super::ExprUnaryOp {
-            input: Box::new(translate_expr(&x.input, variables_offset)),
+            input: Box::new(translate_expr(&x.input, variables_map)),
             ..x.clone()
         }),
         ExprElement::New(x) => ExprElement::New(ExprNew {
-            first: Box::new(translate_expr(&x.first, variables_offset)),
+            first: Box::new(translate_expr(&x.first, variables_map)),
             second: x
                 .second
                 .as_ref()
-                .map(|x| Box::new(translate_expr(x, variables_offset))),
+                .map(|x| Box::new(translate_expr(x, variables_map))),
             location: x.location.clone(),
         }),
         ExprElement::CPool(x) => ExprElement::CPool(ExprCPool {
@@ -1057,25 +1131,31 @@ fn translate_expr_element(
             params: x
                 .params
                 .iter()
-                .map(|x| translate_expr(x, variables_offset))
+                .map(|x| translate_expr(x, variables_map))
                 .collect(),
         }),
         x @ ExprElement::Reference(_) => x.clone(),
     }
 }
 
-fn translate_value(expr: &ExprValue, variables_offset: usize) -> ExprValue {
+fn translate_value(
+    expr: &ExprValue,
+    variables_map: &[VariableAlias<'_>],
+) -> ExprValue {
     match expr {
         ExprValue::TokenField(_)
         | ExprValue::Table(_)
         | ExprValue::DisVar(_) => unreachable!(),
 
-        ExprValue::ExeVar(var) => {
-            ExprValue::ExeVar(crate::semantic::execution::ExprExeVar {
-                location: var.location.clone(),
-                id: VariableId(var.id.0 + variables_offset),
-            })
-        }
+        ExprValue::ExeVar(var) => match variables_map[var.id.0] {
+            VariableAlias::Alias(x) => x.clone(),
+            VariableAlias::Parameter(id) | VariableAlias::NewVariable(id) => {
+                ExprValue::ExeVar(crate::semantic::execution::ExprExeVar {
+                    location: var.location.clone(),
+                    id,
+                })
+            }
+        },
 
         x @ (ExprValue::Varnode(_)
         | ExprValue::Context(_)
@@ -1086,12 +1166,55 @@ fn translate_value(expr: &ExprValue, variables_offset: usize) -> ExprValue {
     }
 }
 
-fn translate_write(expr: &WriteValue, variables_offset: usize) -> WriteValue {
+fn translate_write(
+    expr: &WriteValue,
+    variables_map: &[VariableAlias<'_>],
+) -> WriteValue {
     match expr {
-        WriteValue::Local(var) => WriteValue::Local(WriteExeVar {
-            location: var.location.clone(),
-            id: VariableId(var.id.0 + variables_offset),
-        }),
+        WriteValue::Local(var) => match variables_map[var.id.0] {
+            VariableAlias::Alias(value) => {
+                match value {
+                    // TODO verify those assumptions
+                    ExprValue::Int(_)
+                    | ExprValue::InstStart(_)
+                    | ExprValue::InstNext(_)
+                    | ExprValue::Context(_)
+                    | ExprValue::Bitrange(_)
+                    | ExprValue::DisVar(_) => panic!(),
+
+                    ExprValue::ExeVar(write) => {
+                        WriteValue::Local(WriteExeVar {
+                            location: write.location.clone(),
+                            id: write.id,
+                        })
+                    }
+                    ExprValue::Varnode(write) => {
+                        WriteValue::Varnode(WriteVarnode {
+                            location: write.location.clone(),
+                            id: write.id,
+                        })
+                    }
+                    ExprValue::TokenField(write) => {
+                        WriteValue::TokenField(WriteTokenField {
+                            location: write.location.clone(),
+                            id: write.id,
+                        })
+                    }
+                    ExprValue::Table(write) => {
+                        WriteValue::TableExport(WriteTable {
+                            location: write.location.clone(),
+                            id: write.id,
+                        })
+                    }
+                }
+            }
+            VariableAlias::Parameter(id) | VariableAlias::NewVariable(id) => {
+                WriteValue::Local(WriteExeVar {
+                    location: var.location.clone(),
+                    id,
+                })
+            }
+        },
         x @ (WriteValue::Varnode(_)
         | WriteValue::Bitrange(_)
         | WriteValue::TokenField(_)

@@ -17,7 +17,8 @@ use crate::{
 };
 
 use super::{
-    Execution, ExportLen, FieldSizeMut, FieldSizeUnmutable, MemoryLocation, ReadScope, UserCall
+    Execution, ExportLen, FieldSizeMut, FieldSizeUnmutable, MemoryLocation,
+    ReadScope, UserCall,
 };
 
 macro_rules! mark_unfinished_size {
@@ -476,8 +477,8 @@ impl ExprElement {
                 })?;
 
                 // if the input or output len are not possible, we are not done
-                if !input.size(sleigh, execution).is_possible()
-                    || !output_size.is_possible()
+                if !(input.size(sleigh, execution).is_possible()
+                    && output_size.is_possible())
                 {
                     solved.iam_not_finished(&location, file!(), line!());
                 }
@@ -975,7 +976,7 @@ impl ExprDisVar {
 fn inner_expr_solve(
     mut op: ExprBinaryOp,
     sleigh: &Sleigh,
-    variables: &Execution,
+    execution: &Execution,
     solved: &mut impl SolverStatus,
 ) -> Result<Expr, Box<ExecutionError>> {
     use Binary::*;
@@ -1038,7 +1039,7 @@ fn inner_expr_solve(
             })
             .unwrap_or(false)
             && value
-                .size(sleigh, variables)
+                .size(sleigh, execution)
                 .final_value()
                 .map(|bits| {
                     bits.get()
@@ -1073,7 +1074,7 @@ fn inner_expr_solve(
         ) if op
             .output_size
             .final_value()
-            .zip(value.size(sleigh, variables).final_value())
+            .zip(value.size(sleigh, execution).final_value())
             .map(|(out_bits, val_bits)| (out_bits.get(), val_bits.get()))
             .map(|(out_bits, val_bits)| {
                 val_bits >= lsb.as_unsigned().unwrap()
@@ -1096,17 +1097,17 @@ fn inner_expr_solve(
 
         //output and left have the same size, right can have any size
         (mut left, Lsl | Lsr | Asr, mut right) => {
-            left.solve(sleigh, variables, solved)?;
+            left.solve(sleigh, execution, solved)?;
             //NOTE right defaults to 32bits
-            right.solve(sleigh, variables, solved)?;
+            right.solve(sleigh, execution, solved)?;
 
             let restricted = len::a_generate_b(
-                left.size_mut(sleigh, variables).as_dyn(),
+                left.size_mut(sleigh, execution).as_dyn(),
                 &mut op.output_size,
             );
             let restricted = restricted.ok_or_else(|| {
                 VarSizeError::ShiftLeftOutputDiff {
-                    left: left.size(sleigh, variables),
+                    left: left.size(sleigh, execution),
                     output: op.output_size,
                     location: left.src().clone(),
                 }
@@ -1128,8 +1129,8 @@ fn inner_expr_solve(
         (mut left, And | Xor | Or, mut right) => {
             //left/right can have any lenght, so just try to solve the len
             //if possible, otherwise just ignore it
-            left.solve(sleigh, variables, &mut Solved::default())?;
-            right.solve(sleigh, variables, &mut Solved::default())?;
+            left.solve(sleigh, execution, &mut Solved::default())?;
+            right.solve(sleigh, execution, &mut Solved::default())?;
             mark_unfinished_size!(&op.output_size, solved, &op.location,);
             Ok(Expr::Op(ExprBinaryOp {
                 location: op.location,
@@ -1147,17 +1148,17 @@ fn inner_expr_solve(
             | FloatAdd | Sub | FloatSub | BitAnd | BitXor | BitOr,
             mut right,
         ) => {
-            left.solve(sleigh, variables, solved)?;
-            right.solve(sleigh, variables, solved)?;
+            left.solve(sleigh, execution, solved)?;
+            right.solve(sleigh, execution, solved)?;
             let restricted = len::a_b_generate_c(
-                left.size_mut(sleigh, variables).as_dyn(),
-                right.size_mut(sleigh, variables).as_dyn(),
+                left.size_mut(sleigh, execution).as_dyn(),
+                right.size_mut(sleigh, execution).as_dyn(),
                 &mut op.output_size,
             );
             let restricted =
                 restricted.ok_or_else(|| VarSizeError::TriBinaryOp {
-                    left: left.size(sleigh, variables),
-                    right: right.size(sleigh, variables),
+                    left: left.size(sleigh, execution),
+                    right: right.size(sleigh, execution),
                     output: op.output_size,
                     location: op.location.clone(),
                 })?;
@@ -1184,18 +1185,18 @@ fn inner_expr_solve(
             | SBorrow,
             mut right,
         ) => {
-            left.solve(sleigh, variables, solved)?;
-            right.solve(sleigh, variables, solved)?;
+            left.solve(sleigh, execution, solved)?;
+            right.solve(sleigh, execution, solved)?;
             //Both sides need to have the same number of bits.
             //output can have any size because is always 0/1
             let restricted = len::a_cmp_b(
-                left.size_mut(sleigh, variables).as_dyn(),
-                right.size_mut(sleigh, variables).as_dyn(),
+                left.size_mut(sleigh, execution).as_dyn(),
+                right.size_mut(sleigh, execution).as_dyn(),
             );
             let restricted =
                 restricted.ok_or_else(|| VarSizeError::BoolBinaryOp {
-                    left: left.size(sleigh, variables),
-                    right: right.size(sleigh, variables),
+                    left: left.size(sleigh, execution),
+                    right: right.size(sleigh, execution),
                     location: op.location.clone(),
                 })?;
             if restricted {

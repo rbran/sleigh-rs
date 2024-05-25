@@ -254,6 +254,18 @@ pub enum WriteValue {
     Local(WriteExeVar),
 }
 
+impl WriteValue {
+    pub fn location(&self) -> &Span {
+        match self {
+            WriteValue::Varnode(x) => &x.location,
+            WriteValue::Bitrange(x) => &x.location,
+            WriteValue::TokenField(x) => &x.location,
+            WriteValue::TableExport(x) => &x.location,
+            WriteValue::Local(x) => &x.location,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct WriteVarnode {
     pub location: Span,

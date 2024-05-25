@@ -3,8 +3,7 @@ use std::collections::HashMap;
 use crate::semantic::meaning::{AttachLiteral, AttachNumber, AttachVarnode};
 use crate::semantic::{
     AttachLiteralId, AttachNumberId, AttachVarnodeId, BitrangeId, ContextId,
-    SpaceId, TableId, TokenFieldId, TokenId,
-    UserFunctionId, VarnodeId,
+    SpaceId, TableId, TokenFieldId, TokenId, UserFunctionId, VarnodeId,
 };
 use crate::syntax::define::TokenFieldAttribute;
 use crate::{
@@ -114,7 +113,6 @@ impl GlobalScope {
         }
     }
 }
-
 
 #[derive(Copy, Clone, Debug)]
 pub struct PrintFlags {
