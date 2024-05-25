@@ -812,8 +812,8 @@ impl ExprValue {
                                 .try_into()
                                 .unwrap(),
                         )
-                        .unwrap()
-                        .set_possible_min();
+                        .unwrap();
+                    solved.i_did_a_thing();
                 }
                 mark_unfinished_size!(&num.size, solved, &num.location)
             }
@@ -902,7 +902,7 @@ impl ExprNumber {
         Self {
             location,
             number,
-            size: FieldSize::new_unsized(),
+            size: FieldSize::new_unsized().set_possible_min(),
         }
     }
 }

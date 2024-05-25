@@ -460,12 +460,17 @@ pub fn a_receive_b(
 ) -> Option<bool> {
     let mut modified = false;
 
-    // if a size is unrestructed and no possible value is set, use b
+    // if a size is unrestricted and no possible value is set, use b
     if a.get().is_fully_undefined() {
         modified |= a.set(b.get())?;
     } else {
         // a and b have the same size
         modified |= intersect_all(&mut [a, b])?;
+    }
+
+    // if b allow possible min, a also allow min
+    if b.get().possible_min() {
+        modified |= a.update_action(|a| Some(a.set_possible_min())).unwrap();
     }
 
     Some(modified)
