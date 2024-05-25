@@ -52,12 +52,12 @@ impl Assignment {
 
         // left and right sizes are the same
         let modified = len::a_receive_b(
-            self.op
+            &mut *self
+                .op
                 .as_mut()
                 .map(|trunc| trunc.output_size_mut())
-                .unwrap_or_else(|| self.var.size_mut(sleigh, execution))
-                .as_dyn(),
-            self.right.size_mut(sleigh, execution).as_dyn(),
+                .unwrap_or_else(|| self.var.size_mut(sleigh, execution)),
+            &mut *self.right.size_mut(sleigh, execution),
         );
         if modified.ok_or_else(|| VarSizeError::AssignmentSides {
             left: self.var.size(sleigh, execution),
@@ -98,15 +98,17 @@ pub enum AssignmentOp {
 impl AssignmentOp {
     pub fn output_size_mut(&mut self) -> Box<dyn FieldSizeMut + '_> {
         match self {
-            AssignmentOp::TakeLsb(bytes) => Box::new(FieldSize::from(
-                FieldSize::Value((bytes.get() * 8).try_into().unwrap()),
-            )),
+            AssignmentOp::TakeLsb(bytes) => {
+                Box::new(len::FieldSizeUnmutable(FieldSize::from(
+                    FieldSize::Value((bytes.get() * 8).try_into().unwrap()),
+                )))
+            }
             AssignmentOp::TrunkLsb {
                 bytes: _,
                 output_size,
             } => Box::new(output_size),
-            AssignmentOp::BitRange(bits) => Box::new(FieldSize::Value(
-                (bits.end - bits.start).try_into().unwrap(),
+            AssignmentOp::BitRange(bits) => Box::new(len::FieldSizeUnmutable(
+                FieldSize::Value((bits.end - bits.start).try_into().unwrap()),
             )),
         }
     }

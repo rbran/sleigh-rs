@@ -312,9 +312,6 @@ pub trait FieldSizeMut {
 }
 
 impl<'a> dyn FieldSizeMut + 'a {
-    pub fn as_dyn(&mut self) -> &mut dyn FieldSizeMut {
-        self
-    }
     #[must_use]
     pub fn update_action(
         &mut self,
@@ -337,24 +334,16 @@ impl FieldSizeMut for &Cell<FieldSize> {
         Some(modify)
     }
 }
-impl FieldSizeMut for FieldSize {
-    fn get(&self) -> FieldSize {
-        *self
-    }
-    fn set(&mut self, size: FieldSize) -> Option<bool> {
-        let modify = *self != size;
-        if modify {
-            *self = size;
-        }
-        Some(modify)
-    }
-}
 impl FieldSizeMut for &mut FieldSize {
     fn get(&self) -> FieldSize {
-        (**self).get()
+        **self
     }
     fn set(&mut self, size: FieldSize) -> Option<bool> {
-        (*self).set(size)
+        let modify = **self != size;
+        if modify {
+            **self = size;
+        }
+        Some(modify)
     }
 }
 //don't allow mutation

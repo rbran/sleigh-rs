@@ -503,7 +503,7 @@ impl ExprElement {
             }
             Self::Op(ExprUnaryOp {
                 location,
-                output_size: size,
+                output_size,
                 op:
                     Unary::Negation
                     | Unary::BitNegation
@@ -516,19 +516,20 @@ impl ExprElement {
                     | Unary::FloatRound,
                 input,
             }) => {
+                let mut output_size = output_size;
                 //the input and output have the same number of bits
                 let modified_result = len::a_generate_b(
                     &mut *input.size_mut(sleigh, execution),
-                    size,
+                    &mut output_size,
                 );
                 modified |= modified_result.ok_or_else(|| {
                     VarSizeError::UnaryOpDiffSize {
                         input: input.size(sleigh, execution),
-                        output: *size,
+                        output: *output_size,
                         location: location.clone(),
                     }
                 })?;
-                mark_unfinished_size!(&size, solved, location);
+                mark_unfinished_size!(&output_size, solved, location);
                 input.solve(sleigh, execution, solved)?;
             }
             Self::Op(ExprUnaryOp {
@@ -576,7 +577,7 @@ impl ExprElement {
                 //output size need to be bigger or eq to the value size and vise-versa
                 let modified_result = len::a_extend_b(
                     &mut *input.size_mut(sleigh, execution),
-                    &mut output_size,
+                    &mut &mut output_size,
                 );
                 modified |=
                     modified_result.ok_or_else(|| VarSizeError::ExtShrink {
@@ -1109,8 +1110,8 @@ fn inner_expr_solve(
             right.solve(sleigh, execution, solved)?;
 
             let restricted = len::a_generate_b(
-                left.size_mut(sleigh, execution).as_dyn(),
-                &mut op.output_size,
+                &mut *left.size_mut(sleigh, execution),
+                &mut &mut op.output_size,
             );
             let restricted = restricted.ok_or_else(|| {
                 VarSizeError::ShiftLeftOutputDiff {
@@ -1158,9 +1159,9 @@ fn inner_expr_solve(
             left.solve(sleigh, execution, solved)?;
             right.solve(sleigh, execution, solved)?;
             let restricted = len::a_b_generate_c(
-                left.size_mut(sleigh, execution).as_dyn(),
-                right.size_mut(sleigh, execution).as_dyn(),
-                &mut op.output_size,
+                &mut *left.size_mut(sleigh, execution),
+                &mut *right.size_mut(sleigh, execution),
+                &mut &mut op.output_size,
             );
             let restricted =
                 restricted.ok_or_else(|| VarSizeError::TriBinaryOp {
@@ -1197,8 +1198,8 @@ fn inner_expr_solve(
             //Both sides need to have the same number of bits.
             //output can have any size because is always 0/1
             let restricted = len::a_cmp_b(
-                left.size_mut(sleigh, execution).as_dyn(),
-                right.size_mut(sleigh, execution).as_dyn(),
+                &mut *left.size_mut(sleigh, execution),
+                &mut *right.size_mut(sleigh, execution),
             );
             let restricted =
                 restricted.ok_or_else(|| VarSizeError::BoolBinaryOp {
