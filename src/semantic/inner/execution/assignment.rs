@@ -112,7 +112,7 @@ impl AssignmentOp {
             )),
         }
     }
-    pub fn output_size(&mut self) -> FieldSize {
+    pub fn output_size(&self) -> FieldSize {
         match self {
             AssignmentOp::TakeLsb(bytes) => {
                 FieldSize::Value((bytes.get() * 8).try_into().unwrap())
