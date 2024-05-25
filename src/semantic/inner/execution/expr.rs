@@ -805,6 +805,16 @@ impl ExprValue {
                 )
             }
             Self::Int(num) => {
+                if num.size.is_fully_undefined() {
+                    num.size
+                        .set_min_bits(
+                            u64::from(num.number.bits_required())
+                                .try_into()
+                                .unwrap(),
+                        )
+                        .unwrap()
+                        .set_possible_min();
+                }
                 mark_unfinished_size!(&num.size, solved, &num.location)
             }
             Self::DisVar(var) => {
@@ -889,14 +899,10 @@ impl ExprNumber {
     }
 
     pub fn new(location: Span, number: Number) -> ExprNumber {
-        let size = FieldSize::default()
-            .set_min_bits(u64::from(number.bits_required()).try_into().unwrap())
-            .unwrap()
-            .set_possible_min();
         Self {
             location,
             number,
-            size,
+            size: FieldSize::new_unsized(),
         }
     }
 }
