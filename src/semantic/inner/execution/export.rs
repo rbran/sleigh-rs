@@ -251,6 +251,12 @@ impl Export {
             .size_mut(sleigh, &execution)
             .update_action(|size| size.set_max_bytes(space.addr_bytes));
 
+        // memory can be any size, and the size of the space is possible
+        // but ignore if not possible, because it can also be smaller
+        let _ = addr.size_mut(sleigh, execution).update_action(|s| {
+            s.set_possible_bytes(sleigh.space(memory.space).addr_bytes)
+        });
+
         let _ = modified.ok_or_else(|| VarSizeError::AddressTooBig {
             address_size: addr.size(sleigh, &execution),
             space_bytes: space.addr_bytes,
@@ -312,16 +318,16 @@ impl Export {
     pub fn solve(
         &mut self,
         sleigh: &Sleigh,
-        variables: &Execution,
+        execution: &Execution,
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
         match self {
             Self::Const { .. } => Ok(()),
-            Self::Value(expr) => expr.solve(sleigh, variables, solved),
+            Self::Value(expr) => expr.solve(sleigh, execution, solved),
             Self::Reference { addr, memory } => {
-                addr.solve(sleigh, variables, solved)?;
+                addr.solve(sleigh, execution, solved)?;
                 memory.solve(solved);
-                if addr.size(sleigh, variables).is_undefined() {
+                if addr.size(sleigh, execution).is_undefined() {
                     solved.iam_not_finished(addr.src(), file!(), line!());
                 }
                 Ok(())
