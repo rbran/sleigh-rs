@@ -806,8 +806,8 @@ impl ExprValue {
                 )
             }
             Self::Int(num) => {
-                if num.size.is_fully_undefined() {
-                    num.size
+                if num.size.is_unrestricted() {
+                    num.size = num.size
                         .set_min_bits(
                             u64::from(num.number.bits_required())
                                 .try_into()

@@ -63,6 +63,7 @@ impl MemWrite {
         execution: &Execution,
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
+        self.addr.solve(sleigh, execution, solved)?;
         self.right.solve(sleigh, execution, solved)?;
         // HACK: exception in case the right size is smaller then the left size,
         // truncate the right size with a msb(0)

@@ -247,8 +247,13 @@ impl FieldSize {
                 ..
             } => Some(*value),
             Self::Unsized {
-                possible_min: true, ..
-            } => self.min_bits(),
+                possible_min: true,
+                range:
+                    FieldRange {
+                        min: Some(value), ..
+                    },
+                ..
+            } => Some(*value),
             Self::Unsized { .. } => None,
         }
     }
