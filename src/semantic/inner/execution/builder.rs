@@ -102,13 +102,16 @@ pub trait ExecutionBuilder {
         &mut self,
         name: &str,
         src: &Span,
+        size: Option<FieldSize>,
         explicit: bool,
     ) -> Result<VariableId, Box<ExecutionError>> {
         let var = self.execution_mut().create_variable(
             name.to_owned(),
             src.clone(),
+            size,
             explicit,
         )?;
+        // TODO only create a declare if explicit?
         self.insert_statement(Statement::Declare(var));
         Ok(var)
     }
@@ -174,18 +177,19 @@ pub trait ExecutionBuilder {
                     self.new_call_statement(x)?;
                 }
                 syntax::block::execution::Statement::Declare(x) => {
-                    let var_id = self.create_variable(&x.name, &x.src, true)?;
-                    let var = self.execution_mut().variable_mut(var_id);
-                    if let Some(size) = x.size {
-                        let size = NumberNonZeroUnsigned::new(size.value)
-                            .map(FieldSize::new_bytes)
-                            .ok_or_else(|| {
-                                Box::new(ExecutionError::InvalidVarLen(
-                                    size.src,
-                                ))
-                            })?;
-                        var.size.set(size);
-                    }
+                    let size = x
+                        .size
+                        .map(|size| {
+                            NumberNonZeroUnsigned::new(size.value)
+                                .map(FieldSize::new_bytes)
+                                .ok_or_else(|| {
+                                    Box::new(ExecutionError::InvalidVarLen(
+                                        size.src,
+                                    ))
+                                })
+                        })
+                        .transpose()?;
+                    self.create_variable(&x.name, &x.src, size, true)?;
                 }
                 syntax::block::execution::Statement::Assignment(x) => {
                     let assignment = self.new_assignment(x)?;
@@ -455,13 +459,18 @@ pub trait ExecutionBuilder {
                             Statement::Assignment(x) => {
                                 let (var, op) =
                                     translate_write(&x.var, &variables_map);
+                                if let Some((_new_op, _old_op)) =
+                                    op.as_ref().zip(x.op.as_ref())
+                                {
+                                    todo!("consiliate two operation on macro");
+                                }
                                 Statement::Assignment(Assignment {
                                     right: translate_expr(
                                         &x.right,
                                         &variables_map,
                                     ),
                                     var,
-                                    op,
+                                    op: x.op.clone().or(op),
                                     ..x.clone()
                                 })
                             }
@@ -543,22 +552,21 @@ pub trait ExecutionBuilder {
             (None, _) => {
                 //the var size is defined if ByteRangeLsb is present
                 //add the var creation statement
-                let new_var_id =
-                    self.create_variable(&input.ident, &input.src, false)?;
-                let new_var = self.execution_mut().variable_mut(new_var_id);
-                match &input.op {
+                let size = match &input.op {
                     Some(
                         syntax::block::execution::assignment::OpLeft::ByteRangeLsb(x),
                     ) => {
-                        let new_len = new_var.size.get().set_final_value(
-                                (x.value * 8).try_into().unwrap(),
-                            )
-                            .unwrap();
-                        new_var.size.set(new_len);
+                        Some(FieldSize::new_bytes(x.value.try_into().unwrap()))
                     }
                     Some(_) => todo!("create var with this op?"),
-                    None => (),
-                }
+                    None => None,
+                };
+                let new_var_id = self.create_variable(
+                    &input.ident,
+                    &input.src,
+                    size,
+                    false,
+                )?;
                 Ok(Statement::Assignment(Assignment::new(
                     WriteValue::Local(WriteExeVar {
                         id: new_var_id,
@@ -1083,6 +1091,7 @@ fn map_variables<'a>(
                             .create_variable(
                                 format!("{}_{}", &pmacro.name, &var.name),
                                 var.src.clone(),
+                                Some(var.size.get()),
                                 var.explicit,
                             )
                             .unwrap();
@@ -1095,6 +1104,7 @@ fn map_variables<'a>(
                     .create_variable(
                         format!("{}_{}", &pmacro.name, &var.name),
                         var.src.clone(),
+                        Some(var.size.get()),
                         var.explicit,
                     )
                     .unwrap();

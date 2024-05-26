@@ -149,7 +149,7 @@ impl Sleigh {
             .params
             .into_iter()
             .map(|(name, src)| -> Result<_, Box<ExecutionError>> {
-                Ok(execution.create_variable(name, src.clone(), false)?)
+                Ok(execution.create_variable(name, src.clone(), None, false)?)
             })
             .collect::<Result<_, _>>()
             .map_err(|e| {

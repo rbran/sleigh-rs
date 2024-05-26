@@ -234,6 +234,7 @@ impl Execution {
         &mut self,
         name: String,
         src: Span,
+        size: Option<FieldSize>,
         explicit: bool,
     ) -> Result<VariableId, Box<ExecutionError>> {
         //// don't allow duplicated name
@@ -242,7 +243,7 @@ impl Execution {
         //}
         //TODO src
         let var_id = self.variables.len();
-        let var = Variable::new(name, src, explicit);
+        let var = Variable::new(name, src, size, explicit);
         self.variables.push(var);
         Ok(VariableId(var_id))
     }

@@ -18,11 +18,16 @@ pub struct Variable {
 }
 
 impl Variable {
-    pub fn new(name: String, src: Span, explicit: bool) -> Self {
+    pub fn new(
+        name: String,
+        src: Span,
+        size: Option<FieldSize>,
+        explicit: bool,
+    ) -> Self {
         Self {
             name,
             //scope,
-            size: Cell::new(FieldSize::new_unsized()),
+            size: Cell::new(size.unwrap_or(FieldSize::new_unsized())),
             src,
             explicit,
         }
