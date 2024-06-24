@@ -1,3 +1,4 @@
+use std::num::TryFromIntError;
 use std::ops::{Bound, RangeBounds};
 use std::path::Path;
 #[cfg(not(feature = "thread"))]
@@ -18,19 +19,11 @@ use syntax::{BitRangeLsbLen, BitRangeLsbMsb};
 
 pub use semantic::inner::execution::FieldSize;
 
-pub use semantic::disassembly;
-pub use semantic::display;
-pub use semantic::meaning;
-pub use semantic::pattern;
-pub use semantic::space;
-pub use semantic::table;
-pub use semantic::token;
-pub use semantic::user_function;
-pub use semantic::varnode;
 pub use semantic::{
-    AttachLiteralId, AttachNumberId, AttachVarnodeId, BitrangeId, ContextId,
-    GlobalScope, PrintBase, Sleigh, SpaceId, TableId, TokenFieldId, TokenId,
-    UserFunctionId, ValueFmt, VarnodeId,
+    disassembly, display, execution, meaning, pattern, space, table, token,
+    user_function, varnode, AttachLiteralId, AttachNumberId, AttachVarnodeId,
+    BitrangeId, ContextId, GlobalScope, PrintBase, Sleigh, SpaceId, TableId,
+    TokenFieldId, TokenId, UserFunctionId, ValueFmt, VarnodeId,
 };
 
 pub type FloatType = f64;
@@ -145,6 +138,18 @@ impl From<i64> for Number {
             Self::Negative(value.unsigned_abs())
         } else {
             Self::Positive(value as u64)
+        }
+    }
+}
+impl TryFrom<i128> for Number {
+    type Error = TryFromIntError;
+    fn try_from(value: i128) -> Result<Self, Self::Error> {
+        if value.is_negative() {
+            let value = i64::try_from(value)?;
+            let value = value.abs_diff(0);
+            Ok(Number::Positive(value))
+        } else {
+            u64::try_from(value).map(Number::Positive)
         }
     }
 }

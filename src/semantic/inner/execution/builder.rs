@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::ops::Range;
 
+use crate::semantic::disassembly;
 use crate::semantic::execution::{
     BlockId, Build, ExprInstNext, ExprInstStart, ExprTable, RefTable,
     RefTokenField, ReferencedValue, Unary, VariableId, WriteExeVar, WriteTable,
@@ -12,7 +13,7 @@ use crate::semantic::inner::pcode_macro::PcodeMacro;
 use crate::semantic::inner::{GlobalScope, Sleigh};
 use crate::semantic::{InstNext, InstStart, SpaceId, TableId};
 use crate::{
-    disassembly, syntax, BitrangeId, ContextId, Number, NumberNonZeroUnsigned,
+    syntax, BitrangeId, ContextId, Number, NumberNonZeroUnsigned,
     NumberUnsigned, Span, TokenFieldId, VarSizeError, VarnodeId,
 };
 

@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::{Number, NumberNonZeroUnsigned, NumberUnsigned, Span};
+use crate::{Number, NumberNonZeroUnsigned, NumberUnsigned, Sleigh, Span};
 
 use super::{
     disassembly, BitrangeId, ContextId, InstNext, InstStart, SpaceId, TableId,
@@ -18,7 +18,7 @@ pub struct Execution {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct BlockId(pub(crate) usize);
+pub struct BlockId(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct Block {
@@ -42,7 +42,7 @@ pub enum Statement {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct VariableId(pub(crate) usize);
+pub struct VariableId(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct Variable {
@@ -55,6 +55,14 @@ pub struct Variable {
 pub enum Expr {
     Value(ExprElement),
     Op(ExprBinaryOp),
+}
+impl Expr {
+    fn len_bits(&self, sleigh: &Sleigh) -> NumberNonZeroUnsigned {
+        match self {
+            Expr::Value(value) => value.len_bits(sleigh),
+            Expr::Op(op) => op.len_bits,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -74,6 +82,18 @@ pub enum ExprElement {
     Op(ExprUnaryOp),
     New(ExprNew),
     CPool(ExprCPool),
+}
+impl ExprElement {
+    fn len_bits(&self, sleigh: &Sleigh) -> NumberNonZeroUnsigned {
+        match self {
+            ExprElement::Value(x) => x.len_bits(sleigh),
+            ExprElement::UserCall(_x) => unimplemented!(),
+            ExprElement::Reference(x) => x.len_bits,
+            ExprElement::Op(x) => x.output_bits,
+            ExprElement::New(_x) => unimplemented!(),
+            ExprElement::CPool(_x) => unimplemented!(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -123,6 +143,25 @@ pub enum ExprValue {
     Table(ExprTable),
     DisVar(ExprDisVar),
     ExeVar(ExprExeVar),
+}
+impl ExprValue {
+    fn len_bits(&self, sleigh: &Sleigh) -> NumberNonZeroUnsigned {
+        match self {
+            ExprValue::Int(x) => x.size,
+            ExprValue::TokenField(x) => x.size,
+            ExprValue::InstStart(_) | ExprValue::InstNext(_) => {
+                (sleigh.addr_bytes().get() * 8).try_into().unwrap()
+            }
+            ExprValue::Varnode(x) => (sleigh.varnode(x.id).len_bytes.get() * 8)
+                .try_into()
+                .unwrap(),
+            ExprValue::Context(x) => sleigh.context(x.id).bitrange.bits.len(),
+            ExprValue::Bitrange(x) => sleigh.bitrange(x.id).bits.len(),
+            ExprValue::Table(x) => sleigh.table(x.id).export.len().unwrap(),
+            ExprValue::DisVar(_) => todo!(),
+            ExprValue::ExeVar(_) => todo!(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -354,7 +393,19 @@ pub enum Export {
     Reference { addr: Expr, memory: MemoryLocation },
 }
 
-#[derive(Clone, Debug)]
+impl Export {
+    pub fn len_bits(&self, sleigh: &Sleigh) -> NumberNonZeroUnsigned {
+        match self {
+            Export::Const { len_bits, .. } => *len_bits,
+            Export::Value(value) => value.len_bits(sleigh),
+            Export::Reference { addr: _, memory } => {
+                (memory.len_bytes.get() * 8).try_into().unwrap()
+            }
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
 pub struct MemoryLocation {
     pub space: SpaceId,
     pub len_bytes: NumberNonZeroUnsigned,
@@ -439,9 +490,18 @@ impl Variable {
 }
 
 impl Execution {
+    pub fn variables(&self) -> &[Variable] {
+        &self.variables
+    }
+
+    pub fn blocks(&self) -> &[Block] {
+        &self.blocks
+    }
+
     pub fn block(&self, id: BlockId) -> &Block {
         &self.blocks[id.0]
     }
+
     pub fn export(&self) -> impl Iterator<Item = &Export> {
         self.blocks.iter().filter_map(|block| {
             block

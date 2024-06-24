@@ -1,4 +1,4 @@
-use crate::disassembly::VariableId;
+use crate::semantic::disassembly::VariableId;
 use crate::semantic::{
     ContextId, Sleigh as FinalSleigh, TableId, TokenFieldId,
 };
