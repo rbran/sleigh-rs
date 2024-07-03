@@ -57,9 +57,9 @@ pub enum Expr {
     Op(ExprBinaryOp),
 }
 impl Expr {
-    fn len_bits(&self, sleigh: &Sleigh) -> NumberNonZeroUnsigned {
+    fn len_bits(&self, sleigh: &Sleigh, execution: &Execution) -> NumberNonZeroUnsigned {
         match self {
-            Expr::Value(value) => value.len_bits(sleigh),
+            Expr::Value(value) => value.len_bits(sleigh, execution),
             Expr::Op(op) => op.len_bits,
         }
     }
@@ -84,9 +84,9 @@ pub enum ExprElement {
     CPool(ExprCPool),
 }
 impl ExprElement {
-    fn len_bits(&self, sleigh: &Sleigh) -> NumberNonZeroUnsigned {
+    fn len_bits(&self, sleigh: &Sleigh, execution: &Execution) -> NumberNonZeroUnsigned {
         match self {
-            ExprElement::Value(x) => x.len_bits(sleigh),
+            ExprElement::Value(x) => x.len_bits(sleigh, execution),
             ExprElement::UserCall(_x) => unimplemented!(),
             ExprElement::Reference(x) => x.len_bits,
             ExprElement::Op(x) => x.output_bits,
@@ -145,7 +145,7 @@ pub enum ExprValue {
     ExeVar(ExprExeVar),
 }
 impl ExprValue {
-    fn len_bits(&self, sleigh: &Sleigh) -> NumberNonZeroUnsigned {
+    fn len_bits(&self, sleigh: &Sleigh, execution: &Execution) -> NumberNonZeroUnsigned {
         match self {
             ExprValue::Int(x) => x.size,
             ExprValue::TokenField(x) => x.size,
@@ -158,8 +158,8 @@ impl ExprValue {
             ExprValue::Context(x) => sleigh.context(x.id).bitrange.bits.len(),
             ExprValue::Bitrange(x) => sleigh.bitrange(x.id).bits.len(),
             ExprValue::Table(x) => sleigh.table(x.id).export.len().unwrap(),
-            ExprValue::DisVar(_) => todo!(),
-            ExprValue::ExeVar(_) => todo!(),
+            ExprValue::DisVar(x) => x.size,
+            ExprValue::ExeVar(x) => execution.variable(x.id).len_bits,
         }
     }
 }
@@ -394,10 +394,10 @@ pub enum Export {
 }
 
 impl Export {
-    pub fn len_bits(&self, sleigh: &Sleigh) -> NumberNonZeroUnsigned {
+    pub fn len_bits(&self, sleigh: &Sleigh, execution: &Execution) -> NumberNonZeroUnsigned {
         match self {
             Export::Const { len_bits, .. } => *len_bits,
-            Export::Value(value) => value.len_bits(sleigh),
+            Export::Value(value) => value.len_bits(sleigh, execution),
             Export::Reference { addr: _, memory } => {
                 (memory.len_bytes.get() * 8).try_into().unwrap()
             }
@@ -512,5 +512,9 @@ impl Execution {
                     _ => None,
                 })
         })
+    }
+
+    fn variable(&self, var: VariableId) -> &Variable {
+        &self.variables[var.0]
     }
 }
