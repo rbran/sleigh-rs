@@ -7,7 +7,9 @@ use crate::semantic::execution::{
     RefTokenField, ReferencedValue, Unary, VariableId, WriteExeVar, WriteTable,
     WriteTokenField, WriteValue, WriteVarnode,
 };
-use crate::semantic::inner::execution::{Block, ExprNumber};
+use crate::semantic::inner::execution::{
+    Block, ExprBitrange, ExprNumber, ExprTokenField,
+};
 use crate::semantic::inner::pattern::Pattern;
 use crate::semantic::inner::pcode_macro::PcodeMacro;
 use crate::semantic::inner::{GlobalScope, Sleigh};
@@ -848,7 +850,8 @@ pub trait ExecutionBuilder {
                 return Ok(ExprElement::new_trunk_lsb(src, x.value, expr))
             }
             Op::ByteRangeLsb(x) => match expr {
-                //NOTE, Lsb on and Int/DisassemblyVar just set the len
+                // NOTE, Lsb on and Int/DisassemblyVar/TokenField/Bitrange just
+                // set the len
                 Expr::Value(ExprElement::Value(ExprValue::Int(
                     ExprNumber {
                         location: src,
@@ -876,6 +879,40 @@ pub trait ExecutionBuilder {
                 ))) => {
                     return Ok(ExprElement::Value(ExprValue::DisVar(
                         ExprDisVar {
+                            location,
+                            //TODO error
+                            size: size
+                                .intersection(FieldSize::new_bytes(
+                                    NumberNonZeroUnsigned::new(x.value)
+                                        .unwrap(),
+                                ))
+                                .unwrap(),
+                            id,
+                        },
+                    )));
+                }
+                Expr::Value(ExprElement::Value(ExprValue::TokenField(
+                    ExprTokenField { location, size, id },
+                ))) => {
+                    return Ok(ExprElement::Value(ExprValue::TokenField(
+                        ExprTokenField {
+                            location,
+                            //TODO error
+                            size: size
+                                .intersection(FieldSize::new_bytes(
+                                    NumberNonZeroUnsigned::new(x.value)
+                                        .unwrap(),
+                                ))
+                                .unwrap(),
+                            id,
+                        },
+                    )));
+                }
+                Expr::Value(ExprElement::Value(ExprValue::Bitrange(
+                    ExprBitrange { location, size, id },
+                ))) => {
+                    return Ok(ExprElement::Value(ExprValue::Bitrange(
+                        ExprBitrange {
                             location,
                             //TODO error
                             size: size
