@@ -160,12 +160,16 @@ impl Expr {
                 // rotation is unlikelly to rotate more then 128 bits,
                 // so right element size only require 32bits max
                 // HACK we are enforcing a 32 bits field requirement
-                let _ = right
-                    .size_mut(sleigh, execution)
-                    .update_action(|size| {
-                        size.set_final_value(32.try_into().unwrap())
-                    })
-                    .unwrap();
+                // set the size only if it's not set already
+                if right.size(sleigh, execution).is_unrestricted() {
+                    let _ = right
+                        .size_mut(sleigh, execution)
+                        .update_action(|size| {
+                            size.set_max_bits(32.try_into().unwrap())?
+                                .set_possible_bits(32.try_into().unwrap())
+                        })
+                        .unwrap();
+                }
                 FieldSize::new_unsized()
             }
             SigLess | SigGreater | SigRem | SigLessEq | SigGreaterEq | Less
@@ -251,7 +255,7 @@ impl ExprElement {
     ) -> Self {
         Self::Op(ExprUnaryOp {
             location,
-            output_size: FieldSize::Value(bytes),
+            output_size: FieldSize::new_bytes(bytes),
             op: Unary::TakeLsb(bytes),
             input: Box::new(expr),
         })
@@ -365,7 +369,8 @@ impl ExprElement {
                 // the output_size is set at creation
                 debug_assert_eq!(
                     output_size.final_value().map(|x| x.get()),
-                    Some(bytes.get() * 8)
+                    Some(bytes.get() * 8),
+                    "What??? {:?}", location
                 );
                 // input need to be lsb bytes or bigger
                 let modified_result = input

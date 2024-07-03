@@ -606,7 +606,7 @@ pub trait ExecutionBuilder {
                     });
                 let _ =
                     result.ok_or_else(|| VarSizeError::AssignmentSides {
-                        left: FieldSize::Value(var_ele.len_bytes),
+                        left: FieldSize::new_bytes(var_ele.len_bytes),
                         right: right.size(self.sleigh(), self.execution()),
                         location: input.src.clone(),
                     })?;

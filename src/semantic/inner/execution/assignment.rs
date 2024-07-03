@@ -98,31 +98,29 @@ pub enum AssignmentOp {
 impl AssignmentOp {
     pub fn output_size_mut(&mut self) -> Box<dyn FieldSizeMut + '_> {
         match self {
-            AssignmentOp::TakeLsb(bytes) => {
-                Box::new(len::FieldSizeUnmutable(FieldSize::from(
-                    FieldSize::Value((bytes.get() * 8).try_into().unwrap()),
-                )))
-            }
+            AssignmentOp::TakeLsb(bytes) => Box::new(len::FieldSizeUnmutable(
+                FieldSize::from(FieldSize::new_bytes(*bytes)),
+            )),
             AssignmentOp::TrunkLsb {
                 bytes: _,
                 output_size,
             } => Box::new(output_size),
-            AssignmentOp::BitRange(bits) => Box::new(len::FieldSizeUnmutable(
-                FieldSize::Value((bits.end - bits.start).try_into().unwrap()),
-            )),
+            AssignmentOp::BitRange(bits) => {
+                Box::new(len::FieldSizeUnmutable(FieldSize::new_bits(
+                    (bits.end - bits.start).try_into().unwrap(),
+                )))
+            }
         }
     }
     pub fn output_size(&self) -> FieldSize {
         match self {
-            AssignmentOp::TakeLsb(bytes) => {
-                FieldSize::Value((bytes.get() * 8).try_into().unwrap())
-            }
+            AssignmentOp::TakeLsb(bytes) => FieldSize::new_bytes(*bytes),
             AssignmentOp::TrunkLsb {
                 bytes: _,
                 output_size,
             } => *output_size,
             AssignmentOp::BitRange(bits) => {
-                FieldSize::Value((bits.end - bits.start).try_into().unwrap())
+                FieldSize::new_bits((bits.end - bits.start).try_into().unwrap())
             }
         }
     }

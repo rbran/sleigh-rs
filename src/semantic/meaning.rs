@@ -83,7 +83,7 @@ impl Meaning {
                 let vars = sleigh.attach_varnode(*vars_id);
                 let varnode_bits =
                     sleigh.varnode(vars.0[0].1).len_bytes.get() * 8;
-                Some(FieldSize::Value(varnode_bits.try_into().unwrap()))
+                Some(FieldSize::new_bits(varnode_bits.try_into().unwrap()))
             }
             Meaning::Number(_, values_id) => {
                 let values = sleigh.attach_number(*values_id);

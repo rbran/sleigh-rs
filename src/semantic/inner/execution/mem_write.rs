@@ -98,7 +98,7 @@ impl MemWrite {
 
         //if the left side is WriteAddr without a size, the only option is to
         //use the left side size
-        if let Some(write_size) = self.mem.size.final_value() {
+        if let Some(write_bits) = self.mem.size.final_value() {
             //if left side size is known, right side will need to produce a
             //a value with size equal or smaller then that
             let right_size = self.right.size(sleigh, execution);
@@ -106,10 +106,10 @@ impl MemWrite {
                 .right
                 .size_mut(sleigh, execution)
                 .update_action(|size| {
-                    size.set_max_bits(write_size)?.set_possible_bits(write_size)
+                    size.set_max_bits(write_bits)?.set_possible_bits(write_bits)
                 })
                 .ok_or_else(|| VarSizeError::AssignmentSides {
-                    left: FieldSize::Value(write_size),
+                    left: FieldSize::new_bits(write_bits),
                     right: right_size,
                     location: self.src.clone(),
                 })?;
