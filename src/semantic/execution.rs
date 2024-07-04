@@ -514,7 +514,7 @@ impl Execution {
         })
     }
 
-    fn variable(&self, var: VariableId) -> &Variable {
+    pub fn variable(&self, var: VariableId) -> &Variable {
         &self.variables[var.0]
     }
 }
