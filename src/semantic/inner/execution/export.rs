@@ -1,7 +1,7 @@
+use crate::semantic::execution::ExportLen as FinalExportLen;
 use crate::semantic::execution::{Export as FinalExport, ExportConst};
 use crate::semantic::inner::pattern::Pattern;
 use crate::semantic::inner::{Sleigh, SolverStatus};
-use crate::semantic::table::ExecutionExport;
 use crate::syntax::block::execution::op::ByteRangeLsb;
 use crate::{
     ExecutionError, Number, NumberNonZeroUnsigned, Span, VarSizeError,
@@ -110,20 +110,20 @@ impl ExportLen {
             Self::Multiple(len) => Some(len.possible_value().unwrap()),
         }
     }
-    pub fn convert(self) -> ExecutionExport {
+    pub fn convert(self) -> Option<FinalExportLen> {
         match self {
-            ExportLen::None => ExecutionExport::None,
+            ExportLen::None => None,
             ExportLen::Const(x) => {
-                ExecutionExport::Const(x.possible_value().unwrap())
+                Some(FinalExportLen::Const(x.possible_value().unwrap()))
             }
             ExportLen::Value(x) => {
-                ExecutionExport::Value(x.possible_value().unwrap())
+                Some(FinalExportLen::Value(x.possible_value().unwrap()))
             }
             ExportLen::Reference(x) => {
-                ExecutionExport::Reference(x.possible_value().unwrap())
+                Some(FinalExportLen::Reference(x.possible_value().unwrap()))
             }
             ExportLen::Multiple(x) => {
-                ExecutionExport::Multiple(x.possible_value().unwrap())
+                Some(FinalExportLen::Multiple(x.possible_value().unwrap()))
             }
         }
     }

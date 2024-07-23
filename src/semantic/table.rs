@@ -1,36 +1,9 @@
+use super::execution::ExportLen;
 use crate::pattern::BitConstraint;
 use crate::semantic::display::Display;
 use crate::semantic::execution::Execution;
 use crate::semantic::pattern::{Pattern, PatternLen};
 use crate::{NumberNonZeroUnsigned, Span};
-
-#[derive(Clone, Copy, Debug, Default)]
-pub enum ExecutionExport {
-    //don't return
-    #[default]
-    None,
-    //value that is known at Dissassembly time
-    Const(NumberNonZeroUnsigned),
-    //value that can be know at execution time
-    Value(NumberNonZeroUnsigned),
-    //References/registers and other mem locations, all with the same size
-    Reference(NumberNonZeroUnsigned),
-    //multiple source, can by any kind of return, value or address,
-    //but all with the same size
-    Multiple(NumberNonZeroUnsigned),
-}
-
-impl ExecutionExport {
-    pub fn len(&self) -> Option<NumberNonZeroUnsigned> {
-        match self {
-            Self::None => None,
-            Self::Const(len)
-            | Self::Value(len)
-            | Self::Reference(len)
-            | Self::Multiple(len) => Some(*len),
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConstructorId(pub usize);
@@ -86,7 +59,7 @@ pub struct Table {
     pub(crate) is_root: bool,
     pub(crate) constructors: Box<[Constructor]>,
     pub matcher_order: Box<[Matcher]>,
-    pub export: ExecutionExport,
+    pub export: Option<ExportLen>,
     pub pattern_len: PatternLen,
 }
 

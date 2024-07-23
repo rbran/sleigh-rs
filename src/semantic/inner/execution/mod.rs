@@ -188,6 +188,7 @@ impl Execution {
                 .map(|block| block.convert())
                 .collect(),
             entry_block: self.entry_block,
+            export: self.return_value.convert(),
         }
     }
     pub fn block(&self, id: BlockId) -> &Block {

@@ -7,10 +7,35 @@ use super::{
     TokenFieldId, UserFunctionId, VarnodeId,
 };
 
+#[derive(Clone, Copy, Debug)]
+pub enum ExportLen {
+    /// value that is known at Dissassembly time
+    Const(NumberNonZeroUnsigned),
+    /// value that can be know at execution time
+    Value(NumberNonZeroUnsigned),
+    /// References/registers and other mem locations, all with the same size
+    Reference(NumberNonZeroUnsigned),
+    /// If each table exports a diferent type, could happen in individual
+    /// constructors, if it exports a sub_table that export Multiple
+    Multiple(NumberNonZeroUnsigned),
+}
+
+impl ExportLen {
+    pub fn len(&self) -> NumberNonZeroUnsigned {
+        match self {
+            Self::Const(len)
+            | Self::Value(len)
+            | Self::Reference(len)
+            | Self::Multiple(len) => *len,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Execution {
     pub(crate) variables: Box<[Variable]>,
     pub(crate) blocks: Box<[Block]>,
+    pub(crate) export: Option<ExportLen>,
 
     // TODO make this a const, the first block is always the entry block
     //entry_block have no name and is not on self.labels
@@ -57,7 +82,11 @@ pub enum Expr {
     Op(ExprBinaryOp),
 }
 impl Expr {
-    fn len_bits(&self, sleigh: &Sleigh, execution: &Execution) -> NumberNonZeroUnsigned {
+    fn len_bits(
+        &self,
+        sleigh: &Sleigh,
+        execution: &Execution,
+    ) -> NumberNonZeroUnsigned {
         match self {
             Expr::Value(value) => value.len_bits(sleigh, execution),
             Expr::Op(op) => op.len_bits,
@@ -84,7 +113,11 @@ pub enum ExprElement {
     CPool(ExprCPool),
 }
 impl ExprElement {
-    fn len_bits(&self, sleigh: &Sleigh, execution: &Execution) -> NumberNonZeroUnsigned {
+    fn len_bits(
+        &self,
+        sleigh: &Sleigh,
+        execution: &Execution,
+    ) -> NumberNonZeroUnsigned {
         match self {
             ExprElement::Value(x) => x.len_bits(sleigh, execution),
             ExprElement::UserCall(_x) => unimplemented!(),
@@ -145,7 +178,11 @@ pub enum ExprValue {
     ExeVar(ExprExeVar),
 }
 impl ExprValue {
-    fn len_bits(&self, sleigh: &Sleigh, execution: &Execution) -> NumberNonZeroUnsigned {
+    fn len_bits(
+        &self,
+        sleigh: &Sleigh,
+        execution: &Execution,
+    ) -> NumberNonZeroUnsigned {
         match self {
             ExprValue::Int(x) => x.size,
             ExprValue::TokenField(x) => x.size,
@@ -157,7 +194,7 @@ impl ExprValue {
                 .unwrap(),
             ExprValue::Context(x) => sleigh.context(x.id).bitrange.bits.len(),
             ExprValue::Bitrange(x) => sleigh.bitrange(x.id).bits.len(),
-            ExprValue::Table(x) => sleigh.table(x.id).export.len().unwrap(),
+            ExprValue::Table(x) => sleigh.table(x.id).export.unwrap().len(),
             ExprValue::DisVar(x) => x.size,
             ExprValue::ExeVar(x) => execution.variable(x.id).len_bits,
         }
@@ -394,7 +431,11 @@ pub enum Export {
 }
 
 impl Export {
-    pub fn len_bits(&self, sleigh: &Sleigh, execution: &Execution) -> NumberNonZeroUnsigned {
+    pub fn len_bits(
+        &self,
+        sleigh: &Sleigh,
+        execution: &Execution,
+    ) -> NumberNonZeroUnsigned {
         match self {
             Export::Const { len_bits, .. } => *len_bits,
             Export::Value(value) => value.len_bits(sleigh, execution),
