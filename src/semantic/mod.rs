@@ -76,7 +76,15 @@ pub struct BitrangeId(pub usize);
 pub struct ContextId(pub usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct VarnodeId(pub usize);
+pub struct VarnodeId(usize);
+impl VarnodeId {
+    pub unsafe fn from_raw(idx: usize) -> Self {
+        Self(idx)
+    }
+    pub fn to_raw(&self) -> usize {
+        self.0
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AttachLiteralId(pub usize);

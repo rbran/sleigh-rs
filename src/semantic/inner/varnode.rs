@@ -123,7 +123,8 @@ impl Sleigh {
                 space,
             };
             self.varnodes.push(varnode);
-            let varnode_id = VarnodeId(self.varnodes.len() - 1);
+            let varnode_id =
+                unsafe { VarnodeId::from_raw(self.varnodes.len() - 1) };
             self.global_scope
                 .insert(varnode_name, GlobalScope::Varnode(varnode_id))
                 .map(|_| Err(Box::new(SleighError::NameDuplicated)))

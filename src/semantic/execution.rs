@@ -63,6 +63,7 @@ pub enum Statement {
     Build(Build),
     Declare(VariableId),
     Assignment(Assignment),
+    // TODO make MemWrite a subtype of Assignment
     MemWrite(MemWrite),
 }
 
@@ -82,7 +83,7 @@ pub enum Expr {
     Op(ExprBinaryOp),
 }
 impl Expr {
-    fn len_bits(
+    pub fn len_bits(
         &self,
         sleigh: &Sleigh,
         execution: &Execution,
@@ -541,6 +542,10 @@ impl Execution {
 
     pub fn block(&self, id: BlockId) -> &Block {
         &self.blocks[id.0]
+    }
+
+    pub fn export_len(&self) -> Option<ExportLen> {
+        self.export
     }
 
     pub fn export(&self) -> impl Iterator<Item = &Export> {

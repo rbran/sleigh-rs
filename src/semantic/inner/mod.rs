@@ -288,7 +288,7 @@ impl Sleigh {
         &self.spaces[space.0]
     }
     pub fn varnode(&self, varnode: VarnodeId) -> &Varnode {
-        &self.varnodes[varnode.0]
+        &self.varnodes[varnode.to_raw()]
     }
     pub fn context(&self, context: ContextId) -> &Context {
         &self.contexts[context.0]
