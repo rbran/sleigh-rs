@@ -179,7 +179,7 @@ pub enum ExprValue {
     ExeVar(ExprExeVar),
 }
 impl ExprValue {
-    fn len_bits(
+    pub fn len_bits(
         &self,
         sleigh: &Sleigh,
         execution: &Execution,

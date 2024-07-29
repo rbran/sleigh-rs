@@ -22,6 +22,13 @@ impl AttachVarnode {
         let varnode_bytes = sleigh.varnode(self.0[0].1).len_bytes;
         FieldSize::new_bytes(varnode_bytes)
     }
+
+    pub fn find_value(&self, index: usize) -> Option<VarnodeId> {
+        self.0
+            .iter()
+            .find(|(value_index, _value)| *value_index == index)
+            .map(|(_, value)| *value)
+    }
 }
 
 /// The Value is translated into this string. Only affect the value when it's
@@ -50,6 +57,13 @@ impl AttachNumber {
     }
     pub fn is_signed(&self) -> bool {
         self.0.iter().any(|(_i, v)| v.is_negative())
+    }
+
+    pub fn find_value(&self, index: usize) -> Option<Number> {
+        self.0
+            .iter()
+            .find(|(value_index, _value)| *value_index == index)
+            .map(|(_, value)| *value)
     }
 }
 
