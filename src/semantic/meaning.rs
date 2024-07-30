@@ -35,6 +35,14 @@ impl AttachVarnode {
 /// printed
 #[derive(Clone, Debug)]
 pub struct AttachLiteral(pub Box<[(usize, String)]>);
+impl AttachLiteral {
+    pub fn find_value(&self, index: usize) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(value_index, _value)| *value_index == index)
+            .map(|(_, value)| value.as_str())
+    }
+}
 
 /// The Value is translated into a signed value with this Format.
 /// In Display, print the translated value using this index.
