@@ -49,10 +49,10 @@ impl ConstraintValue {
             alt((
                 delimited(
                     tag!("("),
-                    |x| disassembly::Expr::parse(x, true),
+                    |x| disassembly::Expr::parse_safe(x),
                     tag!(")"),
                 ),
-                |x| disassembly::Expr::parse(x, false),
+                |x| disassembly::Expr::parse_unsafe(x),
             )),
             |expr| ConstraintValue { expr },
         )(input)

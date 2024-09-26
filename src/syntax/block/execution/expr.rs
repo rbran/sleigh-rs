@@ -27,6 +27,7 @@ macro_rules! declare_expr_level {
         }
     };
 }
+
 impl Expr {
     fn parse_call(
         input: &[Token],

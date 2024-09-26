@@ -63,13 +63,15 @@ pub fn apply_value(
 ) -> Option<()> {
     //only set the value, if its Eq and the value is known at compile time
     use crate::semantic::disassembly::{ExprElement, ReadScope};
-    let value = match (op, value.expr().elements()) {
+    // TODO allow multiple expressions that can be evaulated at compile time,
+    // or make sure the optimations prior to this only produces values
+    let value = match (op, value.expr()) {
         (
             CmpOp::Eq,
-            [ExprElement::Value {
+            crate::disassembly::Expr::Value(ExprElement::Value {
                 value: ReadScope::Integer(value),
                 location: _,
-            }],
+            }),
         ) => Some(value.signed_super()),
         _ => None,
     };

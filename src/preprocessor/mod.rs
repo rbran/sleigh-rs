@@ -75,6 +75,8 @@ pub enum PreprocessorError {
 pub struct Define {
     pub name: Rc<str>,
     pub value: Option<String>,
+    // TODO field never used, propably should be fixed during the debug messages rework
+    #[allow(dead_code)]
     pub macro_location: FileSpan,
     pub value_location: FileSpan,
 }

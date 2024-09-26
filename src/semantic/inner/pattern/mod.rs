@@ -71,27 +71,31 @@ impl PatternWalker for FindValues {
     fn pattern(&mut self, _pattern: &Pattern) -> ControlFlow<(), ()> {
         ControlFlow::Continue(())
     }
-    fn value(&mut self, value: &ConstraintValue) -> ControlFlow<(), ()> {
+    fn value(&mut self, value: &Expr) -> ControlFlow<(), ()> {
         use crate::semantic::disassembly::ExprElement::*;
         use crate::semantic::disassembly::ReadScope::*;
-        for expr_ele in value.expr().elements().iter() {
-            match expr_ele {
-                Value {
-                    value: TokenField(ass),
-                    location,
-                } => {
-                    self.0.insert(*ass, location.clone());
-                }
+        match value {
+            Expr::Value(Value {
+                value: TokenField(tf_idx),
+                location,
+            }) => {
+                self.0.insert(*tf_idx, location.clone());
+            }
+            Expr::Value(
                 Value {
                     value: Integer(_) | Context(_) | InstStart(_),
-                    location: _,
+                    ..
                 }
-                | OpUnary(_)
-                | Op(_) => (),
-                Value {
-                    value: InstNext(_) | Local(_),
-                    location: _,
-                } => unreachable!(),
+                | Op(_, _, _),
+            ) => (),
+            // can't have that in pattern
+            Expr::Value(Value {
+                value: InstNext(_) | Local(_),
+                ..
+            }) => unreachable!(),
+            Expr::Op(_span, _op, left, right) => {
+                self.value(&*left)?;
+                self.value(&*right)?;
             }
         }
         ControlFlow::Continue(())
@@ -166,7 +170,7 @@ pub trait PatternWalker<B = ()> {
     fn context(&mut self, _table: ContextId) -> ControlFlow<B, ()> {
         ControlFlow::Continue(())
     }
-    fn value(&mut self, _value: &ConstraintValue) -> ControlFlow<B, ()> {
+    fn value(&mut self, _value: &Expr) -> ControlFlow<B, ()> {
         ControlFlow::Continue(())
     }
     fn verification(
@@ -180,14 +184,14 @@ pub trait PatternWalker<B = ()> {
                 value,
             } => {
                 self.context(*context)?;
-                self.value(value)
+                self.value(value.expr())
             }
             Verification::TableBuild {
                 produced_table,
                 verification,
             } => {
                 if let Some((_op, value)) = verification {
-                    self.value(value)?;
+                    self.value(value.expr())?;
                 }
                 self.table(produced_table.table)
             }
@@ -200,7 +204,7 @@ pub trait PatternWalker<B = ()> {
                 op: _,
                 value,
             } => {
-                self.value(value)?;
+                self.value(value.expr())?;
                 self.token_field(*field)
             }
         }

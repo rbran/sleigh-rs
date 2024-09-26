@@ -3,7 +3,7 @@ use crate::pattern::BitConstraint;
 use crate::semantic::display::Display;
 use crate::semantic::execution::Execution;
 use crate::semantic::pattern::{Pattern, PatternLen};
-use crate::{NumberNonZeroUnsigned, Span};
+use crate::Span;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConstructorId(pub usize);

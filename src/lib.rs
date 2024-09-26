@@ -43,7 +43,7 @@ pub type NonZeroTypeU = NumberNonZeroUnsigned;
 pub type NonZeroTypeS = NumberNonZeroSigned;
 
 //constants used only for debug purposes, don't commit with a diferent value
-pub(crate) const DISABLE_EXECUTION_PARSING: bool = false;
+pub(crate) const DISABLE_EXECUTION_PARSING: bool = true;
 
 pub(crate) const IDENT_INSTRUCTION: &str = "instruction";
 pub(crate) const IDENT_INST_START: &str = "inst_start";
@@ -972,7 +972,7 @@ pub fn file_to_sleigh(filename: &Path) -> Result<Sleigh, Box<SleighError>> {
 
 #[cfg(test)]
 mod test {
-    use std::path::Path;
+    use std::{collections::HashMap, path::Path};
 
     use crate::file_to_sleigh;
 
@@ -1127,5 +1127,70 @@ mod test {
                 println!("Success");
             }
         }
+    }
+
+    #[test]
+    fn parse_65() {
+        let arch = "6502/data/languages/6502.slaspec";
+        //let arch = "6502/data/languages/65c02.slaspec";
+        const SLEIGH_PROCESSOR_PATH: &str = "Ghidra/Processors";
+        let home = std::env::var("GHIDRA_SRC")
+            .expect("Enviroment variable GHIDRA_SRC not found");
+        let file = format!("{home}/{SLEIGH_PROCESSOR_PATH}/{arch}");
+        let path = Path::new(&file);
+        println!("parsing: {}", path.file_name().unwrap().to_str().unwrap());
+
+        let sleigh = file_to_sleigh(path).unwrap();
+
+        let mut instructions: HashMap<String, Vec<String>> = Default::default();
+        for instruction in
+            sleigh.table(sleigh.instruction_table()).constructors()
+        {
+            let bits = instructions
+                .entry(
+                    instruction
+                        .display
+                        .mneumonic
+                        .to_owned()
+                        .unwrap_or_default(),
+                )
+                .or_default();
+            bits.extend(instruction.variants().map(|(_i, _cxt, tk)| {
+                tk.iter()
+                    .map(|i| match i {
+                        crate::pattern::BitConstraint::Unrestrained => 'X',
+                        crate::pattern::BitConstraint::Defined(true) => '1',
+                        crate::pattern::BitConstraint::Defined(false) => '0',
+                        crate::pattern::BitConstraint::Restrained => 'X',
+                    })
+                    .collect::<String>()
+            }))
+        }
+        for (name, bits) in instructions.iter() {
+            println!("name {name}:");
+            for bit in bits {
+                println!("    bits {bit}");
+            }
+        }
+
+        let bits = instructions
+            .values()
+            .flatten()
+            .map(|x| x.chars().take(8).collect::<String>())
+            .filter(|x| x.chars().all(|x| x != 'X'));
+        print!("average: ");
+        for bits in bits {
+            let mut value = 0;
+            for (i, bit) in bits.chars().enumerate() {
+                let bit = match bit {
+                    '1' => 1,
+                    '0' => 0,
+                    _ => unreachable!(),
+                };
+                value |= bit << i;
+            }
+            print!("{value:02X},");
+        }
+        println!();
     }
 }

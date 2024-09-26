@@ -9,7 +9,7 @@ pub enum OpUnary {
     Negative,
 }
 
-#[derive(Clone, Debug, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum Op {
     Add,
     Sub,
@@ -54,34 +54,6 @@ pub enum AddrScope {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct VariableId(pub usize);
 
-//#[derive(Clone, Copy, Debug)]
-//pub enum VariableType {
-//    Reference(SpaceId),
-//    Value(Option<NumberNonZeroUnsigned>),
-//}
-//
-//impl VariableType {
-//    pub(crate) fn set_len(self, len: NumberNonZeroUnsigned) -> Option<Self> {
-//        match self {
-//            VariableType::Reference(_) => None,
-//            VariableType::Value(None) => Some(Self::Value(Some(len))),
-//            VariableType::Value(Some(current_len)) if current_len == len => {
-//                Some(self)
-//            }
-//            VariableType::Value(Some(_)) => None,
-//        }
-//    }
-//    pub(crate) fn set_space(self, id: SpaceId) -> Option<Self> {
-//        match self {
-//            VariableType::Reference(current_id) if current_id == id => {
-//                Some(self)
-//            }
-//            VariableType::Value(None) => Some(Self::Reference(id)),
-//            VariableType::Reference(_) | VariableType::Value(Some(_)) => None,
-//        }
-//    }
-//}
-
 #[derive(Clone, Debug)]
 pub struct Variable {
     pub(crate) name: Box<str>,
@@ -97,21 +69,15 @@ impl Variable {
 }
 
 #[derive(Clone, Debug)]
-pub struct Expr {
-    pub(crate) rpn: Box<[ExprElement]>,
-}
-
-impl Expr {
-    pub fn elements(&self) -> &[ExprElement] {
-        &self.rpn
-    }
+pub enum Expr {
+    Value(ExprElement),
+    Op(Span, Op, Box<Expr>, Box<Expr>),
 }
 
 #[derive(Clone, Debug)]
 pub enum ExprElement {
     Value { value: ReadScope, location: Span },
-    Op(Op),
-    OpUnary(OpUnary),
+    Op(Span, OpUnary, Box<Expr>),
 }
 
 #[derive(Clone, Debug)]

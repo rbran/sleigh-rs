@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::semantic::disassembly::{
     AddrScope, Assertation, Expr, ExprElement, GlobalSet, ReadScope, WriteScope,
 };
@@ -20,12 +18,16 @@ pub trait ExprBuilder {
         &mut self,
         input: syntax::block::disassembly::Expr,
     ) -> Result<Expr, Box<DisassemblyError>> {
-        let rpn = input
-            .rpn
-            .into_iter()
-            .map(|x| self.new_expr_element(x))
-            .collect::<Result<_, _>>()?;
-        Ok(Expr { rpn })
+        match input {
+            syntax::block::disassembly::Expr::Value(expr_element) => {
+                self.new_expr_element(expr_element).map(Expr::Value)
+            }
+            syntax::block::disassembly::Expr::Op(span, op, left, right) => {
+                let left = self.new_expr(*left).map(Box::new)?;
+                let right = self.new_expr(*right).map(Box::new)?;
+                Ok(Expr::Op(span, op, left, right))
+            }
+        }
     }
     fn new_expr_element(
         &mut self,
@@ -49,13 +51,9 @@ pub trait ExprBuilder {
                     })
             }
 
-            syntax::block::disassembly::ExprElement::Op(x) => {
-                Ok(ExprElement::Op(x))
-            }
-
-            syntax::block::disassembly::ExprElement::OpUnary(x) => {
-                Ok(ExprElement::OpUnary(x))
-            }
+            syntax::block::disassembly::ExprElement::Op(span, op, expr) => Ok(
+                ExprElement::Op(span, op, self.new_expr(*expr).map(Box::new)?),
+            ),
         }
     }
 }
@@ -296,11 +294,4 @@ impl<'a, 'b> Builder<'a, 'b> {
                 .map(|ass| self.insert_assertation(ass))
         })
     }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Disassembly {
-    pub variable_names: HashMap<String, VariableId>,
-    pub variables: Vec<Variable>,
-    pub assertations: Vec<Assertation>,
 }
