@@ -113,7 +113,7 @@ impl Sleigh {
                 // no varnode at this address, next one
                 continue;
             };
-            let address = index as NumberUnsigned * varnode_bytes.get();
+            let address = varnode.offset + (index as NumberUnsigned * varnode_bytes.get());
             let location = location.clone();
             let varnode = Varnode {
                 name: varnode_name.clone().into(),
