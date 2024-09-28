@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use crate::execution::Unary;
 use crate::semantic::execution::{
     Assignment as FinalAssignment, AssignmentOp as FinalAssignmentOp,
     WriteValue, WriteVarnode,
@@ -9,7 +10,9 @@ use crate::{
     ExecutionError, NumberNonZeroUnsigned, NumberUnsigned, Span, VarSizeError,
 };
 
-use super::{len, Execution, Expr, FieldSize, FieldSizeMut};
+use super::{
+    len, Execution, Expr, ExprElement, ExprValue, FieldSize, FieldSizeMut,
+};
 
 #[derive(Clone, Debug)]
 pub struct Assignment {
@@ -48,6 +51,11 @@ impl Assignment {
             solved.i_did_a_thing();
         }
 
+        // identify the implicity truncation for left size if one byte varnode
+        if hack_1_byte_varnode_assign_to_bit(self, sleigh, execution) {
+            solved.i_did_a_thing();
+        }
+
         // TODO check left size can be truncated correctly
 
         // left and right sizes are the same
@@ -75,6 +83,29 @@ impl Assignment {
 
         Ok(())
     }
+
+    pub fn left_size<'a>(
+        &'a self,
+        sleigh: &'a Sleigh,
+        execution: &'a Execution,
+    ) -> FieldSize {
+        self.op
+            .as_ref()
+            .map(|trunc| trunc.output_size())
+            .unwrap_or_else(|| self.var.size(sleigh, execution))
+    }
+
+    pub fn left_size_mut<'a>(
+        &'a mut self,
+        sleigh: &'a Sleigh,
+        execution: &'a Execution,
+    ) -> Box<dyn FieldSizeMut + 'a> {
+        self.op
+            .as_mut()
+            .map(|trunc| trunc.output_size_mut())
+            .unwrap_or_else(|| self.var.size_mut(sleigh, execution))
+    }
+
     pub fn convert(self) -> FinalAssignment {
         FinalAssignment {
             location: self.src,
@@ -170,5 +201,35 @@ fn hack_varnode_assignemnt_left_hand_truncation_implied(
     // it seems that a left hand truncation is implied because this only happens
     // if the rest of the varnode is not important.
     ass.op = Some(AssignmentOp::BitRange(0..right_size.get()));
+    true
+}
+
+// HACK some times, single bit register will be declared as single byte register.
+// but in the execution body the value will be assign to a signel bit variable
+fn hack_1_byte_varnode_assign_to_bit(
+    ass: &mut Assignment,
+    sleigh: &Sleigh,
+    execution: &Execution,
+) -> bool {
+    // right hand need to be one bit sized
+    let Expr::Value(ExprElement::Value(ExprValue::Varnode(var_expr))) =
+        &ass.right
+    else {
+        return false;
+    };
+
+    // left hand need to be one bit len
+    if ass.left_size(sleigh, execution).final_value()
+        != Some(1.try_into().unwrap())
+    {
+        return false;
+    }
+
+    // truncate the right size to one bit
+    ass.right = Expr::Value(ExprElement::new_op(
+        var_expr.location.clone(),
+        Unary::BitRange(0..1),
+        Expr::Value(ExprElement::Value(ExprValue::Varnode(var_expr.clone()))),
+    ));
     true
 }
