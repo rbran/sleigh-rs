@@ -128,7 +128,16 @@ impl Expr {
 
     // parse with precedence
     // safe, things around brackets
-    declare_expr_level!(parse_safe_lv1, parse_lv2, Op::parse_safe_level4);
+    declare_expr_level!(
+        parse_safe_lv1,
+        parse_safe_unsafe_lv1,
+        Op::parse_safe_level4
+    );
+    declare_expr_level!(
+        parse_safe_unsafe_lv1,
+        parse_lv2,
+        Op::parse_unsafe_level4
+    );
     // unsafe, things not around brackets
     declare_expr_level!(parse_unsafe_lv1, parse_lv2, Op::parse_unsafe_level4);
     declare_expr_level!(parse_lv2, parse_lv3, Op::parse_level3);
