@@ -370,7 +370,8 @@ impl ExprElement {
                 debug_assert_eq!(
                     output_size.final_value().map(|x| x.get()),
                     Some(bytes.get() * 8),
-                    "What??? {:?}", location
+                    "What??? {:?}",
+                    location
                 );
                 // input need to be lsb bytes or bigger
                 let modified_result = input
@@ -421,19 +422,6 @@ impl ExprElement {
                     modified |= output_size
                         .update_action(|x| {
                             x.set_max_bits(max_bits.try_into().unwrap())
-                        })
-                        .ok_or_else(|| VarSizeError::TrunkLsbTooSmall {
-                            lsb: *bytes,
-                            output: *output_size,
-                            input: input.size(sleigh, execution),
-                            location: input.src().clone(),
-                        })?;
-                }
-                if let Some(min_bits) = input_size.min_bits() {
-                    let min_bits = min_bits.get() - *bytes * 8;
-                    modified |= output_size
-                        .update_action(|x| {
-                            x.set_min_bits(min_bits.try_into().unwrap())
                         })
                         .ok_or_else(|| VarSizeError::TrunkLsbTooSmall {
                             lsb: *bytes,
