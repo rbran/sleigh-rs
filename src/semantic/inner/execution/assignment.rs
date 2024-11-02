@@ -1,9 +1,9 @@
 use std::ops::Range;
 
-use crate::execution::Unary;
+use crate::execution::{Binary, Unary};
 use crate::semantic::execution::{
     Assignment as FinalAssignment, AssignmentOp as FinalAssignmentOp,
-    WriteValue, WriteVarnode,
+    WriteValue,
 };
 use crate::semantic::inner::{Sleigh, SolverStatus};
 use crate::{
@@ -11,7 +11,8 @@ use crate::{
 };
 
 use super::{
-    len, Execution, Expr, ExprElement, ExprValue, FieldSize, FieldSizeMut,
+    len, Execution, Expr, ExprBinaryOp, ExprElement, ExprValue, FieldSize,
+    FieldSizeMut,
 };
 
 #[derive(Clone, Debug)]
@@ -44,10 +45,14 @@ impl Assignment {
     ) -> Result<(), Box<ExecutionError>> {
         self.right.solve(sleigh, execution, solved)?;
 
+        // solve simple expr that don't follow many rules
+        if hack_solve_simple_bin_ands(self, sleigh, execution) {
+            solved.i_did_a_thing();
+        }
+
         // identify the implicity truncation for varnodes
-        if hack_varnode_assignemnt_left_hand_truncation_implied(
-            self, sleigh, execution,
-        ) {
+        if hack_assignemnt_left_hand_truncation_implied(self, sleigh, execution)
+        {
             solved.i_did_a_thing();
         }
 
@@ -167,19 +172,110 @@ impl AssignmentOp {
     }
 }
 
-// HACK: sometimes when assigning to varnodes, a value smaller then the
-// varnode size is provided, eg one bit registers are declare as one
-// byte instead of bitranges (eg flags on X86 like ZF), and assigned
-// binary values to it, when that happen, it's unclear if zext or a left
-// hand truncation happen, I'll stick with left hand operation for now
-fn hack_varnode_assignemnt_left_hand_truncation_implied(
+// HACK auto solve simple assignments.
+// eg: local tmp:2 = disassembly_var & xFFFF;
+fn hack_solve_simple_bin_ands(
     ass: &mut Assignment,
     sleigh: &Sleigh,
     execution: &Execution,
 ) -> bool {
-    // left hand need to be an varnode
-    let WriteValue::Varnode(WriteVarnode { id, location: _ }) = &ass.var else {
+    // left need to have a known size
+    let Some(ass_size) = ass.var.size(sleigh, execution).final_value() else {
         return false;
+    };
+
+    fn get_simple_value_size(value: &mut ExprValue) -> Option<&mut FieldSize> {
+        Some(match value {
+            ExprValue::Int(var) => &mut var.size,
+            ExprValue::TokenField(tf) => &mut tf.size,
+            ExprValue::Context(ctx) => &mut ctx.size,
+            ExprValue::Bitrange(bt) => &mut bt.size,
+            ExprValue::DisVar(dis) => &mut dis.size,
+            _ => return None,
+        })
+    }
+
+    match &mut ass.right {
+        // if a simple value, just assign the size to the value
+        Expr::Value(ExprElement::Value(value)) => {
+            let Some(var_size) = get_simple_value_size(value) else {
+                return false;
+            };
+
+            var_size
+                .update_action(|var| var.set_final_value(ass_size))
+                .unwrap()
+        }
+
+        // if a simple binary expr with two simple values, just set all of then to the same size
+        Expr::Op(ExprBinaryOp {
+            location: _,
+            output_size,
+            op: Binary::BitOr | Binary::BitAnd | Binary::BitXor,
+            left,
+            right,
+        }) => {
+            let (
+                Expr::Value(ExprElement::Value(expr_left)),
+                Expr::Value(ExprElement::Value(expr_right)),
+            ) = (left.as_mut(), right.as_mut())
+            else {
+                return false;
+            };
+
+            let Some(left_size) = get_simple_value_size(expr_left) else {
+                return false;
+            };
+
+            let Some(right_size) = get_simple_value_size(expr_right) else {
+                return false;
+            };
+
+            let mut result = false;
+            result |= left_size
+                .update_action(|x| x.set_final_value(ass_size))
+                .unwrap();
+            result |= right_size
+                .update_action(|x| x.set_final_value(ass_size))
+                .unwrap();
+            result |= output_size
+                .update_action(|x| x.set_final_value(ass_size))
+                .unwrap();
+            result
+        }
+
+        _ => false,
+    }
+}
+
+// HACK: sometimes when assigning a value smaller then the size of the left side,
+// eg one bit registers are declare as one
+// byte instead of bitranges (eg flags on X86 like ZF), and assigned
+// binary values to it, when that happen, it's unclear if zext or a left
+// hand truncation happen, I'll stick with left hand operation for now
+fn hack_assignemnt_left_hand_truncation_implied(
+    ass: &mut Assignment,
+    sleigh: &Sleigh,
+    execution: &Execution,
+) -> bool {
+    // left hand need to be an varnode or local variable
+    let left_size = match &ass.var {
+        WriteValue::Varnode(var) => {
+            let var = sleigh.varnode(var.id);
+            var.len_bytes.get() * 8
+        }
+        WriteValue::Local(local) => {
+            let var = execution.variable(local.id);
+            // TODO maybe allow non explicit declared variables
+            if !var.explicit {
+                return false;
+            }
+            let Some(bits) = var.size.get().final_value() else {
+                return false;
+            };
+            bits.get()
+        }
+        _ => return false,
     };
 
     // can't have operators on the left side
@@ -191,8 +287,6 @@ fn hack_varnode_assignemnt_left_hand_truncation_implied(
     let Some(right_size) = ass.right.size(sleigh, execution).max_bits() else {
         return false;
     };
-    let varnode = sleigh.varnode(*id);
-    let left_size = varnode.len_bytes.get() * 8;
     if left_size < right_size.get() {
         return false;
     }

@@ -552,7 +552,7 @@ pub trait ExecutionBuilder {
         let var = self.write_scope(&input.ident, &input.src).ok();
         match (var, input.local) {
             //variable don't exists, create it
-            (None, _) => {
+            (None, local) => {
                 //the var size is defined if ByteRangeLsb is present
                 //add the var creation statement
                 let size = match &input.op {
@@ -568,7 +568,7 @@ pub trait ExecutionBuilder {
                     &input.ident,
                     &input.src,
                     size,
-                    false,
+                    local,
                 )?;
                 Ok(Statement::Assignment(Assignment::new(
                     WriteValue::Local(WriteExeVar {
@@ -894,18 +894,21 @@ pub trait ExecutionBuilder {
                 Expr::Value(ExprElement::Value(ExprValue::TokenField(
                     ExprTokenField { location, size, id },
                 ))) => {
+                    let size = size
+                        .intersection(FieldSize::new_bytes(
+                            NumberNonZeroUnsigned::new(x.value).unwrap(),
+                        ))
+                        .ok_or_else(|| {
+                            ExecutionError::VarSize(
+                                VarSizeError::TokenFieldSetSize {
+                                    tf_id: id,
+                                    size: x.value,
+                                    location: x.src.clone(),
+                                },
+                            )
+                        })?;
                     return Ok(ExprElement::Value(ExprValue::TokenField(
-                        ExprTokenField {
-                            location,
-                            //TODO error
-                            size: size
-                                .intersection(FieldSize::new_bytes(
-                                    NumberNonZeroUnsigned::new(x.value)
-                                        .unwrap(),
-                                ))
-                                .unwrap(),
-                            id,
-                        },
+                        ExprTokenField { location, size, id },
                     )));
                 }
                 Expr::Value(ExprElement::Value(ExprValue::Bitrange(

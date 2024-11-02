@@ -1,6 +1,8 @@
 use std::ops::Range;
 
-use crate::{Number, NumberNonZeroUnsigned, NumberUnsigned, Sleigh, Span};
+use crate::{
+    FieldSize, Number, NumberNonZeroUnsigned, NumberUnsigned, Sleigh, Span,
+};
 
 use super::{
     disassembly, BitrangeId, ContextId, InstNext, InstStart, SpaceId, TableId,
