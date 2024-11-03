@@ -63,6 +63,7 @@ impl MemWrite {
         execution: &Execution,
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
+        self.mem.solve(solved);
         self.addr.solve(sleigh, execution, solved)?;
         self.right.solve(sleigh, execution, solved)?;
         // HACK: exception in case the right size is smaller then the left size,
@@ -112,6 +113,7 @@ impl MemWrite {
                     left: FieldSize::new_bits(write_bits),
                     right: right_size,
                     location: self.src.clone(),
+                    backtrace: format!("{}:{}", file!(), line!()),
                 })?;
             if modified {
                 solved.i_did_a_thing();
@@ -129,6 +131,7 @@ impl MemWrite {
                     left: self.mem.size,
                     right: self.right.size(sleigh, execution),
                     location: self.src.clone(),
+                    backtrace: format!("{}:{}", file!(), line!()),
                 })?;
             if modified {
                 solved.i_did_a_thing();

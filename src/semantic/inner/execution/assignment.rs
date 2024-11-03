@@ -64,6 +64,7 @@ impl Assignment {
         // TODO check left size can be truncated correctly
 
         // left and right sizes are the same
+
         let modified = len::a_receive_b(
             &mut *self
                 .op
@@ -73,9 +74,10 @@ impl Assignment {
             &mut *self.right.size_mut(sleigh, execution),
         );
         if modified.ok_or_else(|| VarSizeError::AssignmentSides {
-            left: self.var.size(sleigh, execution),
+            left: self.left_size(sleigh, execution),
             right: self.right.size(sleigh, execution),
             location: self.src.clone(),
+            backtrace: format!("{}:{}", file!(), line!()),
         })? {
             solved.i_did_a_thing()
         }
@@ -180,7 +182,7 @@ fn hack_solve_simple_bin_ands(
     execution: &Execution,
 ) -> bool {
     // left need to have a known size
-    let Some(ass_size) = ass.var.size(sleigh, execution).final_value() else {
+    let Some(ass_size) = ass.left_size(sleigh, execution).final_value() else {
         return false;
     };
 
@@ -299,18 +301,18 @@ fn hack_assignemnt_left_hand_truncation_implied(
 }
 
 // HACK some times, single bit register will be declared as single byte register.
-// but in the execution body the value will be assign to a signel bit variable
+// but in the execution body the value will be assign to a single bit variable
 fn hack_1_byte_varnode_assign_to_bit(
     ass: &mut Assignment,
     sleigh: &Sleigh,
     execution: &Execution,
 ) -> bool {
-    // right hand need to be one bit sized
-    let Expr::Value(ExprElement::Value(ExprValue::Varnode(var_expr))) =
-        &ass.right
-    else {
+    // right hand need to be one byte sized
+    if ass.right.size(sleigh, execution).final_value()
+        != Some(8.try_into().unwrap())
+    {
         return false;
-    };
+    }
 
     // left hand need to be one bit len
     if ass.left_size(sleigh, execution).final_value()
@@ -320,10 +322,28 @@ fn hack_1_byte_varnode_assign_to_bit(
     }
 
     // truncate the right size to one bit
+
+    // dummy value for temporary use
+    let mut swap_right =
+        Expr::Value(ExprElement::Value(ExprValue::Int(super::ExprNumber {
+            size: FieldSize::default(),
+            number: crate::Number::Positive(0),
+            location: Span::File(crate::FileSpan {
+                start: crate::FileLocation {
+                    file: std::rc::Rc::from(std::path::Path::new("")),
+                    line: 0,
+                    column: 0,
+                },
+                end_line: 0,
+                end_column: 0,
+            }),
+        })));
+    core::mem::swap(&mut ass.right, &mut swap_right);
     ass.right = Expr::Value(ExprElement::new_op(
-        var_expr.location.clone(),
+        ass.src.clone(),
         Unary::BitRange(0..1),
-        Expr::Value(ExprElement::Value(ExprValue::Varnode(var_expr.clone()))),
+        swap_right,
     ));
+
     true
 }

@@ -611,6 +611,7 @@ pub trait ExecutionBuilder {
                         left: FieldSize::new_bytes(var_ele.len_bytes),
                         right: right.size(self.sleigh(), self.execution()),
                         location: input.src.clone(),
+                        backtrace: format!("{}:{}", file!(), line!()),
                     })?;
                 Ok(Statement::Assignment(Assignment::new(
                     addr, op, input.src, right,
@@ -892,21 +893,13 @@ pub trait ExecutionBuilder {
                     )));
                 }
                 Expr::Value(ExprElement::Value(ExprValue::TokenField(
-                    ExprTokenField { location, size, id },
+                    ExprTokenField {
+                        location,
+                        size: _,
+                        id,
+                    },
                 ))) => {
-                    let size = size
-                        .intersection(FieldSize::new_bytes(
-                            NumberNonZeroUnsigned::new(x.value).unwrap(),
-                        ))
-                        .ok_or_else(|| {
-                            ExecutionError::VarSize(
-                                VarSizeError::TokenFieldSetSize {
-                                    tf_id: id,
-                                    size: x.value,
-                                    location: x.src.clone(),
-                                },
-                            )
-                        })?;
+                    let size = FieldSize::new_unsized();
                     return Ok(ExprElement::Value(ExprValue::TokenField(
                         ExprTokenField { location, size, id },
                     )));

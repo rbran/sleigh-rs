@@ -1,3 +1,4 @@
+use std::backtrace;
 use std::num::TryFromIntError;
 use std::ops::{Bound, RangeBounds};
 use std::path::Path;
@@ -551,11 +552,12 @@ pub enum WithBlockError {
 
 #[derive(Clone, Debug, Error)]
 pub enum VarSizeError {
-    #[error("Assignment Left {left:?} and Right {right:?} side are imcompatible at {location}")]
+    #[error("Assignment Left {left:?} and Right {right:?} side are imcompatible at {location}, {backtrace}")]
     AssignmentSides {
         left: FieldSize,
         right: FieldSize,
         location: Span,
+        backtrace: String,
     },
     #[error("Take {lsb}bytes from value of size {input:?} at {location}")]
     TakeLsbTooSmall {
@@ -638,11 +640,14 @@ pub enum VarSizeError {
         location: Span,
     },
 
-    #[error("Invalid size {size} set for TokenField at {location}")]
+    #[error(
+        "Invalid size {size} set for TokenField at {location} at {backtrace}"
+    )]
     TokenFieldSetSize {
         tf_id: TokenFieldId,
         size: u64,
         location: Span,
+        backtrace: String,
     },
 }
 
@@ -990,11 +995,11 @@ mod test {
             //"x86/data/languages/x86.slaspec",
             //"x86/data/languages/x86-64.slaspec",
             "CP1600/data/languages/CP1600.slaspec",
-            //"SuperH/data/languages/sh-2.slaspec",
+            "SuperH/data/languages/sh-2.slaspec",
             //"SuperH/data/languages/sh-2a.slaspec",
             //"SuperH/data/languages/sh-1.slaspec",
-            // "Sparc/data/languages/SparcV9_64.slaspec",
-            // "Sparc/data/languages/SparcV9_32.slaspec",
+            //"Sparc/data/languages/SparcV9_64.slaspec",
+            //"Sparc/data/languages/SparcV9_32.slaspec",
             //"MCS96/data/languages/MCS96.slaspec",
             //"Toy/data/languages/toy64_le.slaspec",
             //"Toy/data/languages/toy_builder_be_align2.slaspec",
