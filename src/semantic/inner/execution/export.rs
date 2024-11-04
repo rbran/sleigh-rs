@@ -173,23 +173,24 @@ impl Export {
     ) -> Result<Self, Box<ExecutionError>> {
         match expr {
             //if the value is just an varnode, then is actually a reference
-            Expr::Value(ExprElement::Value(ExprValue::Varnode(
-                varnode_expr,
-            ))) => {
-                let varnode = sleigh.varnode(varnode_expr.id);
-                let number = ExprNumber::new(
-                    varnode_expr.location.clone(),
-                    Number::Positive(varnode.address),
-                );
+            Expr::Value(ExprElement::Value {
+                location,
+                value: ExprValue::Varnode(varnode_expr),
+            }) => {
+                let varnode = sleigh.varnode(varnode_expr);
+                let number = ExprNumber::new(Number::Positive(varnode.address));
                 Export::new_reference(
                     sleigh,
                     pattern,
                     execution,
-                    Expr::Value(ExprElement::Value(ExprValue::Int(number))),
+                    Expr::Value(ExprElement::Value {
+                        location: location.clone(),
+                        value: ExprValue::Int(number),
+                    }),
                     MemoryLocation {
                         space: varnode.space,
                         size: FieldSize::new_bytes(varnode.len_bytes),
-                        src: varnode_expr.location.clone(),
+                        location,
                     },
                 )
             }

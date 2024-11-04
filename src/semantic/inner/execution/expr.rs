@@ -1,19 +1,21 @@
+use crate::execution::{DynamicValueType, ExprVarnodeDynamic, VariableId};
 use crate::semantic::execution::{
     Binary, Expr as FinalExpr, ExprBinaryOp as FinalExprBinaryOp,
     ExprBitrange as FinalExprBitrange, ExprCPool as FinalExprCPool,
     ExprContext as FinalExprContext, ExprDisVar as FinalExprDisVar,
-    ExprElement as FinalExprElement, ExprExeVar, ExprInstNext, ExprInstStart,
-    ExprNew as FinalExprNew, ExprNumber as FinalExprNumber, ExprTable,
+    ExprDynamicInt as FinalExprDynamicInt, ExprElement as FinalExprElement,
+    ExprNew as FinalExprNew, ExprNumber as FinalExprNumber,
     ExprTokenField as FinalExprTokenField, ExprUnaryOp as FinalExprUnaryOp,
-    ExprValue as FinalReadValue, ExprVarnode, Reference as FinalReference,
-    ReferencedValue, Unary,
+    ExprValue as FinalReadValue, Reference as FinalReference, ReferencedValue,
+    Unary,
 };
 use crate::semantic::inner::execution::len;
 use crate::semantic::inner::{FieldSize, Sleigh, Solved, SolverStatus};
 use crate::semantic::{disassembly, InstNext, InstStart};
 use crate::{
-    BitrangeId, ContextId, ExecutionError, Number, NumberNonZeroUnsigned,
-    NumberUnsigned, Span, TokenFieldId, VarSizeError,
+    AttachNumberId, BitrangeId, ContextId, ExecutionError, Number,
+    NumberNonZeroUnsigned, NumberUnsigned, Span, TableId, TokenFieldId,
+    VarSizeError, VarnodeId,
 };
 
 use super::{
@@ -56,7 +58,7 @@ pub struct ExprBinaryOp {
 
 #[derive(Clone, Debug)]
 pub enum ExprElement {
-    Value(ExprValue),
+    Value { location: Span, value: ExprValue },
     UserCall(UserCall),
     Reference(Reference),
     DeReference(Span, MemoryLocation, Box<Expr>),
@@ -67,49 +69,60 @@ pub enum ExprElement {
 
 #[derive(Clone, Debug)]
 pub enum ExprValue {
+    /// Simple Int value
     Int(ExprNumber),
+    /// Context/TokenField value translated into a Int
+    /// Dynamic Int from Context or TokenField
+    IntDynamic(ExprIntDynamic),
+    InstStart(InstStart),
+    InstNext(InstNext),
+    /// simple TokenField, no attachment
     TokenField(ExprTokenField),
-    InstStart(ExprInstStart),
-    InstNext(ExprInstNext),
-    Varnode(ExprVarnode),
+    /// simple Context, no attachment
     Context(ExprContext),
+    /// A Varnode Value
+    Varnode(VarnodeId),
+    /// A Context/TokenField translated into a varnode
+    VarnodeDynamic(ExprVarnodeDynamic),
     Bitrange(ExprBitrange),
-    Table(ExprTable),
+    Table(TableId),
     DisVar(ExprDisVar),
-    ExeVar(ExprExeVar),
+    ExeVar(VariableId),
 }
 
 #[derive(Clone, Debug)]
 pub struct ExprNumber {
-    pub location: Span,
     pub size: FieldSize,
     pub number: Number,
 }
 
 #[derive(Clone, Debug)]
+pub struct ExprIntDynamic {
+    pub size: FieldSize,
+    pub attach_id: AttachNumberId,
+    pub attach_value: DynamicValueType,
+}
+
+#[derive(Clone, Debug)]
 pub struct ExprTokenField {
-    pub location: Span,
     pub size: FieldSize,
     pub id: TokenFieldId,
 }
 
 #[derive(Clone, Debug)]
 pub struct ExprContext {
-    pub location: Span,
     pub size: FieldSize,
     pub id: ContextId,
 }
 
 #[derive(Clone, Debug)]
 pub struct ExprBitrange {
-    pub location: Span,
     pub size: FieldSize,
     pub id: BitrangeId,
 }
 
 #[derive(Clone, Debug)]
 pub struct ExprDisVar {
-    pub location: Span,
     pub size: FieldSize,
     pub id: disassembly::VariableId,
 }
@@ -314,7 +327,7 @@ impl ExprElement {
     }
     pub fn src(&self) -> &Span {
         match self {
-            Self::Value(value) => value.src(),
+            Self::Value { location, value: _ } => &location,
             Self::UserCall(call) => &call.location,
             Self::Op(op) => &op.location,
             Self::Reference(reference) => &reference.location,
@@ -331,7 +344,9 @@ impl ExprElement {
     ) -> Result<(), Box<ExecutionError>> {
         let mut modified = false;
         match self {
-            Self::Value(value) => value.solve(sleigh, execution, solved)?,
+            Self::Value { location, value } => {
+                value.solve(location, sleigh, execution, solved)?
+            }
             Self::Reference(Reference {
                 location: _,
                 len: _,
@@ -624,7 +639,10 @@ impl ExprElement {
     }
     pub fn convert(self) -> FinalExprElement {
         match self {
-            Self::Value(value) => FinalExprElement::Value(value.convert()),
+            Self::Value { value, location } => FinalExprElement::Value {
+                location,
+                value: value.convert(),
+            },
             Self::Reference(reference) => {
                 FinalExprElement::Reference(reference.convert())
             }
@@ -650,7 +668,9 @@ impl ExprElement {
         execution: &'a Execution,
     ) -> Box<dyn FieldSizeMut + 'a> {
         match self {
-            Self::Value(value) => value.size_mut(sleigh, execution),
+            Self::Value { value, location: _ } => {
+                value.size_mut(sleigh, execution)
+            }
             Self::DeReference(_, deref, _) => Box::new(&mut deref.size),
             Self::Reference(x) => Box::new(&mut x.len),
             Self::Op(x) => Box::new(&mut x.output_size),
@@ -661,7 +681,7 @@ impl ExprElement {
     }
     pub fn size(&self, sleigh: &Sleigh, execution: &Execution) -> FieldSize {
         match self {
-            Self::Value(value) => value.size(sleigh, execution),
+            Self::Value { value, location: _ } => value.size(sleigh, execution),
             Self::DeReference(_, deref, _) => deref.size,
             Self::Reference(x) => x.len,
             Self::Op(x) => x.output_size,
@@ -673,62 +693,82 @@ impl ExprElement {
 }
 
 impl ExprValue {
-    pub fn from_read_scope(
-        sleigh: &Sleigh,
-        location: Span,
-        value: ReadScope,
-    ) -> Self {
+    pub fn from_read_scope(sleigh: &Sleigh, value: ReadScope) -> Self {
         match value {
-            ReadScope::TokenField(id) => {
-                let size = sleigh.token_field(id).exec_value_len(sleigh);
-                Self::TokenField(ExprTokenField { location, size, id })
+            ReadScope::TokenField(tf_id) => {
+                use crate::execution::DynamicValueType::*;
+                use crate::token::TokenFieldAttach::*;
+                let tf = sleigh.token_field(tf_id);
+                match tf.attach {
+                    Some(Varnode(attach_id)) => {
+                        Self::VarnodeDynamic(ExprVarnodeDynamic {
+                            attach_id,
+                            attach_value: TokenField(tf_id),
+                        })
+                    }
+                    Some(Number(_, attach_id)) => {
+                        let attach = sleigh.attach_number(attach_id);
+                        let size = FieldSize::new_unsized()
+                            .set_min_bits(
+                                u64::from(attach.bits_required())
+                                    .try_into()
+                                    .unwrap_or(1.try_into().unwrap()),
+                            )
+                            .unwrap();
+                        Self::IntDynamic(ExprIntDynamic {
+                            size,
+                            attach_id,
+                            attach_value: TokenField(tf_id),
+                        })
+                    }
+                    // Raw value for the TokenField
+                    _ => {
+                        // TokenField size auto adjust it's size
+                        let size = FieldSize::default()
+                            .set_min_bits(tf.bits.len())
+                            .unwrap();
+                        Self::TokenField(ExprTokenField { size, id: tf_id })
+                    }
+                }
             }
-            ReadScope::InstStart => Self::InstStart(ExprInstStart {
-                location,
-                data: InstStart,
-            }),
-            ReadScope::InstNext => Self::InstNext(ExprInstNext {
-                location,
-                data: InstNext,
-            }),
-            ReadScope::Varnode(id) => {
-                Self::Varnode(ExprVarnode { location, id })
+            ReadScope::Context(ctx_id) => {
+                use crate::varnode::ContextAttach::*;
+                let ctx = sleigh.context(ctx_id);
+                match ctx.attach {
+                    Some(Varnode(attach_id)) => {
+                        Self::VarnodeDynamic(ExprVarnodeDynamic {
+                            attach_id,
+                            attach_value: DynamicValueType::Context(ctx_id),
+                        })
+                    }
+                    _ => {
+                        let size = FieldSize::default()
+                            .set_min_bits(ctx.bitrange.bits.len())
+                            .unwrap();
+                        Self::Context(ExprContext { size, id: ctx_id })
+                    }
+                }
             }
-            ReadScope::Context(id) => {
-                let size = sleigh.context(id).exec_value_size(sleigh);
-                Self::Context(ExprContext { location, size, id })
-            }
+            ReadScope::InstStart => Self::InstStart(InstStart),
+            ReadScope::InstNext => Self::InstNext(InstNext),
+            ReadScope::Varnode(id) => Self::Varnode(id),
             ReadScope::Bitrange(id) => {
                 let bitrange = sleigh.bitrange(id);
                 let size = FieldSize::new_unsized()
                     .set_min_bits(bitrange.bits.len())
                     .unwrap()
                     .set_possible_min();
-                Self::Bitrange(ExprBitrange { location, size, id })
+                Self::Bitrange(ExprBitrange { size, id })
             }
-            ReadScope::Table(id) => Self::Table(ExprTable { location, id }),
+            ReadScope::Table(id) => Self::Table(id),
             ReadScope::DisVar(id) => {
                 let size = FieldSize::new_unsized();
-                Self::DisVar(ExprDisVar { location, size, id })
+                Self::DisVar(ExprDisVar { size, id })
             }
-            ReadScope::ExeVar(id) => Self::ExeVar(ExprExeVar { location, id }),
+            ReadScope::ExeVar(id) => Self::ExeVar(id),
         }
     }
 
-    pub fn src(&self) -> &Span {
-        match self {
-            Self::Int(int) => &int.location,
-            Self::DisVar(x) => &x.location,
-            Self::ExeVar(x) => &x.location,
-            Self::TokenField(x) => &x.location,
-            Self::Varnode(x) => &x.location,
-            Self::Context(x) => &x.location,
-            Self::Bitrange(x) => &x.location,
-            Self::Table(x) => &x.location,
-            Self::InstStart(x) => &x.location,
-            Self::InstNext(x) => &x.location,
-        }
-    }
     pub fn size_mut<'a>(
         &'a mut self,
         sleigh: &'a Sleigh,
@@ -745,10 +785,16 @@ impl ExprValue {
                 Box::new(FieldSizeUnmutable::from(self.size(sleigh, execution)))
             }
             Self::Varnode(var) => Box::new(FieldSizeUnmutable::from(
-                FieldSize::new_bytes(sleigh.varnode(var.id).len_bytes),
+                FieldSize::new_bytes(sleigh.varnode(*var).len_bytes),
             )),
-            Self::Table(x) => Box::new(sleigh.table(x.id)),
-            Self::ExeVar(x) => Box::new(&execution.variable(x.id).size),
+            Self::Table(table_id) => Box::new(sleigh.table(*table_id)),
+            Self::ExeVar(var_id) => Box::new(&execution.variable(*var_id).size),
+            Self::IntDynamic(ExprIntDynamic { size, .. }) => Box::new(size),
+            Self::VarnodeDynamic(ExprVarnodeDynamic { attach_id, .. }) => {
+                Box::new(FieldSizeUnmutable::from(FieldSize::new_bytes(
+                    sleigh.attach_varnodes_len_bytes(*attach_id),
+                )))
+            }
         }
     }
     pub fn size(&self, sleigh: &Sleigh, execution: &Execution) -> FieldSize {
@@ -764,22 +810,29 @@ impl ExprValue {
                 .addr_bytes()
                 .map(FieldSize::new_bytes)
                 .unwrap_or_default(),
-            Self::Varnode(x) => {
-                FieldSize::new_bytes(sleigh.varnode(x.id).len_bytes)
+            Self::Varnode(id) => {
+                FieldSize::new_bytes(sleigh.varnode(*id).len_bytes)
             }
-            Self::Table(x) => *sleigh
-                .table(x.id)
+            Self::Table(id) => *sleigh
+                .table(*id)
                 .export
                 .borrow()
                 .as_ref()
                 .unwrap()
                 .size()
                 .unwrap(),
-            Self::ExeVar(x) => execution.variable(x.id).size.get(),
+            Self::ExeVar(id) => execution.variable(*id).size.get(),
+            Self::IntDynamic(ExprIntDynamic { size, .. }) => *size,
+            Self::VarnodeDynamic(ExprVarnodeDynamic { attach_id, .. }) => {
+                FieldSize::new_bytes(
+                    sleigh.attach_varnodes_len_bytes(*attach_id),
+                )
+            }
         }
     }
     pub fn solve(
         &mut self,
+        location: &Span,
         _sleigh: &Sleigh,
         execution: &Execution,
         solved: &mut impl SolverStatus,
@@ -790,13 +843,9 @@ impl ExprValue {
             Self::Context(_) | Self::Bitrange(_) | Self::TokenField(_) => {}
             // the len don't need solving
             Self::Varnode(_) | Self::InstStart(_) | Self::InstNext(_) => {}
-            Self::ExeVar(var_expr) => {
-                let var = &execution.variable(var_expr.id);
-                mark_unfinished_size!(
-                    &var.size.get(),
-                    solved,
-                    &var_expr.location
-                )
+            Self::ExeVar(id) => {
+                let var = &execution.variable(*id);
+                mark_unfinished_size!(&var.size.get(), solved, location)
             }
             Self::Int(num) => {
                 if num.size.is_unrestricted() {
@@ -810,11 +859,15 @@ impl ExprValue {
                         .unwrap();
                     solved.i_did_a_thing();
                 }
-                mark_unfinished_size!(&num.size, solved, &num.location)
+                mark_unfinished_size!(&num.size, solved, location)
             }
             Self::DisVar(var) => {
-                mark_unfinished_size!(&var.size, solved, &var.location)
+                mark_unfinished_size!(&var.size, solved, location)
             }
+            Self::IntDynamic(var) => {
+                mark_unfinished_size!(&var.size, solved, location)
+            }
+            Self::VarnodeDynamic(_) => {}
         }
         Ok(())
     }
@@ -830,6 +883,16 @@ impl ExprValue {
             Self::Table(x) => FinalReadValue::Table(x),
             Self::DisVar(x) => FinalReadValue::DisVar(x.convert()),
             Self::ExeVar(x) => FinalReadValue::ExeVar(x),
+            Self::IntDynamic(ExprIntDynamic {
+                size,
+                attach_id,
+                attach_value,
+            }) => FinalReadValue::IntDynamic(FinalExprDynamicInt {
+                bits: size.possible_value().unwrap(),
+                attach_id,
+                attach_value,
+            }),
+            Self::VarnodeDynamic(var) => FinalReadValue::VarnodeDynamic(var),
         }
     }
 }
@@ -887,15 +950,13 @@ impl ExprBinaryOp {
 impl ExprNumber {
     pub fn convert(self) -> FinalExprNumber {
         FinalExprNumber {
-            location: self.location,
             size: self.size.possible_value().unwrap(),
             number: self.number,
         }
     }
 
-    pub fn new(location: Span, number: Number) -> ExprNumber {
+    pub fn new(number: Number) -> ExprNumber {
         Self {
-            location,
             number,
             size: FieldSize::new_unsized().set_possible_min(),
         }
@@ -905,69 +966,57 @@ impl ExprNumber {
 impl ExprTokenField {
     pub fn convert(self) -> FinalExprTokenField {
         FinalExprTokenField {
-            location: self.location,
             size: self.size.possible_value().unwrap(),
             id: self.id,
         }
     }
 
-    pub fn new(
-        location: Span,
-        sleigh: &Sleigh,
-        id: TokenFieldId,
-    ) -> ExprTokenField {
+    pub fn new(sleigh: &Sleigh, id: TokenFieldId) -> ExprTokenField {
         let token_field = sleigh.token_field(id);
         let min_bits = token_field.bits.len();
         let size = FieldSize::default().set_min_bits(min_bits).unwrap();
-        Self { location, id, size }
+        Self { id, size }
     }
 }
 
 impl ExprContext {
     pub fn convert(self) -> FinalExprContext {
         FinalExprContext {
-            location: self.location,
             size: self.size.possible_value().unwrap(),
             id: self.id,
         }
     }
 
-    pub fn new(location: Span, sleigh: &Sleigh, id: ContextId) -> ExprContext {
+    pub fn new(sleigh: &Sleigh, id: ContextId) -> ExprContext {
         let context = sleigh.context(id);
         let min_bits = context.bitrange.bits.len();
         let size = FieldSize::default().set_min_bits(min_bits).unwrap();
-        Self { location, id, size }
+        Self { id, size }
     }
 }
 
 impl ExprBitrange {
     pub fn convert(self) -> FinalExprBitrange {
         FinalExprBitrange {
-            location: self.location,
             size: self.size.possible_value().unwrap(),
             id: self.id,
         }
     }
 
-    pub fn new(
-        location: Span,
-        sleigh: &Sleigh,
-        id: BitrangeId,
-    ) -> ExprBitrange {
+    pub fn new(sleigh: &Sleigh, id: BitrangeId) -> ExprBitrange {
         let bitrange = sleigh.bitrange(id);
         let min_bits = bitrange.bits.len();
         let size = FieldSize::default()
             .set_min_bits(min_bits)
             .unwrap()
             .set_possible_min();
-        Self { location, id, size }
+        Self { id, size }
     }
 }
 
 impl ExprDisVar {
     pub fn convert(self) -> FinalExprDisVar {
         FinalExprDisVar {
-            location: self.location,
             size: self.size.possible_value().unwrap(),
             id: self.id,
         }
@@ -988,9 +1037,15 @@ fn inner_expr_solve(
     match (*op.left, op.op, *op.right) {
         //if two Integer, calculate it and replace self with the result.
         (
-            Expr::Value(Ele::Value(Value::Int(left))),
+            Expr::Value(Ele::Value {
+                location: _,
+                value: Value::Int(left),
+            }),
             op_binary,
-            Expr::Value(Ele::Value(Value::Int(right))),
+            Expr::Value(Ele::Value {
+                location,
+                value: Value::Int(right),
+            }),
         ) => {
             solved.i_did_a_thing();
             solved.iam_not_finished(&op.location, file!(), line!());
@@ -1005,10 +1060,10 @@ fn inner_expr_solve(
                     ExecutionError::OperationOverflow(op.location.clone())
                 })?;
             //replace self with our new value
-            Ok(Expr::Value(Ele::Value(Value::Int(ExprNumber::new(
-                op.location,
-                value.into(),
-            )))))
+            Ok(Expr::Value(Ele::Value {
+                location,
+                value: Value::Int(ExprNumber::new(value.into())),
+            }))
         }
 
         // HACK: convert some kinds of bit_and into bitrange if the value is a
@@ -1019,18 +1074,24 @@ fn inner_expr_solve(
         (
             value,
             BitAnd,
-            Expr::Value(Ele::Value(Value::Int(ExprNumber {
+            Expr::Value(Ele::Value {
                 location,
-                number: integer,
-                size: _,
-            }))),
+                value:
+                    Value::Int(ExprNumber {
+                        number: integer,
+                        size: _,
+                    }),
+            }),
         )
         | (
-            Expr::Value(Ele::Value(Value::Int(ExprNumber {
+            Expr::Value(Ele::Value {
                 location,
-                number: integer,
-                size: _,
-            }))),
+                value:
+                    Value::Int(ExprNumber {
+                        number: integer,
+                        size: _,
+                    }),
+            }),
             BitAnd,
             value,
         ) if op
@@ -1068,11 +1129,14 @@ fn inner_expr_solve(
         (
             value,
             Lsr,
-            Expr::Value(Ele::Value(Value::Int(ExprNumber {
-                location: src,
-                number: lsb,
-                size: _,
-            }))),
+            Expr::Value(Ele::Value {
+                location,
+                value:
+                    Value::Int(ExprNumber {
+                        number: lsb,
+                        size: _,
+                    }),
+            }),
         ) if op
             .output_size
             .final_value()
@@ -1085,12 +1149,12 @@ fn inner_expr_solve(
             .unwrap_or(false) =>
         {
             solved.i_did_a_thing();
-            solved.iam_not_finished(&src, file!(), line!());
+            solved.iam_not_finished(&location, file!(), line!());
             let size = op.output_size.final_value().unwrap();
             //take the value from self, and put on the new self
             //safe because the self is overwriten after
             Ok(Expr::Value(Ele::new_bitrange(
-                src.clone(),
+                location,
                 lsb.as_unsigned().unwrap(),
                 size,
                 value,

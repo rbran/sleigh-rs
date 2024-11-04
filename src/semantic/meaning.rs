@@ -1,7 +1,7 @@
 use crate::semantic::{
     AttachLiteralId, AttachNumberId, AttachVarnodeId, VarnodeId,
 };
-use crate::{Number, NumberNonZeroUnsigned};
+use crate::{Number, NumberNonZeroUnsigned, Sleigh};
 
 use super::inner::execution::FieldSize;
 use super::{PrintBase, ValueFmt};
@@ -28,6 +28,10 @@ impl AttachVarnode {
             .iter()
             .find(|(value_index, _value)| *value_index == index)
             .map(|(_, value)| *value)
+    }
+
+    pub fn len_bytes(&self, sleigh: &Sleigh) -> NumberNonZeroUnsigned {
+        sleigh.varnode(self.0[0].1).len_bytes
     }
 }
 
@@ -72,6 +76,14 @@ impl AttachNumber {
             .iter()
             .find(|(value_index, _value)| *value_index == index)
             .map(|(_, value)| *value)
+    }
+
+    pub fn bits_required(&self) -> u32 {
+        self.0
+            .iter()
+            .map(|(_value_index, value)| value.bits_required())
+            .min()
+            .unwrap()
     }
 }
 

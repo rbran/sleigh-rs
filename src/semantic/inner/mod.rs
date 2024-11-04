@@ -335,6 +335,12 @@ impl Sleigh {
     pub fn attach_literal(&self, id: AttachLiteralId) -> &AttachLiteral {
         &self.attach_literals[id.0]
     }
+    pub fn attach_varnodes_len_bytes(
+        &self,
+        id: AttachVarnodeId,
+    ) -> NumberNonZeroUnsigned {
+        self.varnode(self.attach_varnode(id).0[0].1).len_bytes
+    }
     pub fn default_space(&self) -> Option<SpaceId> {
         self.default_space
     }

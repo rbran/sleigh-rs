@@ -1,7 +1,8 @@
 use std::ops::Range;
 
 use crate::{
-    FieldSize, Number, NumberNonZeroUnsigned, NumberUnsigned, Sleigh, Span,
+    AttachNumberId, AttachVarnodeId, Number, NumberNonZeroUnsigned,
+    NumberUnsigned, Sleigh, Span,
 };
 
 use super::{
@@ -108,7 +109,7 @@ pub struct ExprBinaryOp {
 
 #[derive(Clone, Debug)]
 pub enum ExprElement {
-    Value(ExprValue),
+    Value { location: Span, value: ExprValue },
     UserCall(UserCall),
     Reference(Reference),
     Op(ExprUnaryOp),
@@ -122,12 +123,12 @@ impl ExprElement {
         execution: &Execution,
     ) -> NumberNonZeroUnsigned {
         match self {
-            ExprElement::Value(x) => x.len_bits(sleigh, execution),
-            ExprElement::UserCall(_x) => unimplemented!(),
-            ExprElement::Reference(x) => x.len_bits,
-            ExprElement::Op(x) => x.output_bits,
-            ExprElement::New(_x) => unimplemented!(),
-            ExprElement::CPool(_x) => unimplemented!(),
+            Self::Value { value, .. } => value.len_bits(sleigh, execution),
+            Self::UserCall(_x) => unimplemented!(),
+            Self::Reference(x) => x.len_bits,
+            Self::Op(x) => x.output_bits,
+            Self::New(_x) => unimplemented!(),
+            Self::CPool(_x) => unimplemented!(),
         }
     }
 }
@@ -169,17 +170,27 @@ pub struct UserCall {
 
 #[derive(Clone, Debug)]
 pub enum ExprValue {
+    /// Simple Int value
     Int(ExprNumber),
+    /// Context/TokenField value translated into a Int
+    IntDynamic(ExprDynamicInt),
+    InstStart(InstStart),
+    InstNext(InstNext),
+    /// simple TokenField, no attachment
     TokenField(ExprTokenField),
-    InstStart(ExprInstStart),
-    InstNext(ExprInstNext),
-    Varnode(ExprVarnode),
+    /// simple Context, no attachment
     Context(ExprContext),
+    /// A Varnode Value
+    Varnode(VarnodeId),
+    /// A Context/TokenField translated into a varnode
+    VarnodeDynamic(ExprVarnodeDynamic),
+    /// Dynamic Int from Context or TokenField
     Bitrange(ExprBitrange),
-    Table(ExprTable),
+    Table(TableId),
     DisVar(ExprDisVar),
-    ExeVar(ExprExeVar),
+    ExeVar(VariableId),
 }
+
 impl ExprValue {
     pub fn len_bits(
         &self,
@@ -187,86 +198,88 @@ impl ExprValue {
         execution: &Execution,
     ) -> NumberNonZeroUnsigned {
         match self {
-            ExprValue::Int(x) => x.size,
-            ExprValue::TokenField(x) => x.size,
-            ExprValue::InstStart(_) | ExprValue::InstNext(_) => {
+            Self::Int(x) => x.size,
+            Self::TokenField(x) => x.size,
+            Self::InstStart(_) | Self::InstNext(_) => {
                 (sleigh.addr_bytes().get() * 8).try_into().unwrap()
             }
-            ExprValue::Varnode(x) => (sleigh.varnode(x.id).len_bytes.get() * 8)
-                .try_into()
-                .unwrap(),
-            ExprValue::Context(x) => sleigh.context(x.id).bitrange.bits.len(),
-            ExprValue::Bitrange(x) => sleigh.bitrange(x.id).bits.len(),
-            ExprValue::Table(x) => sleigh.table(x.id).export.unwrap().len(),
-            ExprValue::DisVar(x) => x.size,
-            ExprValue::ExeVar(x) => execution.variable(x.id).len_bits,
+            Self::Varnode(x) => {
+                (sleigh.varnode(*x).len_bytes.get() * 8).try_into().unwrap()
+            }
+            Self::Context(x) => sleigh.context(x.id).bitrange.bits.len(),
+            Self::Bitrange(x) => sleigh.bitrange(x.id).bits.len(),
+            Self::Table(x) => sleigh.table(*x).export.unwrap().len(),
+            Self::DisVar(x) => x.size,
+            Self::ExeVar(x) => execution.variable(*x).len_bits,
+            Self::IntDynamic(ExprDynamicInt { bits, .. }) => *bits,
+            Self::VarnodeDynamic(ExprVarnodeDynamic { attach_id, .. }) => {
+                sleigh.attach_varnode(*attach_id).len_bytes(sleigh)
+            }
         }
+    }
+
+    fn convert(&self) -> ExprValue {
+        todo!()
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct ExprNumber {
-    pub location: Span,
     pub size: NumberNonZeroUnsigned,
     pub number: Number,
 }
 
 #[derive(Clone, Debug)]
+pub struct ExprDynamicInt {
+    pub attach_id: AttachNumberId,
+    pub attach_value: DynamicValueType,
+    pub bits: NumberNonZeroUnsigned,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExprVarnodeDynamic {
+    pub attach_id: AttachVarnodeId,
+    pub attach_value: DynamicValueType,
+}
+
+#[derive(Clone, Debug)]
 pub struct ExprTokenField {
-    pub location: Span,
     pub size: NumberNonZeroUnsigned,
     pub id: TokenFieldId,
 }
 
 #[derive(Clone, Debug)]
-pub struct ExprInstStart {
-    pub location: Span,
-    pub data: InstStart,
+pub enum ExprVarnode {
+    Static(VarnodeId),
+    Dynamic {
+        attach_id: AttachVarnodeId,
+        attach_value: DynamicValueType,
+    },
 }
 
+/// Only used for types with attachment values to Varnodes/Ints
 #[derive(Clone, Debug)]
-pub struct ExprInstNext {
-    pub location: Span,
-    pub data: InstNext,
-}
-
-#[derive(Clone, Debug)]
-pub struct ExprVarnode {
-    pub location: Span,
-    pub id: VarnodeId,
+pub enum DynamicValueType {
+    TokenField(TokenFieldId),
+    Context(ContextId),
 }
 
 #[derive(Clone, Debug)]
 pub struct ExprContext {
-    pub location: Span,
     pub size: NumberNonZeroUnsigned,
     pub id: ContextId,
 }
 
 #[derive(Clone, Debug)]
 pub struct ExprBitrange {
-    pub location: Span,
     pub size: NumberNonZeroUnsigned,
     pub id: BitrangeId,
 }
 
 #[derive(Clone, Debug)]
-pub struct ExprTable {
-    pub location: Span,
-    pub id: TableId,
-}
-
-#[derive(Clone, Debug)]
 pub struct ExprDisVar {
-    pub location: Span,
     pub size: NumberNonZeroUnsigned,
     pub id: disassembly::VariableId,
-}
-
-#[derive(Clone, Debug)]
-pub struct ExprExeVar {
-    pub location: Span,
-    pub id: VariableId,
 }
 
 #[derive(Clone, Debug)]
@@ -325,59 +338,23 @@ pub struct LocalGoto {
 
 #[derive(Clone, Debug)]
 pub enum WriteValue {
-    Varnode(WriteVarnode),
-    Bitrange(WriteBitrange),
+    Varnode(VarnodeId),
+    Bitrange(BitrangeId),
     ///only with attach variable
-    TokenField(WriteTokenField),
-    TableExport(WriteTable),
-    Local(WriteExeVar),
-}
-
-impl WriteValue {
-    pub fn location(&self) -> &Span {
-        match self {
-            WriteValue::Varnode(x) => &x.location,
-            WriteValue::Bitrange(x) => &x.location,
-            WriteValue::TokenField(x) => &x.location,
-            WriteValue::TableExport(x) => &x.location,
-            WriteValue::Local(x) => &x.location,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct WriteVarnode {
-    pub location: Span,
-    pub id: VarnodeId,
-}
-
-#[derive(Clone, Debug)]
-pub struct WriteBitrange {
-    pub location: Span,
-    pub id: BitrangeId,
-}
-
-#[derive(Clone, Debug)]
-pub struct WriteTokenField {
-    pub location: Span,
-    pub id: TokenFieldId,
-}
-
-#[derive(Clone, Debug)]
-pub struct WriteTable {
-    pub location: Span,
-    pub id: TableId,
-}
-
-#[derive(Clone, Debug)]
-pub struct WriteExeVar {
-    pub location: Span,
-    pub id: VariableId,
+    TokenField {
+        token_field_id: TokenFieldId,
+        attach_id: AttachVarnodeId,
+    },
+    // TODO Context translated into varnode
+    TableExport(TableId),
+    Local(VariableId),
 }
 
 #[derive(Clone, Debug)]
 pub struct Assignment {
+    /// assigment location
     pub location: Span,
+    /// left side of the assignment location
     pub var: WriteValue,
     pub op: Option<AssignmentOp>,
     pub right: Expr,
@@ -399,7 +376,8 @@ pub struct MemWrite {
 
 #[derive(Clone, Debug)]
 pub struct Build {
-    pub table: ExprTable,
+    pub location: Span,
+    pub table: TableId,
 }
 
 #[derive(Clone, Debug)]

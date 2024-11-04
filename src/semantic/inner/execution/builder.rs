@@ -1,11 +1,11 @@
 use std::cell::RefCell;
 use std::ops::Range;
 
+use crate::execution::{DynamicValueType, ExprVarnodeDynamic};
 use crate::semantic::disassembly;
 use crate::semantic::execution::{
-    BlockId, Build, ExprInstNext, ExprInstStart, ExprTable, RefTable,
-    RefTokenField, ReferencedValue, Unary, VariableId, WriteExeVar, WriteTable,
-    WriteTokenField, WriteValue, WriteVarnode,
+    BlockId, Build, RefTable, RefTokenField, ReferencedValue, Unary,
+    VariableId, WriteValue,
 };
 use crate::semantic::inner::execution::{
     Block, ExprBitrange, ExprNumber, ExprTokenField,
@@ -21,9 +21,9 @@ use crate::{
 
 use super::{
     Assignment, AssignmentOp, BranchCall, CpuBranch, Execution, ExecutionError,
-    Export, ExportLen, Expr, ExprCPool, ExprDisVar, ExprElement, ExprNew,
-    ExprUnaryOp, ExprValue, FieldSize, LocalGoto, MemWrite, MemoryLocation,
-    Reference, Statement, UserCall,
+    Export, ExportLen, Expr, ExprCPool, ExprDisVar, ExprElement,
+    ExprIntDynamic, ExprNew, ExprUnaryOp, ExprValue, FieldSize, LocalGoto,
+    MemWrite, MemoryLocation, Reference, Statement, UserCall,
 };
 
 #[derive(Clone, Debug)]
@@ -37,16 +37,6 @@ pub enum ReadScope {
     Table(TableId),
     DisVar(disassembly::VariableId),
     ExeVar(VariableId),
-}
-
-#[derive(Clone, Debug)]
-pub enum WriteScope {
-    Varnode(VarnodeId),
-    Bitrange(BitrangeId),
-    /// only token fields that are attach to a variable
-    TokenField(TokenFieldId),
-    TableExport(TableId),
-    Local(VariableId),
 }
 
 pub trait ExecutionBuilder {
@@ -63,7 +53,7 @@ pub trait ExecutionBuilder {
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<WriteScope, Box<ExecutionError>>;
+    ) -> Result<WriteValue, Box<ExecutionError>>;
     fn table(
         &self,
         name: &str,
@@ -272,12 +262,9 @@ pub trait ExecutionBuilder {
         input: syntax::block::execution::Build,
     ) -> Result<Build, Box<ExecutionError>> {
         let table_id = self.table(&input.table_name, &input.src)?;
-        let location = input.src;
         Ok(Build {
-            table: ExprTable {
-                location,
-                id: table_id,
-            },
+            table: table_id,
+            location: input.src,
         })
     }
     fn new_export(
@@ -401,11 +388,9 @@ pub trait ExecutionBuilder {
                                 Assignment {
                                     op: None,
                                     right: param.clone(),
-                                    var: WriteValue::Local(WriteExeVar {
-                                        location: location.clone(),
-                                        id: *variable_id,
-                                    }),
-                                    src: location.clone(),
+                                    var_location: location.clone(),
+                                    var: WriteValue::Local(*variable_id),
+                                    location: location.clone(),
                                 },
                             ));
                         }
@@ -460,8 +445,11 @@ pub trait ExecutionBuilder {
                                 })
                             }
                             Statement::Assignment(x) => {
-                                let (var, op) =
-                                    translate_write(&x.var, &variables_map);
+                                let (var, op) = translate_write(
+                                    self.sleigh(),
+                                    &x.var,
+                                    &variables_map,
+                                );
                                 if let Some((_new_op, _old_op)) =
                                     op.as_ref().zip(x.op.as_ref())
                                 {
@@ -571,10 +559,8 @@ pub trait ExecutionBuilder {
                     local,
                 )?;
                 Ok(Statement::Assignment(Assignment::new(
-                    WriteValue::Local(WriteExeVar {
-                        id: new_var_id,
-                        location: input.src.clone(),
-                    }),
+                    input.src.clone(),
+                    WriteValue::Local(new_var_id),
                     None,
                     input.src,
                     right,
@@ -585,14 +571,11 @@ pub trait ExecutionBuilder {
                 Err(Box::new(ExecutionError::InvalidVarDeclare(input.src)))
             }
             //Assign to varnode
-            (Some(WriteScope::Varnode(var)), false) => {
+            (Some(WriteValue::Varnode(var)), false) => {
                 let op =
                     input.op.map(|op| self.new_truncate(op)).transpose()?;
                 let var_ele = self.sleigh().varnode(var);
-                let addr = WriteValue::Varnode(WriteVarnode {
-                    location: input.src.clone(),
-                    id: var,
-                });
+                let addr = WriteValue::Varnode(var);
                 // TODO move this into solve?
                 // value can't be bigger then the varnode, although it can be
                 // smaller
@@ -614,16 +597,23 @@ pub trait ExecutionBuilder {
                         backtrace: format!("{}:{}", file!(), line!()),
                     })?;
                 Ok(Statement::Assignment(Assignment::new(
-                    addr, op, input.src, right,
+                    input.src.clone(),
+                    addr,
+                    op,
+                    input.src,
+                    right,
                 )))
             }
             //variable exists, just return it
             (Some(var), false) => {
                 let op =
                     input.op.map(|op| self.new_truncate(op)).transpose()?;
-                let var = WriteValue::from_write_scope(var, input.src.clone());
                 Ok(Statement::Assignment(Assignment::new(
-                    var, op, input.src, right,
+                    input.src.clone(),
+                    var,
+                    op,
+                    input.src,
+                    right,
                 )))
             }
         }
@@ -720,16 +710,18 @@ pub trait ExecutionBuilder {
     ) -> Result<ExprElement, Box<ExecutionError>> {
         use syntax::block::execution::expr::ExprElement as RawExprElement;
         match input {
-            RawExprElement::Value(syntax::Value::Number(src, value)) => Ok(
-                ExprElement::Value(ExprValue::Int(ExprNumber::new(src, value))),
-            ),
+            RawExprElement::Value(syntax::Value::Number(src, value)) => {
+                Ok(ExprElement::Value {
+                    location: src,
+                    value: ExprValue::Int(ExprNumber::new(value)),
+                })
+            }
             RawExprElement::Value(syntax::Value::Ident(src, value)) => {
                 let value = self.read_scope(&value, &src)?;
-                Ok(ExprElement::Value(ExprValue::from_read_scope(
-                    self.sleigh(),
-                    src,
-                    value,
-                )))
+                Ok(ExprElement::Value {
+                    location: src,
+                    value: ExprValue::from_read_scope(self.sleigh(), value),
+                })
             }
             RawExprElement::Reference(src, size, value) => {
                 let ref_bytes = size
@@ -782,16 +774,11 @@ pub trait ExecutionBuilder {
                 //can be one of two possibilities:
                 if let Ok(value) = self.read_scope(&name, &param_src) {
                     //first: value with ByteRangeMsb operator
-                    let value = ExprValue::from_read_scope(
-                        self.sleigh(),
-                        param_src.clone(),
-                        value,
-                    );
-                    Ok(ExprElement::new_trunk_lsb(
-                        param_src,
-                        param,
-                        Expr::Value(ExprElement::Value(value)),
-                    ))
+                    let value = Expr::Value(ExprElement::Value {
+                        location: param_src.clone(),
+                        value: ExprValue::from_read_scope(self.sleigh(), value),
+                    });
+                    Ok(ExprElement::new_trunk_lsb(param_src, param, value))
                 } else {
                     //second: (user_?)function call with one parameter
                     //we know this is not a primitive function, macro
@@ -853,16 +840,18 @@ pub trait ExecutionBuilder {
             Op::ByteRangeLsb(x) => match expr {
                 // NOTE, Lsb on and Int/DisassemblyVar/TokenField/Bitrange just
                 // set the len
-                Expr::Value(ExprElement::Value(ExprValue::Int(
-                    ExprNumber {
-                        location: src,
-                        size: len,
-                        number: value,
-                    },
-                ))) => {
-                    return Ok(ExprElement::Value(ExprValue::Int(
-                        ExprNumber {
-                            location: src,
+                // except if TokenField have the value translated into a varnode
+                Expr::Value(ExprElement::Value {
+                    location,
+                    value:
+                        ExprValue::Int(ExprNumber {
+                            size: len,
+                            number: value,
+                        }),
+                }) => {
+                    return Ok(ExprElement::Value {
+                        location,
+                        value: ExprValue::Int(ExprNumber {
                             //TODO error
                             size: len
                                 .intersection(FieldSize::new_bytes(
@@ -872,54 +861,66 @@ pub trait ExecutionBuilder {
                                 .unwrap()
                                 .set_possible_min(),
                             number: value,
-                        },
-                    )));
+                        }),
+                    });
                 }
-                Expr::Value(ExprElement::Value(ExprValue::DisVar(
-                    ExprDisVar { location, size, id },
-                ))) => {
-                    return Ok(ExprElement::Value(ExprValue::DisVar(
-                        ExprDisVar {
-                            location,
-                            //TODO error
-                            size: size
-                                .intersection(FieldSize::new_bytes(
-                                    NumberNonZeroUnsigned::new(x.value)
-                                        .unwrap(),
-                                ))
-                                .unwrap(),
-                            id,
-                        },
-                    )));
-                }
-                Expr::Value(ExprElement::Value(ExprValue::TokenField(
-                    ExprTokenField {
+                Expr::Value(ExprElement::Value {
+                    location,
+                    value: ExprValue::DisVar(ExprDisVar { size, id }),
+                }) => {
+                    //TODO error
+                    let size = size
+                        .intersection(FieldSize::new_bytes(
+                            NumberNonZeroUnsigned::new(x.value).unwrap(),
+                        ))
+                        .unwrap();
+                    return Ok(ExprElement::Value {
                         location,
-                        size: _,
-                        id,
-                    },
-                ))) => {
-                    let size = FieldSize::new_unsized();
-                    return Ok(ExprElement::Value(ExprValue::TokenField(
-                        ExprTokenField { location, size, id },
-                    )));
+                        value: ExprValue::DisVar(ExprDisVar { size, id }),
+                    });
                 }
-                Expr::Value(ExprElement::Value(ExprValue::Bitrange(
-                    ExprBitrange { location, size, id },
-                ))) => {
-                    return Ok(ExprElement::Value(ExprValue::Bitrange(
-                        ExprBitrange {
-                            location,
-                            //TODO error
-                            size: size
-                                .intersection(FieldSize::new_bytes(
-                                    NumberNonZeroUnsigned::new(x.value)
-                                        .unwrap(),
-                                ))
-                                .unwrap(),
+                Expr::Value(ExprElement::Value {
+                    location,
+                    value: ExprValue::TokenField(ExprTokenField { size: _, id }),
+                }) => {
+                    let tf = self.sleigh().token_field(id);
+                    if let Some(crate::token::TokenFieldAttach::Varnode(
+                        att_var_id,
+                    )) = tf.attach
+                    {
+                        let attach = self.sleigh().attach_varnode(att_var_id);
+                        let var_id = attach.0[0].1;
+                        let var = self.sleigh().varnode(var_id);
+                        let value = ExprValue::TokenField(ExprTokenField {
+                            size: FieldSize::new_bytes(var.len_bytes),
                             id,
-                        },
-                    )));
+                        });
+                        return Ok(ExprElement::new_op(
+                            x.src.clone(),
+                            Unary::TakeLsb(x.value.try_into().unwrap()),
+                            Expr::Value(ExprElement::Value { location, value }),
+                        ));
+                    } else {
+                        let size = FieldSize::new_unsized();
+                        let value =
+                            ExprValue::TokenField(ExprTokenField { size, id });
+                        return Ok(ExprElement::Value { location, value });
+                    }
+                }
+                Expr::Value(ExprElement::Value {
+                    location,
+                    value: ExprValue::Bitrange(ExprBitrange { size, id }),
+                }) => {
+                    //TODO error
+                    let size = size
+                        .intersection(FieldSize::new_bytes(
+                            NumberNonZeroUnsigned::new(x.value).unwrap(),
+                        ))
+                        .unwrap();
+                    return Ok(ExprElement::Value {
+                        location,
+                        value: ExprValue::Bitrange(ExprBitrange { size, id }),
+                    });
                 }
                 _ => {
                     return Ok(ExprElement::new_take_lsb(
@@ -989,7 +990,7 @@ pub trait ExecutionBuilder {
         Ok(MemoryLocation {
             space,
             size,
-            src: input.src.clone(),
+            location: input.src.clone(),
         })
     }
 }
@@ -1012,11 +1013,10 @@ fn reference_scope(
         //TODO What is a reference to inst_start/inst_next? Just the
         //value?
         ReadScope::InstStart => {
-            let element =
-                ExprElement::Value(ExprValue::InstStart(ExprInstStart {
-                    location: src.clone(),
-                    data: InstStart,
-                }));
+            let element = ExprElement::Value {
+                location: src.clone(),
+                value: ExprValue::InstStart(InstStart),
+            };
             if let Some(ref_bytes) = ref_bytes {
                 Ok(ExprElement::new_take_lsb(
                     src,
@@ -1028,11 +1028,10 @@ fn reference_scope(
             }
         }
         ReadScope::InstNext => {
-            let element =
-                ExprElement::Value(ExprValue::InstNext(ExprInstNext {
-                    location: src.clone(),
-                    data: InstNext,
-                }));
+            let element = ExprElement::Value {
+                location: src.clone(),
+                value: ExprValue::InstNext(InstNext),
+            };
             if let Some(ref_bytes) = ref_bytes {
                 Ok(ExprElement::new_take_lsb(
                     src,
@@ -1045,16 +1044,18 @@ fn reference_scope(
         }
         ReadScope::Varnode(id) => {
             let varnode = sleigh.varnode(id);
-            Ok(ExprElement::Value(ExprValue::Int(ExprNumber {
+            let size =
+                ref_bytes.map(FieldSize::new_bytes).unwrap_or_else(|| {
+                    let space = sleigh.space(varnode.space);
+                    FieldSize::new_bytes(space.addr_bytes)
+                });
+            Ok(ExprElement::Value {
                 location: src,
-                size: ref_bytes.map(FieldSize::new_bytes).unwrap_or_else(
-                    || {
-                        let space = sleigh.space(varnode.space);
-                        FieldSize::new_bytes(space.addr_bytes)
-                    },
-                ),
-                number: Number::Positive(varnode.address),
-            })))
+                value: ExprValue::Int(ExprNumber {
+                    size,
+                    number: Number::Positive(varnode.address),
+                }),
+            })
         }
         ReadScope::Table(id) => Ok(ExprElement::Reference(Reference {
             location: src.clone(),
@@ -1096,7 +1097,7 @@ fn map_variables<'a>(
                     // HACK those exeptions are not listed
                     // if the parameter is a single value, the param is simply
                     // replaced
-                    Expr::Value(ExprElement::Value(value)) => {
+                    Expr::Value(ExprElement::Value { location: _, value }) => {
                         VariableAlias::Alias(value)
                     }
                     // a varnode with bitrange, became a bitrange assignment
@@ -1106,19 +1107,23 @@ fn map_variables<'a>(
                         ..
                     })) if matches!(
                         &input.as_ref(),
-                        Expr::Value(ExprElement::Value(
-                            ExprValue::Varnode(_) | ExprValue::TokenField(_),
-                        ))
+                        Expr::Value(ExprElement::Value {
+                            location: _,
+                            value: ExprValue::Varnode(_)
+                                | ExprValue::TokenField(_),
+                        })
                     ) =>
                     {
-                        let Expr::Value(ExprElement::Value(
-                            varnode_expr @ (ExprValue::Varnode(_)
-                            | ExprValue::TokenField(_)),
-                        )) = &input.as_ref()
+                        let Expr::Value(ExprElement::Value {
+                            location: _,
+                            value:
+                                value @ (ExprValue::Varnode(_)
+                                | ExprValue::TokenField(_)),
+                        }) = &input.as_ref()
                         else {
                             unreachable!();
                         };
-                        VariableAlias::SubVarnode(varnode_expr, bit.clone())
+                        VariableAlias::SubVarnode(value, bit.clone())
                     }
                     _ => {
                         let id = execution
@@ -1172,7 +1177,9 @@ fn translate_expr_element(
     variables_map: &[VariableAlias<'_>],
 ) -> ExprElement {
     match expr {
-        ExprElement::Value(value) => translate_value(value, variables_map),
+        ExprElement::Value { location, value } => {
+            translate_value(location, value, variables_map)
+        }
         ExprElement::UserCall(call) => ExprElement::UserCall(UserCall {
             params: call
                 .params
@@ -1211,6 +1218,7 @@ fn translate_expr_element(
 }
 
 fn translate_value(
+    location: &Span,
     expr: &ExprValue,
     variables_map: &[VariableAlias<'_>],
 ) -> ExprElement {
@@ -1219,11 +1227,14 @@ fn translate_value(
         | ExprValue::Table(_)
         | ExprValue::DisVar(_) => unreachable!(),
 
-        ExprValue::ExeVar(var) => match variables_map[var.id.0].clone() {
-            VariableAlias::Alias(x) => ExprElement::Value(x.clone()),
+        ExprValue::ExeVar(id) => match variables_map[id.0].clone() {
+            VariableAlias::Alias(x) => ExprElement::Value {
+                location: location.clone(),
+                value: x.clone(),
+            },
             VariableAlias::SubVarnode(varnode, bits) => {
                 ExprElement::Op(ExprUnaryOp {
-                    location: var.location.clone(),
+                    location: location.clone(),
                     op: Unary::BitRange(bits.clone()),
                     output_size: FieldSize::new_unsized()
                         .set_min_bits(
@@ -1231,18 +1242,17 @@ fn translate_value(
                         )
                         .unwrap()
                         .set_possible_min(),
-                    input: Box::new(Expr::Value(ExprElement::Value(
-                        varnode.clone(),
-                    ))),
+                    input: Box::new(Expr::Value(ExprElement::Value {
+                        location: location.clone(),
+                        value: varnode.clone(),
+                    })),
                 })
             }
             VariableAlias::Parameter(id) | VariableAlias::NewVariable(id) => {
-                ExprElement::Value(ExprValue::ExeVar(
-                    crate::semantic::execution::ExprExeVar {
-                        location: var.location.clone(),
-                        id,
-                    },
-                ))
+                ExprElement::Value {
+                    location: location.clone(),
+                    value: ExprValue::ExeVar(id),
+                }
             }
         },
 
@@ -1251,28 +1261,40 @@ fn translate_value(
         | ExprValue::Bitrange(_)
         | ExprValue::InstStart(_)
         | ExprValue::InstNext(_)
-        | ExprValue::Int(_)) => ExprElement::Value(x.clone()),
+        | ExprValue::Int(_)) => ExprElement::Value {
+            location: location.clone(),
+            value: x.clone(),
+        },
+        ExprValue::IntDynamic(_) => todo!(),
+        ExprValue::VarnodeDynamic(_) => todo!(),
     }
 }
 
 fn translate_write(
+    sleigh: &Sleigh,
     expr: &WriteValue,
     variables_map: &[VariableAlias<'_>],
 ) -> (WriteValue, Option<AssignmentOp>) {
     match expr {
-        WriteValue::Local(var) => match variables_map[var.id.0].clone() {
+        WriteValue::Local(id) => match variables_map[id.0].clone() {
             VariableAlias::SubVarnode(ExprValue::Varnode(varnode), bits) => {
-                let value = WriteValue::Varnode(WriteVarnode {
-                    location: varnode.location.clone(),
-                    id: varnode.id,
-                });
+                let value = WriteValue::Varnode(*varnode);
                 (value, Some(AssignmentOp::BitRange(bits)))
             }
-            VariableAlias::SubVarnode(ExprValue::TokenField(token), bits) => {
-                let value = WriteValue::TokenField(WriteTokenField {
-                    location: token.location.clone(),
-                    id: token.id,
-                });
+            VariableAlias::SubVarnode(
+                ExprValue::TokenField(token_id),
+                bits,
+            ) => {
+                let token_field = sleigh.token_field(token_id.id);
+                let Some(crate::token::TokenFieldAttach::Varnode(attach_id)) =
+                    token_field.attach
+                else {
+                    todo!();
+                };
+                let value = WriteValue::TokenField {
+                    token_field_id: token_id.id,
+                    attach_id,
+                };
                 (value, Some(AssignmentOp::BitRange(bits)))
             }
             VariableAlias::SubVarnode(_, _) => todo!(),
@@ -1286,47 +1308,61 @@ fn translate_write(
                     | ExprValue::Bitrange(_)
                     | ExprValue::DisVar(_) => panic!(),
 
-                    ExprValue::ExeVar(write) => {
-                        let value = WriteValue::Local(WriteExeVar {
-                            location: write.location.clone(),
-                            id: write.id,
-                        });
+                    ExprValue::ExeVar(id) => {
+                        let value = WriteValue::Local(*id);
                         (value, None)
                     }
-                    ExprValue::Varnode(write) => {
-                        let value = WriteValue::Varnode(WriteVarnode {
-                            location: write.location.clone(),
-                            id: write.id,
-                        });
+                    ExprValue::Varnode(id) => {
+                        let value = WriteValue::Varnode(*id);
                         (value, None)
                     }
-                    ExprValue::TokenField(write) => {
-                        let value = WriteValue::TokenField(WriteTokenField {
-                            location: write.location.clone(),
-                            id: write.id,
-                        });
+                    ExprValue::TokenField(tf_expr) => {
+                        let token_field = sleigh.token_field(tf_expr.id);
+                        let Some(crate::token::TokenFieldAttach::Varnode(
+                            attach_id,
+                        )) = token_field.attach
+                        else {
+                            todo!();
+                        };
+                        let value = WriteValue::TokenField {
+                            token_field_id: tf_expr.id,
+                            attach_id,
+                        };
                         (value, None)
                     }
-                    ExprValue::Table(write) => {
-                        let value = WriteValue::TableExport(WriteTable {
-                            location: write.location.clone(),
-                            id: write.id,
-                        });
+                    ExprValue::VarnodeDynamic(ExprVarnodeDynamic {
+                        attach_id,
+                        attach_value:
+                            DynamicValueType::TokenField(token_field_id),
+                    }) => {
+                        let value = WriteValue::TokenField {
+                            token_field_id: *token_field_id,
+                            attach_id: *attach_id,
+                        };
                         (value, None)
+                    }
+                    ExprValue::VarnodeDynamic(ExprVarnodeDynamic {
+                        attach_id: _,
+                        attach_value: DynamicValueType::Context(_context_id),
+                    }) => {
+                        todo!();
+                    }
+                    ExprValue::Table(id) => {
+                        let value = WriteValue::TableExport(*id);
+                        (value, None)
+                    }
+                    ExprValue::IntDynamic(ExprIntDynamic { .. }) => {
+                        panic!()
                     }
                 }
             }
             VariableAlias::Parameter(id) | VariableAlias::NewVariable(id) => {
-                let value = WriteValue::Local(WriteExeVar {
-                    location: var.location.clone(),
-                    id,
-                });
-                (value, None)
+                (WriteValue::Local(id), None)
             }
         },
         x @ (WriteValue::Varnode(_)
         | WriteValue::Bitrange(_)
-        | WriteValue::TokenField(_)
+        | WriteValue::TokenField { .. }
         | WriteValue::TableExport(_)) => (x.clone(), None),
     }
 }

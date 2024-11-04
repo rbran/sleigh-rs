@@ -17,23 +17,26 @@ use super::{
 
 #[derive(Clone, Debug)]
 pub struct Assignment {
+    pub location: Span,
+    pub var_location: Span,
     pub var: WriteValue,
-    pub(crate) op: Option<AssignmentOp>,
-    pub(crate) src: Span,
+    pub op: Option<AssignmentOp>,
     pub right: Expr,
 }
 
 impl Assignment {
     pub fn new(
+        var_location: Span,
         var: WriteValue,
         op: Option<AssignmentOp>,
-        src: Span,
+        location: Span,
         right: Expr,
     ) -> Self {
         Self {
+            var_location,
             var,
             op,
-            src,
+            location,
             right,
         }
     }
@@ -76,7 +79,7 @@ impl Assignment {
         if modified.ok_or_else(|| VarSizeError::AssignmentSides {
             left: self.left_size(sleigh, execution),
             right: self.right.size(sleigh, execution),
-            location: self.src.clone(),
+            location: self.location.clone(),
             backtrace: format!("{}:{}", file!(), line!()),
         })? {
             solved.i_did_a_thing()
@@ -115,7 +118,7 @@ impl Assignment {
 
     pub fn convert(self) -> FinalAssignment {
         FinalAssignment {
-            location: self.src,
+            location: self.location,
             var: self.var,
             op: self.op.map(|op| op.convert()),
             right: self.right.convert(),
@@ -199,7 +202,7 @@ fn hack_solve_simple_bin_ands(
 
     match &mut ass.right {
         // if a simple value, just assign the size to the value
-        Expr::Value(ExprElement::Value(value)) => {
+        Expr::Value(ExprElement::Value { location: _, value }) => {
             let Some(var_size) = get_simple_value_size(value) else {
                 return false;
             };
@@ -218,8 +221,14 @@ fn hack_solve_simple_bin_ands(
             right,
         }) => {
             let (
-                Expr::Value(ExprElement::Value(expr_left)),
-                Expr::Value(ExprElement::Value(expr_right)),
+                Expr::Value(ExprElement::Value {
+                    location: _,
+                    value: expr_left,
+                }),
+                Expr::Value(ExprElement::Value {
+                    location: _,
+                    value: expr_right,
+                }),
             ) = (left.as_mut(), right.as_mut())
             else {
                 return false;
@@ -262,12 +271,12 @@ fn hack_assignemnt_left_hand_truncation_implied(
 ) -> bool {
     // left hand need to be an varnode or local variable
     let left_size = match &ass.var {
-        WriteValue::Varnode(var) => {
-            let var = sleigh.varnode(var.id);
+        WriteValue::Varnode(id) => {
+            let var = sleigh.varnode(*id);
             var.len_bytes.get() * 8
         }
-        WriteValue::Local(local) => {
-            let var = execution.variable(local.id);
+        WriteValue::Local(id) => {
+            let var = execution.variable(*id);
             // TODO maybe allow non explicit declared variables
             if !var.explicit {
                 return false;
@@ -324,23 +333,25 @@ fn hack_1_byte_varnode_assign_to_bit(
     // truncate the right size to one bit
 
     // dummy value for temporary use
-    let mut swap_right =
-        Expr::Value(ExprElement::Value(ExprValue::Int(super::ExprNumber {
+    let location = Span::File(crate::FileSpan {
+        start: crate::FileLocation {
+            file: std::rc::Rc::from(std::path::Path::new("")),
+            line: 0,
+            column: 0,
+        },
+        end_line: 0,
+        end_column: 0,
+    });
+    let mut swap_right = Expr::Value(ExprElement::Value {
+        location,
+        value: ExprValue::Int(super::ExprNumber {
             size: FieldSize::default(),
             number: crate::Number::Positive(0),
-            location: Span::File(crate::FileSpan {
-                start: crate::FileLocation {
-                    file: std::rc::Rc::from(std::path::Path::new("")),
-                    line: 0,
-                    column: 0,
-                },
-                end_line: 0,
-                end_column: 0,
-            }),
-        })));
+        }),
+    });
     core::mem::swap(&mut ass.right, &mut swap_right);
     ass.right = Expr::Value(ExprElement::new_op(
-        ass.src.clone(),
+        ass.location.clone(),
         Unary::BitRange(0..1),
         swap_right,
     ));

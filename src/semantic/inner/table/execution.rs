@@ -1,6 +1,7 @@
+use crate::execution::WriteValue;
 use crate::semantic::execution::BlockId;
 use crate::semantic::inner::execution::{
-    Execution, ExecutionBuilder, ReadScope, WriteScope,
+    Execution, ExecutionBuilder, ReadScope,
 };
 use crate::semantic::inner::pattern::Pattern;
 use crate::semantic::inner::Sleigh;
@@ -103,9 +104,9 @@ impl ExecutionBuilder for Builder<'_> {
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<WriteScope, Box<ExecutionError>> {
+    ) -> Result<WriteValue, Box<ExecutionError>> {
         if let Some(var) = self.execution().variable_by_name(name) {
-            return Ok(WriteScope::Local(var));
+            return Ok(WriteValue::Local(var));
         }
         use super::GlobalScope;
         match self
@@ -113,21 +114,21 @@ impl ExecutionBuilder for Builder<'_> {
             .get_global(name)
             .ok_or_else(|| Box::new(ExecutionError::MissingRef(src.clone())))?
         {
-            GlobalScope::Varnode(varnode) => Ok(WriteScope::Varnode(varnode)),
-            GlobalScope::TokenField(id) => {
-                let meaning = &self.sleigh().token_field(id).attach;
+            GlobalScope::Varnode(varnode) => Ok(WriteValue::Varnode(varnode)),
+            GlobalScope::TokenField(token_field_id) => {
                 //filter field with meaning to variable
-                if !matches!(
-                    meaning.as_ref(),
-                    Some(TokenFieldAttach::Varnode(_))
-                ) {
+                let meaning = self.sleigh().token_field(token_field_id).attach;
+                let Some(TokenFieldAttach::Varnode(attach_id)) = meaning else {
                     return Err(Box::new(ExecutionError::InvalidRef(
                         src.clone(),
                     )));
-                }
-                Ok(WriteScope::TokenField(id))
+                };
+                Ok(WriteValue::TokenField {
+                    token_field_id,
+                    attach_id,
+                })
             }
-            GlobalScope::Table(table) => Ok(WriteScope::TableExport(table)),
+            GlobalScope::Table(table) => Ok(WriteValue::TableExport(table)),
             _ => Err(Box::new(ExecutionError::InvalidRef(src.clone()))),
         }
     }

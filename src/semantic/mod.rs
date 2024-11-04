@@ -409,4 +409,11 @@ impl Sleigh {
     pub fn attach_literals(&self) -> &[AttachLiteral] {
         &self.attach_literals
     }
+
+    pub fn attach_varnodes_len_bytes(
+        &self,
+        id: AttachVarnodeId,
+    ) -> NumberNonZeroUnsigned {
+        self.varnode(self.attach_varnode(id).0[0].1).len_bytes
+    }
 }

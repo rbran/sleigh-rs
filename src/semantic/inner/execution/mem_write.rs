@@ -81,12 +81,13 @@ impl MemWrite {
                 end_line: 0,
                 end_column: 0,
             });
-            let mut taken =
-                Expr::Value(ExprElement::Value(ExprValue::Int(ExprNumber {
-                    location: dummy_src,
+            let mut taken = Expr::Value(ExprElement::Value {
+                location: dummy_src,
+                value: ExprValue::Int(ExprNumber {
                     size: FieldSize::default(),
                     number: Number::Positive(0),
-                })));
+                }),
+            });
             std::mem::swap(&mut self.right, &mut taken);
             self.right = Expr::Value(ExprElement::new_trunk_lsb(
                 taken.src().clone(),

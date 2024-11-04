@@ -1,7 +1,8 @@
+use crate::execution::WriteValue;
 use crate::semantic::execution::{BlockId, Build, VariableId};
 use crate::{syntax, ExecutionError, PcodeMacroError, SleighError, Span};
 
-use super::execution::{Execution, ExecutionBuilder, ReadScope, WriteScope};
+use super::execution::{Execution, ExecutionBuilder, ReadScope};
 use super::pattern::Pattern;
 use super::{GlobalScope, PcodeMacroId, Sleigh};
 
@@ -98,10 +99,10 @@ impl ExecutionBuilder for Builder<'_, '_> {
         &mut self,
         name: &str,
         src: &Span,
-    ) -> Result<WriteScope, Box<ExecutionError>> {
+    ) -> Result<WriteValue, Box<ExecutionError>> {
         //check local scope
         if let Some(var) = self.execution().variable_by_name(name) {
-            return Ok(WriteScope::Local(var));
+            return Ok(WriteValue::Local(var));
         }
         //
         //at last check the global scope
@@ -111,8 +112,8 @@ impl ExecutionBuilder for Builder<'_, '_> {
             .get_global(name)
             .ok_or_else(|| Box::new(ExecutionError::MissingRef(src.clone())))?
         {
-            Varnode(x) => Ok(WriteScope::Varnode(x)),
-            Bitrange(x) => Ok(WriteScope::Bitrange(x)),
+            Varnode(x) => Ok(WriteValue::Varnode(x)),
+            Bitrange(x) => Ok(WriteValue::Bitrange(x)),
             _ => Err(Box::new(ExecutionError::InvalidRef(src.clone()))),
         }
     }
