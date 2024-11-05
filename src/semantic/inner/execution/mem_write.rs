@@ -1,10 +1,10 @@
-use crate::semantic::execution::{MemWrite as FinalMemWrite, Unary};
+use crate::semantic::execution::MemWrite as FinalMemWrite;
 use crate::semantic::inner::{Sleigh, SolverStatus};
 use crate::{ExecutionError, Number, Span, VarSizeError};
 
 use super::{
     Execution, Expr, ExprElement, ExprNumber, ExprValue, FieldSize,
-    MemoryLocation,
+    MemoryLocation, Unary,
 };
 
 #[derive(Clone, Debug)]
@@ -40,7 +40,7 @@ impl MemWrite {
         {
             right = Expr::Value(ExprElement::new_op(
                 right.src().clone(),
-                Unary::Zext,
+                Unary::Zext(FieldSize::new_unsized()),
                 right,
             ))
         }

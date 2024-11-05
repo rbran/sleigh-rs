@@ -102,7 +102,10 @@ impl ExecutionBuilder for Builder<'_, '_> {
     ) -> Result<WriteValue, Box<ExecutionError>> {
         //check local scope
         if let Some(var) = self.execution().variable_by_name(name) {
-            return Ok(WriteValue::Local(var));
+            return Ok(WriteValue::Local {
+                id: var,
+                creation: false,
+            });
         }
         //
         //at last check the global scope

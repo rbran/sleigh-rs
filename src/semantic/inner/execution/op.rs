@@ -23,6 +23,7 @@ impl MemoryLocation {
         FinalMemoryLocation {
             len_bytes: self.size.possible_value().unwrap(),
             space: self.space,
+            location: self.location,
         }
     }
 }

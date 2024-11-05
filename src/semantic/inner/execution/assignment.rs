@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::execution::{Binary, Unary};
+use crate::execution::Binary;
 use crate::semantic::execution::{
     Assignment as FinalAssignment, AssignmentOp as FinalAssignmentOp,
     WriteValue,
@@ -11,8 +11,8 @@ use crate::{
 };
 
 use super::{
-    len, Execution, Expr, ExprBinaryOp, ExprElement, ExprValue, FieldSize,
-    FieldSizeMut,
+    len, Execution, Expr, ExprBinaryOp, ExprElement, ExprUnaryOp, ExprValue,
+    FieldSize, FieldSizeMut, MemoryLocation, Unary,
 };
 
 #[derive(Clone, Debug)]
@@ -50,6 +50,11 @@ impl Assignment {
 
         // solve simple expr that don't follow many rules
         if hack_solve_simple_bin_ands(self, sleigh, execution) {
+            solved.i_did_a_thing();
+        }
+
+        // add extra information for the variable creation
+        if hack_extra_var_info_creation(self, sleigh, execution) {
             solved.i_did_a_thing();
         }
 
@@ -259,6 +264,42 @@ fn hack_solve_simple_bin_ands(
     }
 }
 
+// HACK get extra info for the variable during it's creation
+// eg: local tmp = *:1 value; # this var is always 1 byte
+fn hack_extra_var_info_creation(
+    ass: &mut Assignment,
+    _sleigh: &Sleigh,
+    execution: &Execution,
+) -> bool {
+    let WriteValue::Local { id, creation: true } = ass.var else {
+        return false;
+    };
+
+    let var = execution.variable(id);
+    if !var.size.get().is_fully_undefined() {
+        return false;
+    }
+
+    match &ass.right {
+        // in a deref from address, just use the size that is being deref as size
+        Expr::Value(ExprElement::Op(ExprUnaryOp {
+            location: _,
+            op:
+                Unary::Dereference(MemoryLocation {
+                    space: _,
+                    size,
+                    location: _,
+                }),
+            input: _,
+        })) => {
+            var.size.set(*size);
+            true
+        }
+
+        _ => false,
+    }
+}
+
 // HACK: sometimes when assigning a value smaller then the size of the left side,
 // eg one bit registers are declare as one
 // byte instead of bitranges (eg flags on X86 like ZF), and assigned
@@ -275,7 +316,7 @@ fn hack_assignemnt_left_hand_truncation_implied(
             let var = sleigh.varnode(*id);
             var.len_bytes.get() * 8
         }
-        WriteValue::Local(id) => {
+        WriteValue::Local { id, creation: _ } => {
             let var = execution.variable(*id);
             // TODO maybe allow non explicit declared variables
             if !var.explicit {
@@ -352,7 +393,10 @@ fn hack_1_byte_varnode_assign_to_bit(
     core::mem::swap(&mut ass.right, &mut swap_right);
     ass.right = Expr::Value(ExprElement::new_op(
         ass.location.clone(),
-        Unary::BitRange(0..1),
+        Unary::BitRange {
+            range: 0..1,
+            size: FieldSize::Value(1.try_into().unwrap()),
+        },
         swap_right,
     ));
 

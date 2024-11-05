@@ -4,11 +4,11 @@ use std::ops::Range;
 use crate::execution::{DynamicValueType, ExprVarnodeDynamic};
 use crate::semantic::disassembly;
 use crate::semantic::execution::{
-    BlockId, Build, RefTable, RefTokenField, ReferencedValue, Unary,
-    VariableId, WriteValue,
+    BlockId, Build, RefTable, RefTokenField, ReferencedValue, VariableId,
+    WriteValue,
 };
 use crate::semantic::inner::execution::{
-    Block, ExprBitrange, ExprNumber, ExprTokenField,
+    Block, ExprBitrange, ExprNumber, ExprTokenField, Unary,
 };
 use crate::semantic::inner::pattern::Pattern;
 use crate::semantic::inner::pcode_macro::PcodeMacro;
@@ -385,13 +385,16 @@ pub trait ExecutionBuilder {
                                 .variable(pmacro.params[param_id])
                                 .src;
                             self.insert_statement(Statement::Assignment(
-                                Assignment {
-                                    op: None,
-                                    right: param.clone(),
-                                    var_location: location.clone(),
-                                    var: WriteValue::Local(*variable_id),
-                                    location: location.clone(),
-                                },
+                                Assignment::new(
+                                    location.clone(),
+                                    WriteValue::Local {
+                                        id: *variable_id,
+                                        creation: true,
+                                    },
+                                    None,
+                                    location.clone(),
+                                    param.clone(),
+                                ),
                             ));
                         }
                         VariableAlias::SubVarnode(_, _)
@@ -560,7 +563,10 @@ pub trait ExecutionBuilder {
                 )?;
                 Ok(Statement::Assignment(Assignment::new(
                     input.src.clone(),
-                    WriteValue::Local(new_var_id),
+                    WriteValue::Local {
+                        id: new_var_id,
+                        creation: local,
+                    },
                     None,
                     input.src,
                     right,
@@ -837,99 +843,125 @@ pub trait ExecutionBuilder {
             Op::ByteRangeMsb(x) => {
                 return Ok(ExprElement::new_trunk_lsb(src, x.value, expr))
             }
-            Op::ByteRangeLsb(x) => match expr {
-                // NOTE, Lsb on and Int/DisassemblyVar/TokenField/Bitrange just
-                // set the len
-                // except if TokenField have the value translated into a varnode
-                Expr::Value(ExprElement::Value {
-                    location,
-                    value:
-                        ExprValue::Int(ExprNumber {
-                            size: len,
-                            number: value,
-                        }),
-                }) => {
-                    return Ok(ExprElement::Value {
+            Op::ByteRangeLsb(x) => {
+                let lsb_bits = NumberNonZeroUnsigned::new(x.value * 8).unwrap();
+                let lsb_len = FieldSize::new_bits(lsb_bits);
+                match expr {
+                    // NOTE, Lsb on and Int/DisassemblyVar/TokenField/Bitrange just
+                    // set the len
+                    // except if TokenField have the value translated into a varnode
+                    Expr::Value(ExprElement::Value {
                         location,
-                        value: ExprValue::Int(ExprNumber {
-                            //TODO error
-                            size: len
-                                .intersection(FieldSize::new_bytes(
-                                    NumberNonZeroUnsigned::new(x.value)
-                                        .unwrap(),
-                                ))
-                                .unwrap()
-                                .set_possible_min(),
-                            number: value,
-                        }),
-                    });
-                }
-                Expr::Value(ExprElement::Value {
-                    location,
-                    value: ExprValue::DisVar(ExprDisVar { size, id }),
-                }) => {
-                    //TODO error
-                    let size = size
-                        .intersection(FieldSize::new_bytes(
-                            NumberNonZeroUnsigned::new(x.value).unwrap(),
-                        ))
-                        .unwrap();
-                    return Ok(ExprElement::Value {
-                        location,
-                        value: ExprValue::DisVar(ExprDisVar { size, id }),
-                    });
-                }
-                Expr::Value(ExprElement::Value {
-                    location,
-                    value: ExprValue::TokenField(ExprTokenField { size: _, id }),
-                }) => {
-                    let tf = self.sleigh().token_field(id);
-                    if let Some(crate::token::TokenFieldAttach::Varnode(
-                        att_var_id,
-                    )) = tf.attach
-                    {
-                        let attach = self.sleigh().attach_varnode(att_var_id);
-                        let var_id = attach.0[0].1;
-                        let var = self.sleigh().varnode(var_id);
-                        let value = ExprValue::TokenField(ExprTokenField {
-                            size: FieldSize::new_bytes(var.len_bytes),
-                            id,
+                        value:
+                            ExprValue::Int(ExprNumber {
+                                size: _,
+                                number: value,
+                            }),
+                    }) => {
+                        if u64::from(value.bits_required()) > lsb_bits.get() {
+                            return Err(Box::new(ExecutionError::VarSize(
+                                VarSizeError::TakeLsbTooSmall {
+                                    lsb: x.value.try_into().unwrap(),
+                                    input: lsb_len,
+                                    location,
+                                },
+                            )));
+                        }
+                        return Ok(ExprElement::Value {
+                            location,
+                            value: ExprValue::Int(ExprNumber {
+                                //TODO error
+                                size: lsb_len,
+                                number: value,
+                            }),
                         });
-                        return Ok(ExprElement::new_op(
-                            x.src.clone(),
-                            Unary::TakeLsb(x.value.try_into().unwrap()),
-                            Expr::Value(ExprElement::Value { location, value }),
+                    }
+                    Expr::Value(ExprElement::Value {
+                        location,
+                        value: ExprValue::DisVar(ExprDisVar { size: _, id }),
+                    }) => {
+                        return Ok(ExprElement::Value {
+                            location,
+                            value: ExprValue::DisVar(ExprDisVar {
+                                size: lsb_len,
+                                id,
+                            }),
+                        });
+                    }
+                    Expr::Value(ExprElement::Value {
+                        location,
+                        value:
+                            ExprValue::TokenField(ExprTokenField { size: _, id }),
+                    }) => {
+                        let tf = self.sleigh().token_field(id);
+                        if let Some(crate::token::TokenFieldAttach::Varnode(
+                            att_var_id,
+                        )) = tf.attach
+                        {
+                            let attach =
+                                self.sleigh().attach_varnode(att_var_id);
+                            let var_id = attach.0[0].1;
+                            let var = self.sleigh().varnode(var_id);
+                            let value = ExprValue::TokenField(ExprTokenField {
+                                size: FieldSize::new_bytes(var.len_bytes),
+                                id,
+                            });
+                            return Ok(ExprElement::new_op(
+                                x.src.clone(),
+                                Unary::TakeLsb(x.value.try_into().unwrap()),
+                                Expr::Value(ExprElement::Value {
+                                    location,
+                                    value,
+                                }),
+                            ));
+                        } else if tf.bits.len() > lsb_bits {
+                            // if tf is bigger then the lsb, this is a regular take_lsb op
+                            return Ok(ExprElement::new_op(
+                                x.src.clone(),
+                                Unary::TakeLsb(x.value.try_into().unwrap()),
+                                Expr::Value(ExprElement::Value {
+                                    location,
+                                    value: ExprValue::TokenField(
+                                        ExprTokenField {
+                                            size: FieldSize::new_unsized()
+                                                .set_min_bits(tf.bits.len())
+                                                .unwrap()
+                                                .set_possible_min(),
+                                            id,
+                                        },
+                                    ),
+                                }),
+                            ));
+                        } else {
+                            // otherwise the lsb just define the tf size
+                            let value = ExprValue::TokenField(ExprTokenField {
+                                size: lsb_len,
+                                id,
+                            });
+                            return Ok(ExprElement::Value { location, value });
+                        }
+                    }
+                    Expr::Value(ExprElement::Value {
+                        location,
+                        value: ExprValue::Bitrange(ExprBitrange { size: _, id }),
+                    }) => {
+                        return Ok(ExprElement::Value {
+                            location,
+                            value: ExprValue::Bitrange(ExprBitrange {
+                                size: lsb_len,
+                                id,
+                            }),
+                        });
+                    }
+                    _ => {
+                        return Ok(ExprElement::new_take_lsb(
+                            src,
+                            to_nonzero(x.value)?,
+                            expr,
                         ));
-                    } else {
-                        let size = FieldSize::new_unsized();
-                        let value =
-                            ExprValue::TokenField(ExprTokenField { size, id });
-                        return Ok(ExprElement::Value { location, value });
                     }
                 }
-                Expr::Value(ExprElement::Value {
-                    location,
-                    value: ExprValue::Bitrange(ExprBitrange { size, id }),
-                }) => {
-                    //TODO error
-                    let size = size
-                        .intersection(FieldSize::new_bytes(
-                            NumberNonZeroUnsigned::new(x.value).unwrap(),
-                        ))
-                        .unwrap();
-                    return Ok(ExprElement::Value {
-                        location,
-                        value: ExprValue::Bitrange(ExprBitrange { size, id }),
-                    });
-                }
-                _ => {
-                    return Ok(ExprElement::new_take_lsb(
-                        src,
-                        to_nonzero(x.value)?,
-                        expr,
-                    ));
-                }
-            },
+            }
             Op::BitRange(range) => {
                 return Ok(ExprElement::new_bitrange(
                     src,
@@ -939,26 +971,26 @@ pub trait ExecutionBuilder {
                 ))
             }
             Op::Dereference(x) => {
-                return Ok(ExprElement::DeReference(
+                return Ok(ExprElement::new_op(
                     src,
-                    self.new_addr_derefence(x)?,
-                    Box::new(expr),
+                    Unary::Dereference(self.new_addr_derefence(x)?),
+                    expr,
                 ))
             }
             Op::Negation => Unary::Negation,
             Op::BitNegation => Unary::BitNegation,
             Op::Negative => Unary::Negative,
             Op::FloatNegative => Unary::FloatNegative,
-            Op::Popcount => Unary::Popcount,
-            Op::Lzcount => Unary::Lzcount,
-            Op::Zext => Unary::Zext,
-            Op::Sext => Unary::Sext,
-            Op::FloatNan => Unary::FloatNan,
+            Op::Popcount => Unary::Popcount(FieldSize::new_unsized()),
+            Op::Lzcount => Unary::Lzcount(FieldSize::new_unsized()),
+            Op::Zext => Unary::Zext(FieldSize::new_unsized()),
+            Op::Sext => Unary::Sext(FieldSize::new_unsized()),
+            Op::FloatNan => Unary::FloatNan(FieldSize::new_unsized()),
             Op::FloatAbs => Unary::FloatAbs,
             Op::FloatSqrt => Unary::FloatSqrt,
-            Op::Int2Float => Unary::Int2Float,
-            Op::Float2Float => Unary::Float2Float,
-            Op::SignTrunc => Unary::SignTrunc,
+            Op::Int2Float => Unary::Int2Float(FieldSize::new_unsized()),
+            Op::Float2Float => Unary::Float2Float(FieldSize::new_unsized()),
+            Op::SignTrunc => Unary::SignTrunc(FieldSize::new_unsized()),
             Op::FloatCeil => Unary::FloatCeil,
             Op::FloatFloor => Unary::FloatFloor,
             Op::FloatRound => Unary::FloatRound,
@@ -1102,7 +1134,11 @@ fn map_variables<'a>(
                     }
                     // a varnode with bitrange, became a bitrange assignment
                     Expr::Value(ExprElement::Op(ExprUnaryOp {
-                        op: Unary::BitRange(bit),
+                        op:
+                            Unary::BitRange {
+                                range: bit,
+                                size: _,
+                            },
                         input,
                         ..
                     })) if matches!(
@@ -1164,7 +1200,7 @@ fn translate_expr(expr: &Expr, variables_map: &[VariableAlias<'_>]) -> Expr {
             Expr::Op(crate::semantic::inner::execution::ExprBinaryOp {
                 location: op.location.clone(),
                 output_size: op.output_size.clone(),
-                op: op.op.clone(),
+                op: op.op,
                 left: Box::new(left),
                 right: Box::new(right),
             })
@@ -1188,11 +1224,6 @@ fn translate_expr_element(
                 .collect(),
             ..call.clone()
         }),
-        ExprElement::DeReference(a, b, c) => ExprElement::DeReference(
-            a.clone(),
-            b.clone(),
-            Box::new(translate_expr(c, variables_map)),
-        ),
         ExprElement::Op(x) => ExprElement::Op(super::ExprUnaryOp {
             input: Box::new(translate_expr(&x.input, variables_map)),
             ..x.clone()
@@ -1235,13 +1266,15 @@ fn translate_value(
             VariableAlias::SubVarnode(varnode, bits) => {
                 ExprElement::Op(ExprUnaryOp {
                     location: location.clone(),
-                    op: Unary::BitRange(bits.clone()),
-                    output_size: FieldSize::new_unsized()
-                        .set_min_bits(
-                            (bits.end - bits.start).try_into().unwrap(),
-                        )
-                        .unwrap()
-                        .set_possible_min(),
+                    op: Unary::BitRange {
+                        range: bits.clone(),
+                        size: FieldSize::new_unsized()
+                            .set_min_bits(
+                                (bits.end - bits.start).try_into().unwrap(),
+                            )
+                            .unwrap()
+                            .set_possible_min(),
+                    },
                     input: Box::new(Expr::Value(ExprElement::Value {
                         location: location.clone(),
                         value: varnode.clone(),
@@ -1276,7 +1309,9 @@ fn translate_write(
     variables_map: &[VariableAlias<'_>],
 ) -> (WriteValue, Option<AssignmentOp>) {
     match expr {
-        WriteValue::Local(id) => match variables_map[id.0].clone() {
+        WriteValue::Local { id, creation: _ } => match variables_map[id.0]
+            .clone()
+        {
             VariableAlias::SubVarnode(ExprValue::Varnode(varnode), bits) => {
                 let value = WriteValue::Varnode(*varnode);
                 (value, Some(AssignmentOp::BitRange(bits)))
@@ -1309,7 +1344,10 @@ fn translate_write(
                     | ExprValue::DisVar(_) => panic!(),
 
                     ExprValue::ExeVar(id) => {
-                        let value = WriteValue::Local(*id);
+                        let value = WriteValue::Local {
+                            id: *id,
+                            creation: false,
+                        };
                         (value, None)
                     }
                     ExprValue::Varnode(id) => {
@@ -1356,9 +1394,13 @@ fn translate_write(
                     }
                 }
             }
-            VariableAlias::Parameter(id) | VariableAlias::NewVariable(id) => {
-                (WriteValue::Local(id), None)
-            }
+            VariableAlias::Parameter(id) | VariableAlias::NewVariable(id) => (
+                WriteValue::Local {
+                    id,
+                    creation: false,
+                },
+                None,
+            ),
         },
         x @ (WriteValue::Varnode(_)
         | WriteValue::Bitrange(_)

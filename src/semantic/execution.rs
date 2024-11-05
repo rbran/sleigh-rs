@@ -126,7 +126,7 @@ impl ExprElement {
             Self::Value { value, .. } => value.len_bits(sleigh, execution),
             Self::UserCall(_x) => unimplemented!(),
             Self::Reference(x) => x.len_bits,
-            Self::Op(x) => x.output_bits,
+            Self::Op(x) => x.len_bits(sleigh, execution),
             Self::New(_x) => unimplemented!(),
             Self::CPool(_x) => unimplemented!(),
         }
@@ -143,9 +143,40 @@ pub struct Reference {
 #[derive(Clone, Debug)]
 pub struct ExprUnaryOp {
     pub location: Span,
-    pub output_bits: NumberNonZeroUnsigned,
     pub op: Unary,
     pub input: Box<Expr>,
+}
+
+impl ExprUnaryOp {
+    pub fn len_bits(
+        &self,
+        sleigh: &Sleigh,
+        execution: &Execution,
+    ) -> NumberNonZeroUnsigned {
+        match &self.op {
+            Unary::TakeLsb(len) => (len.get() * 8).try_into().unwrap(),
+            Unary::TrunkLsb { trunk: _, bits } => *bits,
+            Unary::BitRange { range: _, bits } => *bits,
+            Unary::Dereference(mem) => mem.len_bytes,
+            Unary::Zext(bits)
+            | Unary::Sext(bits)
+            | Unary::Popcount(bits)
+            | Unary::Lzcount(bits)
+            | Unary::FloatNan(bits)
+            | Unary::SignTrunc(bits)
+            | Unary::Float2Float(bits)
+            | Unary::Int2Float(bits) => *bits,
+            Unary::Negation
+            | Unary::BitNegation
+            | Unary::Negative
+            | Unary::FloatNegative
+            | Unary::FloatAbs
+            | Unary::FloatSqrt
+            | Unary::FloatCeil
+            | Unary::FloatFloor
+            | Unary::FloatRound => self.input.len_bits(sleigh, execution),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -216,10 +247,6 @@ impl ExprValue {
                 sleigh.attach_varnode(*attach_id).len_bytes(sleigh)
             }
         }
-    }
-
-    fn convert(&self) -> ExprValue {
-        todo!()
     }
 }
 
@@ -347,7 +374,10 @@ pub enum WriteValue {
     },
     // TODO Context translated into varnode
     TableExport(TableId),
-    Local(VariableId),
+    Local {
+        id: VariableId,
+        creation: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -427,8 +457,9 @@ impl Export {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct MemoryLocation {
+    pub location: Span,
     pub space: SpaceId,
     pub len_bytes: NumberNonZeroUnsigned,
 }
@@ -436,24 +467,35 @@ pub struct MemoryLocation {
 #[derive(Clone, Debug)]
 pub enum Unary {
     TakeLsb(NumberNonZeroUnsigned),
-    TrunkLsb(NumberUnsigned),
-    BitRange(Range<NumberUnsigned>),
+    TrunkLsb {
+        trunk: NumberUnsigned,
+        bits: NumberNonZeroUnsigned,
+    },
+    // BitRange have an auto Sext to it
+    BitRange {
+        range: Range<NumberUnsigned>,
+        bits: NumberNonZeroUnsigned,
+    },
     Dereference(MemoryLocation),
     //Reference(AddrReference),
+    Zext(NumberNonZeroUnsigned),
+    Sext(NumberNonZeroUnsigned),
+    Popcount(NumberNonZeroUnsigned),
+    Lzcount(NumberNonZeroUnsigned),
+    FloatNan(NumberNonZeroUnsigned),
+    /// NOTE don't confuse signed truncation with regular truncation
+    /// sleigh `trunc` function converts float into interger
+    SignTrunc(NumberNonZeroUnsigned),
+    Float2Float(NumberNonZeroUnsigned),
+    Int2Float(NumberNonZeroUnsigned),
+
+    /// output size is just the input size
     Negation,
     BitNegation,
     Negative,
     FloatNegative,
-    Popcount,
-    Lzcount,
-    Zext,
-    Sext,
-    FloatNan,
     FloatAbs,
     FloatSqrt,
-    Int2Float,
-    Float2Float,
-    SignTrunc,
     FloatCeil,
     FloatFloor,
     FloatRound,

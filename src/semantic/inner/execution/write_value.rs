@@ -19,7 +19,9 @@ impl WriteValue {
             Self::TokenField { attach_id, .. } => FieldSize::new_bytes(
                 sleigh.attach_varnodes_len_bytes(*attach_id),
             ),
-            Self::Local(var) => execution.variable(*var).size.get(),
+            Self::Local { id, creation: _ } => {
+                execution.variable(*id).size.get()
+            }
         }
     }
     pub fn size_mut<'a>(
@@ -40,7 +42,9 @@ impl WriteValue {
                 )))
             }
             Self::TableExport(table) => Box::new(sleigh.table(*table)),
-            Self::Local(local) => Box::new(&execution.variable(*local).size),
+            Self::Local { id, creation: _ } => {
+                Box::new(&execution.variable(*id).size)
+            }
         }
     }
 }

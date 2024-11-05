@@ -106,7 +106,10 @@ impl ExecutionBuilder for Builder<'_> {
         src: &Span,
     ) -> Result<WriteValue, Box<ExecutionError>> {
         if let Some(var) = self.execution().variable_by_name(name) {
-            return Ok(WriteValue::Local(var));
+            return Ok(WriteValue::Local {
+                id: var,
+                creation: false,
+            });
         }
         use super::GlobalScope;
         match self

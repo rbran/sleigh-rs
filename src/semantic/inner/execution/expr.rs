@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use crate::execution::{DynamicValueType, ExprVarnodeDynamic, VariableId};
 use crate::semantic::execution::{
     Binary, Expr as FinalExpr, ExprBinaryOp as FinalExprBinaryOp,
@@ -7,7 +9,7 @@ use crate::semantic::execution::{
     ExprNew as FinalExprNew, ExprNumber as FinalExprNumber,
     ExprTokenField as FinalExprTokenField, ExprUnaryOp as FinalExprUnaryOp,
     ExprValue as FinalReadValue, Reference as FinalReference, ReferencedValue,
-    Unary,
+    Unary as FinalUnary,
 };
 use crate::semantic::inner::execution::len;
 use crate::semantic::inner::{FieldSize, Sleigh, Solved, SolverStatus};
@@ -61,7 +63,6 @@ pub enum ExprElement {
     Value { location: Span, value: ExprValue },
     UserCall(UserCall),
     Reference(Reference),
-    DeReference(Span, MemoryLocation, Box<Expr>),
     Op(ExprUnaryOp),
     New(ExprNew),
     CPool(ExprCPool),
@@ -137,7 +138,6 @@ pub struct Reference {
 #[derive(Clone, Debug)]
 pub struct ExprUnaryOp {
     pub location: Span,
-    pub output_size: FieldSize,
     pub op: Unary,
     pub input: Box<Expr>,
 }
@@ -153,6 +153,44 @@ pub struct ExprNew {
 pub struct ExprCPool {
     pub location: Span,
     pub params: Vec<Expr>,
+}
+
+#[derive(Clone, Debug)]
+pub enum Unary {
+    TakeLsb(NumberNonZeroUnsigned),
+    TrunkLsb {
+        trunk: NumberUnsigned,
+        size: FieldSize,
+    },
+    // BitRange have an auto Sext to it
+    BitRange {
+        range: Range<NumberUnsigned>,
+        size: FieldSize,
+    },
+    Dereference(MemoryLocation),
+    //Reference(AddrReference),
+    /// output size is deferent from the input size
+    Zext(FieldSize),
+    Sext(FieldSize),
+    Popcount(FieldSize),
+    Lzcount(FieldSize),
+    FloatNan(FieldSize),
+    // NOTE don't confuse signed truncation with regular truncation
+    // sleigh `trunc` function converts float into interger
+    SignTrunc(FieldSize),
+    Float2Float(FieldSize),
+    Int2Float(FieldSize),
+
+    /// output size is just the input size
+    Negation,
+    BitNegation,
+    Negative,
+    FloatNegative,
+    FloatAbs,
+    FloatSqrt,
+    FloatCeil,
+    FloatFloor,
+    FloatRound,
 }
 
 impl Expr {
@@ -268,7 +306,6 @@ impl ExprElement {
     ) -> Self {
         Self::Op(ExprUnaryOp {
             location,
-            output_size: FieldSize::new_bytes(bytes),
             op: Unary::TakeLsb(bytes),
             input: Box::new(expr),
         })
@@ -281,8 +318,10 @@ impl ExprElement {
     ) -> Self {
         Self::Op(ExprUnaryOp {
             location,
-            output_size: FieldSize::default(),
-            op: Unary::TrunkLsb(bytes),
+            op: Unary::TrunkLsb {
+                trunk: bytes,
+                size: FieldSize::new_unsized(),
+            },
             input: Box::new(expr),
         })
     }
@@ -295,11 +334,13 @@ impl ExprElement {
     ) -> Self {
         Self::Op(ExprUnaryOp {
             location,
-            output_size: FieldSize::default()
-                .set_min_bits(size)
-                .unwrap()
-                .set_possible_min(),
-            op: Unary::BitRange(lsb..lsb + size.get()),
+            op: Unary::BitRange {
+                range: lsb..lsb + size.get(),
+                size: FieldSize::default()
+                    .set_min_bits(size)
+                    .unwrap()
+                    .set_possible_min(),
+            },
             input: Box::new(expr),
         })
     }
@@ -310,17 +351,11 @@ impl ExprElement {
         deref: MemoryLocation,
         addr: Expr,
     ) -> Self {
-        Self::DeReference(src, deref, Box::new(addr))
+        Self::new_op(src, Unary::Dereference(deref), addr)
     }
-    pub fn new_op(src: Span, mut op: Unary, expr: Expr) -> Self {
-        let size = match &mut op {
-            //the output can be one bit (true/false)
-            Unary::FloatNan => FieldSize::new_bool(),
-            _ => FieldSize::new_unsized(),
-        };
+    pub fn new_op(src: Span, op: Unary, expr: Expr) -> Self {
         Self::Op(ExprUnaryOp {
             location: src,
-            output_size: size,
             op,
             input: Box::new(expr),
         })
@@ -333,7 +368,6 @@ impl ExprElement {
             Self::Reference(reference) => &reference.location,
             Self::New(new) => &new.location,
             Self::CPool(cpool) => &cpool.location,
-            Self::DeReference(src, _, _) => src,
         }
     }
     pub fn solve(
@@ -377,17 +411,9 @@ impl ExprElement {
             }) => (/*TODO*/),
             Self::Op(ExprUnaryOp {
                 location,
-                output_size,
                 op: Unary::TakeLsb(bytes),
                 input,
             }) => {
-                // the output_size is set at creation
-                debug_assert_eq!(
-                    output_size.final_value().map(|x| x.get()),
-                    Some(bytes.get() * 8),
-                    "What??? {:?}",
-                    location
-                );
                 // input need to be lsb bytes or bigger
                 let modified_result = input
                     .size_mut(sleigh, execution)
@@ -400,10 +426,8 @@ impl ExprElement {
                     }
                 })?;
 
-                // if the input or output len are not possible, we are not done
-                if input.size(sleigh, execution).is_undefined()
-                    || output_size.is_undefined()
-                {
+                // if the input is not possible, we are not done
+                if input.size(sleigh, execution).is_undefined() {
                     solved.iam_not_finished(&location, file!(), line!());
                 }
 
@@ -411,20 +435,19 @@ impl ExprElement {
             }
             Self::Op(ExprUnaryOp {
                 location,
-                output_size,
-                op: Unary::TrunkLsb(bytes),
+                op: Unary::TrunkLsb { trunk, size },
                 input,
             }) => {
                 // input need to be (op_bytes + 1bit) or bigger
                 // +1 because the operation can't return 0 bits
                 let modified_result =
                     input.size_mut(sleigh, execution).update_action(|x| {
-                        x.set_min_bits((*bytes * 8 + 1).try_into().unwrap())
+                        x.set_min_bits((*trunk * 8 + 1).try_into().unwrap())
                     });
                 modified |= modified_result.ok_or_else(|| {
                     VarSizeError::TrunkLsbTooSmall {
-                        lsb: *bytes,
-                        output: *output_size,
+                        lsb: *trunk,
+                        output: *size,
                         input: input.size(sleigh, execution),
                         location: input.src().clone(),
                     }
@@ -433,14 +456,14 @@ impl ExprElement {
                 // output size need to be equal to (input_size - op_bytes)
                 let input_size = input.size(sleigh, execution);
                 if let Some(max_bits) = input_size.max_bits() {
-                    let max_bits = max_bits.get() - *bytes * 8;
-                    modified |= output_size
+                    let max_bits = max_bits.get() - *trunk * 8;
+                    modified |= size
                         .update_action(|x| {
                             x.set_max_bits(max_bits.try_into().unwrap())
                         })
                         .ok_or_else(|| VarSizeError::TrunkLsbTooSmall {
-                            lsb: *bytes,
-                            output: *output_size,
+                            lsb: *trunk,
+                            output: *size,
                             input: input.size(sleigh, execution),
                             location: input.src().clone(),
                         })?;
@@ -448,7 +471,7 @@ impl ExprElement {
 
                 // if the input or output len are not possible, we are not done
                 if !input.size(sleigh, execution).is_possible()
-                    || !output_size.is_possible()
+                    || !size.is_possible()
                 {
                     solved.iam_not_finished(&location, file!(), line!());
                 }
@@ -457,24 +480,23 @@ impl ExprElement {
             }
             Self::Op(ExprUnaryOp {
                 location,
-                output_size,
-                op: Unary::BitRange(bitrange),
+                op: Unary::BitRange { range, size },
                 input,
             }) => {
                 // output size need to be equal or bigger then the binary range
-                let bits = (bitrange.end - bitrange.start).try_into().unwrap();
-                modified |= output_size
+                let bits = (range.end - range.start).try_into().unwrap();
+                modified |= size
                     .update_action(|x| x.set_min_bits(bits))
                     .ok_or_else(|| VarSizeError::BitRangeTooBig {
                         location: input.src().clone(),
-                        output: *output_size,
+                        output: *size,
                         bits,
                     })?;
 
                 // input len need to be equal to bitrange.end or bigger
                 let modified_result =
                     input.size_mut(sleigh, execution).update_action(|x| {
-                        x.set_min_bits(bitrange.end.try_into().unwrap())
+                        x.set_min_bits(range.end.try_into().unwrap())
                     });
                 modified |= modified_result.ok_or_else(|| {
                     VarSizeError::BitRangeInputSmall {
@@ -486,32 +508,15 @@ impl ExprElement {
 
                 // if the input or output len are not possible, we are not done
                 if !(input.size(sleigh, execution).is_possible()
-                    && output_size.is_possible())
+                    && size.is_possible())
                 {
                     solved.iam_not_finished(&location, file!(), line!());
                 }
 
                 input.solve(sleigh, execution, solved)?;
             }
-            Self::DeReference(location, deref, addr) => {
-                let space = sleigh.space(deref.space);
-                //addr expr, need to be the space_addr size or greater
-                let modified = addr
-                    .size_mut(sleigh, execution)
-                    .update_action(|size| size.set_min_bytes(space.addr_bytes));
-                if modified.ok_or_else(|| VarSizeError::AddressTooBig {
-                    address_size: addr.size(sleigh, execution),
-                    space_bytes: space.addr_bytes,
-                    location: location.clone(),
-                })? {
-                    solved.i_did_a_thing();
-                }
-                deref.solve(solved);
-                addr.solve(sleigh, execution, solved)?;
-            }
             Self::Op(ExprUnaryOp {
                 location,
-                output_size,
                 op:
                     Unary::Negation
                     | Unary::BitNegation
@@ -524,26 +529,16 @@ impl ExprElement {
                     | Unary::FloatRound,
                 input,
             }) => {
-                let mut output_size = output_size;
-                //the input and output have the same number of bits
-                let modified_result = len::a_generate_b(
-                    &mut *input.size_mut(sleigh, execution),
-                    &mut output_size,
-                );
-                modified |= modified_result.ok_or_else(|| {
-                    VarSizeError::UnaryOpDiffSize {
-                        input: input.size(sleigh, execution),
-                        output: *output_size,
-                        location: location.clone(),
-                    }
-                })?;
-                mark_unfinished_size!(&output_size, solved, location);
                 input.solve(sleigh, execution, solved)?;
+                mark_unfinished_size!(
+                    &input.size(sleigh, execution),
+                    solved,
+                    location
+                );
             }
             Self::Op(ExprUnaryOp {
                 location,
-                output_size,
-                op: Unary::Popcount | Unary::Lzcount,
+                op: Unary::Popcount(output_size) | Unary::Lzcount(output_size),
                 input,
             }) => {
                 //the output min size is: log2(bit_len(input) + 1)
@@ -578,8 +573,7 @@ impl ExprElement {
 
             Self::Op(ExprUnaryOp {
                 location,
-                mut output_size,
-                op: Unary::Zext | Unary::Sext,
+                op: Unary::Zext(mut output_size) | Unary::Sext(mut output_size),
                 input,
             }) => {
                 //output size need to be bigger or eq to the value size and vise-versa
@@ -603,12 +597,11 @@ impl ExprElement {
             // can have any size.
             Self::Op(ExprUnaryOp {
                 location,
-                output_size,
                 op:
-                    Unary::SignTrunc
-                    | Unary::Float2Float
-                    | Unary::Int2Float
-                    | Unary::FloatNan,
+                    Unary::SignTrunc(output_size)
+                    | Unary::Float2Float(output_size)
+                    | Unary::Int2Float(output_size)
+                    | Unary::FloatNan(output_size),
                 input,
             }) => {
                 mark_unfinished_size!(output_size, solved, location);
@@ -628,9 +621,25 @@ impl ExprElement {
             Self::New(_) => todo!(),
             Self::CPool(_) => todo!(),
             ExprElement::Op(ExprUnaryOp {
-                op: Unary::Dereference(_),
-                ..
-            }) => unreachable!(),
+                location,
+                op: Unary::Dereference(deref),
+                input,
+            }) => {
+                let space = sleigh.space(deref.space);
+                //addr expr, need to be the space_addr size or greater
+                let modified = input
+                    .size_mut(sleigh, execution)
+                    .update_action(|size| size.set_min_bytes(space.addr_bytes));
+                if modified.ok_or_else(|| VarSizeError::AddressTooBig {
+                    address_size: input.size(sleigh, execution),
+                    space_bytes: space.addr_bytes,
+                    location: location.clone(),
+                })? {
+                    solved.i_did_a_thing();
+                }
+                deref.solve(solved);
+                input.solve(sleigh, execution, solved)?;
+            }
         }
         if modified {
             solved.i_did_a_thing();
@@ -645,15 +654,6 @@ impl ExprElement {
             },
             Self::Reference(reference) => {
                 FinalExprElement::Reference(reference.convert())
-            }
-            Self::DeReference(src, deref, value) => {
-                let size = deref.size.final_value().unwrap();
-                FinalExprElement::Op(FinalExprUnaryOp {
-                    location: src,
-                    output_bits: size,
-                    op: Unary::Dereference(deref.convert()),
-                    input: Box::new(value.convert()),
-                })
             }
             Self::Op(op) => FinalExprElement::Op(op.convert()),
             Self::UserCall(call) => FinalExprElement::UserCall(call.convert()),
@@ -671,9 +671,8 @@ impl ExprElement {
             Self::Value { value, location: _ } => {
                 value.size_mut(sleigh, execution)
             }
-            Self::DeReference(_, deref, _) => Box::new(&mut deref.size),
             Self::Reference(x) => Box::new(&mut x.len),
-            Self::Op(x) => Box::new(&mut x.output_size),
+            Self::Op(x) => x.size_mut(sleigh, execution),
             Self::UserCall(x) => Box::new(&mut x.output_size),
             Self::New(_x) => todo!(),
             Self::CPool(_x) => todo!(),
@@ -682,9 +681,8 @@ impl ExprElement {
     pub fn size(&self, sleigh: &Sleigh, execution: &Execution) -> FieldSize {
         match self {
             Self::Value { value, location: _ } => value.size(sleigh, execution),
-            Self::DeReference(_, deref, _) => deref.size,
             Self::Reference(x) => x.len,
-            Self::Op(x) => x.output_size,
+            Self::Op(x) => x.size(sleigh, execution),
             Self::UserCall(x) => x.output_size,
             Self::New(_) => todo!(),
             Self::CPool(_) => todo!(),
@@ -840,11 +838,19 @@ impl ExprValue {
         match self {
             //don't call table solve directly, let the main loop do it
             Self::Table(_) => {}
-            Self::Context(_) | Self::Bitrange(_) | Self::TokenField(_) => {}
+            Self::Context(ctx) => {
+                mark_unfinished_size!(&ctx.size, solved, location)
+            }
+            Self::Bitrange(bit) => {
+                mark_unfinished_size!(&bit.size, solved, location)
+            }
+            Self::TokenField(tf) => {
+                mark_unfinished_size!(&tf.size, solved, location)
+            }
             // the len don't need solving
             Self::Varnode(_) | Self::InstStart(_) | Self::InstNext(_) => {}
             Self::ExeVar(id) => {
-                let var = &execution.variable(*id);
+                let var = execution.variable(*id);
                 mark_unfinished_size!(&var.size.get(), solved, location)
             }
             Self::Int(num) => {
@@ -908,12 +914,119 @@ impl Reference {
 }
 
 impl ExprUnaryOp {
+    pub fn size(&self, sleigh: &Sleigh, execution: &Execution) -> FieldSize {
+        match &self.op {
+            Unary::TakeLsb(lsb) => FieldSize::new_bytes(*lsb),
+            Unary::TrunkLsb { trunk: _, size }
+            | Unary::BitRange { range: _, size } => *size,
+            Unary::Dereference(mem) => mem.size,
+            Unary::Zext(size)
+            | Unary::Sext(size)
+            | Unary::Popcount(size)
+            | Unary::Lzcount(size)
+            | Unary::FloatNan(size)
+            | Unary::SignTrunc(size)
+            | Unary::Float2Float(size)
+            | Unary::Int2Float(size) => *size,
+            Unary::Negation
+            | Unary::BitNegation
+            | Unary::Negative
+            | Unary::FloatNegative
+            | Unary::FloatAbs
+            | Unary::FloatSqrt
+            | Unary::FloatCeil
+            | Unary::FloatFloor
+            | Unary::FloatRound => self.input.size(sleigh, execution),
+        }
+    }
+
+    pub fn size_mut<'a>(
+        &'a mut self,
+        sleigh: &'a Sleigh,
+        execution: &'a Execution,
+    ) -> Box<dyn FieldSizeMut + 'a> {
+        match &mut self.op {
+            Unary::TakeLsb(lsb) => {
+                Box::new(FieldSizeUnmutable::from(FieldSize::new_bytes(*lsb)))
+            }
+            Unary::TrunkLsb { trunk: _, size }
+            | Unary::BitRange { range: _, size } => Box::new(size),
+            Unary::Dereference(mem) => Box::new(&mut mem.size),
+            Unary::Zext(size)
+            | Unary::Sext(size)
+            | Unary::Popcount(size)
+            | Unary::Lzcount(size)
+            | Unary::FloatNan(size)
+            | Unary::SignTrunc(size)
+            | Unary::Float2Float(size)
+            | Unary::Int2Float(size) => Box::new(size),
+            Unary::Negation
+            | Unary::BitNegation
+            | Unary::Negative
+            | Unary::FloatNegative
+            | Unary::FloatAbs
+            | Unary::FloatSqrt
+            | Unary::FloatCeil
+            | Unary::FloatFloor
+            | Unary::FloatRound => self.input.size_mut(sleigh, execution),
+        }
+    }
+
     pub fn convert(self) -> FinalExprUnaryOp {
         FinalExprUnaryOp {
             location: self.location,
-            output_bits: self.output_size.possible_value().unwrap(),
-            op: self.op,
+            op: self.op.convert(),
             input: Box::new(self.input.convert()),
+        }
+    }
+}
+
+impl Unary {
+    pub fn convert(self) -> FinalUnary {
+        match self {
+            Unary::TakeLsb(len) => FinalUnary::TakeLsb(len),
+            Unary::TrunkLsb { trunk, size } => FinalUnary::TrunkLsb {
+                trunk,
+                bits: size.possible_value().unwrap(),
+            },
+            Unary::BitRange { range, size } => FinalUnary::BitRange {
+                range,
+                bits: size.possible_value().unwrap(),
+            },
+            Unary::Dereference(mem) => FinalUnary::Dereference(mem.convert()),
+            Unary::Zext(size) => {
+                FinalUnary::Zext(size.possible_value().unwrap())
+            }
+            Unary::Sext(size) => {
+                FinalUnary::Sext(size.possible_value().unwrap())
+            }
+            Unary::Popcount(size) => {
+                FinalUnary::Popcount(size.possible_value().unwrap())
+            }
+            Unary::Lzcount(size) => {
+                FinalUnary::Lzcount(size.possible_value().unwrap())
+            }
+            Unary::FloatNan(size) => {
+                FinalUnary::FloatNan(size.possible_value().unwrap())
+            }
+            Unary::SignTrunc(size) => {
+                FinalUnary::SignTrunc(size.possible_value().unwrap())
+            }
+            Unary::Float2Float(size) => {
+                FinalUnary::Float2Float(size.possible_value().unwrap())
+            }
+            Unary::Int2Float(size) => {
+                FinalUnary::Int2Float(size.possible_value().unwrap())
+            }
+            Unary::Negation => FinalUnary::Negation,
+            Unary::BitNegation => FinalUnary::BitNegation,
+            Unary::Negative => FinalUnary::Negative,
+            Unary::FloatNegative => FinalUnary::FloatNegative,
+            Unary::FloatAbs => FinalUnary::FloatAbs,
+            Unary::FloatSqrt => FinalUnary::FloatSqrt,
+            Unary::FloatCeil => FinalUnary::FloatCeil,
+            Unary::FloatFloor => FinalUnary::FloatFloor,
+            Unary::FloatRound => FinalUnary::FloatRound,
         }
     }
 }
@@ -1113,6 +1226,12 @@ fn inner_expr_solve(
             solved.i_did_a_thing();
             solved.iam_not_finished(&op.location, file!(), line!());
             let size = op.output_size.final_value().unwrap();
+            let mut value = value;
+            // input value can have any len, has long it's greater then bitrange
+            value
+                .size_mut(sleigh, execution)
+                .update_action(|s| s.set_possible_min().set_min_bits(size))
+                .unwrap();
             Ok(Expr::Value(ExprElement::new_bitrange(
                 location, 0, size, value,
             )))

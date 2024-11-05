@@ -996,7 +996,7 @@ mod test {
             "CP1600/data/languages/CP1600.slaspec",
             "SuperH/data/languages/sh-2.slaspec",
             //"SuperH/data/languages/sh-2a.slaspec",
-            //"SuperH/data/languages/sh-1.slaspec",
+            "SuperH/data/languages/sh-1.slaspec",
             //"Sparc/data/languages/SparcV9_64.slaspec",
             //"Sparc/data/languages/SparcV9_32.slaspec",
             //"MCS96/data/languages/MCS96.slaspec",
