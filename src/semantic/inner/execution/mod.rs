@@ -118,7 +118,7 @@ impl Execution {
     ) -> Result<(), Box<ExecutionError>> {
         self.blocks
             .iter()
-            .try_for_each(|block| block.solve(sleigh, &self, solved))?;
+            .try_for_each(|block| block.solve(sleigh, self, solved))?;
 
         //get the export sizes, otherwise we are finished
         let mut return_size =
@@ -156,7 +156,7 @@ impl Execution {
                 let mut statement = statement.borrow_mut();
                 if let Statement::Export(export) = &mut *statement {
                     modified |= export
-                        .output_size_mut(sleigh, &self)
+                        .output_size_mut(sleigh, self)
                         .update_action(|size| size.intersection(return_size))
                         .unwrap();
                 }

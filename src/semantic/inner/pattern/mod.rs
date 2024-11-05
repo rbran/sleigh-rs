@@ -94,8 +94,8 @@ impl PatternWalker for FindValues {
                 ..
             }) => unreachable!(),
             Expr::Op(_span, _op, left, right) => {
-                self.value(&*left)?;
-                self.value(&*right)?;
+                self.value(left)?;
+                self.value(right)?;
             }
         }
         ControlFlow::Continue(())

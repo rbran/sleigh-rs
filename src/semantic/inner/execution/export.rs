@@ -249,7 +249,7 @@ impl Export {
         let space = sleigh.space(memory.space);
         let src = addr.src().clone();
         let modified = addr
-            .size_mut(sleigh, &execution)
+            .size_mut(sleigh, execution)
             .update_action(|size| size.set_max_bytes(space.addr_bytes));
 
         // memory can be any size, and the size of the space is possible
@@ -259,7 +259,7 @@ impl Export {
         });
 
         let _ = modified.ok_or_else(|| VarSizeError::AddressTooBig {
-            address_size: addr.size(sleigh, &execution),
+            address_size: addr.size(sleigh, execution),
             space_bytes: space.addr_bytes,
             location: src,
         })?;

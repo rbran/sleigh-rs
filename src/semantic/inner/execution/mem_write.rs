@@ -33,7 +33,7 @@ impl MemWrite {
             .map(|size| size.get() == 8)
             .unwrap_or(false)
             && right
-                .size(sleigh, &execution)
+                .size(sleigh, execution)
                 .final_value()
                 .map(|size| size.get() == 1)
                 .unwrap_or(false)
@@ -48,7 +48,7 @@ impl MemWrite {
         //addr expr is the addr to access the space, so it need to be space
         //addr size
         let space = sleigh.space(mem.space);
-        addr.size_mut(sleigh, &execution)
+        addr.size_mut(sleigh, execution)
             .set(FieldSize::new_bytes(space.addr_bytes));
         Self {
             addr,

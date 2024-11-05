@@ -206,14 +206,14 @@ impl Assignment {
 
 #[derive(Clone, Debug)]
 pub enum Assertation {
-    GlobalSet(GlobalSet),
+    GlobalSet(Box<GlobalSet>),
     Assignment(Assignment),
 }
 
 impl Assertation {
     pub fn parse(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
         alt((
-            map(GlobalSet::parse, Self::GlobalSet),
+            map(GlobalSet::parse, |x| Self::GlobalSet(Box::new(x))),
             map(Assignment::parse, Self::Assignment),
         ))(input)
     }

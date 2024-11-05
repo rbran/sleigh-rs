@@ -278,7 +278,7 @@ impl<'a, 'b> Builder<'a, 'b> {
     ) -> Result<Assertation, Box<DisassemblyError>> {
         match input {
             syntax::block::disassembly::Assertation::GlobalSet(globalset) => {
-                self.new_globalset(globalset).map(Assertation::GlobalSet)
+                self.new_globalset(*globalset).map(Assertation::GlobalSet)
             }
             syntax::block::disassembly::Assertation::Assignment(assignment) => {
                 self.new_assignment(assignment).map(Assertation::Assignment)

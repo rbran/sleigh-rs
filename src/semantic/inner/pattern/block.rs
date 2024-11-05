@@ -710,10 +710,10 @@ impl BlockBase {
         this_unresolved
     }
     pub fn is_token_field_produced(&self, search_field: TokenFieldId) -> bool {
-        self.token_fields.get(&search_field).is_some()
+        self.token_fields.contains_key(&search_field)
     }
     pub fn is_table_produced(&self, token_field: TableId) -> bool {
-        self.tables.get(&token_field).is_some()
+        self.tables.contains_key(&token_field)
     }
 
     // return true if this block can produce this token field
@@ -955,9 +955,8 @@ impl BlockPhase2 {
                 if let Some(pattern) = verification.sub_pattern_mut() {
                     pattern.calculate_bits(variants_prior)
                 }
-                verification
+                verification.variants_number()
             })
-            .map(|verification| verification.variants_number())
             .sum();
         Self {
             len,

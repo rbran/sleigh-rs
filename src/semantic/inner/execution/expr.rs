@@ -362,7 +362,7 @@ impl ExprElement {
     }
     pub fn src(&self) -> &Span {
         match self {
-            Self::Value { location, value: _ } => &location,
+            Self::Value { location, value: _ } => location,
             Self::UserCall(call) => &call.location,
             Self::Op(op) => &op.location,
             Self::Reference(reference) => &reference.location,
@@ -428,7 +428,7 @@ impl ExprElement {
 
                 // if the input is not possible, we are not done
                 if input.size(sleigh, execution).is_undefined() {
-                    solved.iam_not_finished(&location, file!(), line!());
+                    solved.iam_not_finished(location, file!(), line!());
                 }
 
                 input.solve(sleigh, execution, solved)?;
@@ -473,7 +473,7 @@ impl ExprElement {
                 if !input.size(sleigh, execution).is_possible()
                     || !size.is_possible()
                 {
-                    solved.iam_not_finished(&location, file!(), line!());
+                    solved.iam_not_finished(location, file!(), line!());
                 }
 
                 input.solve(sleigh, execution, solved)?;
@@ -510,7 +510,7 @@ impl ExprElement {
                 if !(input.size(sleigh, execution).is_possible()
                     && size.is_possible())
                 {
-                    solved.iam_not_finished(&location, file!(), line!());
+                    solved.iam_not_finished(location, file!(), line!());
                 }
 
                 input.solve(sleigh, execution, solved)?;

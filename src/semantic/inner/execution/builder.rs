@@ -1199,7 +1199,7 @@ fn translate_expr(expr: &Expr, variables_map: &[VariableAlias<'_>]) -> Expr {
             let right = translate_expr(&op.right, variables_map);
             Expr::Op(crate::semantic::inner::execution::ExprBinaryOp {
                 location: op.location.clone(),
-                output_size: op.output_size.clone(),
+                output_size: op.output_size,
                 op: op.op,
                 left: Box::new(left),
                 right: Box::new(right),

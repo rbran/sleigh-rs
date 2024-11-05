@@ -78,7 +78,7 @@ pub struct ContextId(pub usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct VarnodeId(usize);
 impl VarnodeId {
-    pub unsafe fn from_raw(idx: usize) -> Self {
+    pub(crate) unsafe fn from_raw(idx: usize) -> Self {
         Self(idx)
     }
     pub fn to_raw(&self) -> usize {
@@ -305,13 +305,20 @@ impl Sleigh {
                     table.solve(&inner, &mut solved)?;
                 }
                 return Err(Box::new(SleighError::TableUnsolvable(
-                    solved
-                        .locations
-                        .iter()
-                        .map(|(location, file, line)| {
-                            format!("{}:{}: {location}\n", file, line + 1)
-                        })
-                        .collect(),
+                    solved.locations.iter().fold(
+                        String::new(),
+                        |mut acc, (location, file, line)| {
+                            use std::fmt::Write;
+                            writeln!(
+                                &mut acc,
+                                "{}:{}: {location}",
+                                file,
+                                line + 1
+                            )
+                            .unwrap();
+                            acc
+                        },
+                    ),
                 )));
             }
         }

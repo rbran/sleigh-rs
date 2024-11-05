@@ -198,7 +198,7 @@ impl FieldSize {
                     return Some(Self::Value(value));
                 }
                 let possible_value =
-                    possible_value.filter(|value| range.contains(&value));
+                    possible_value.filter(|value| range.contains(value));
                 Some(Self::Unsized {
                     range,
                     possible_min,
@@ -230,7 +230,7 @@ impl FieldSize {
                     return Some(Self::Value(value));
                 }
                 let possible_value =
-                    possible_value.filter(|value| range.contains(&value));
+                    possible_value.filter(|value| range.contains(value));
                 Some(Self::Unsized {
                     range,
                     possible_value,
@@ -381,8 +381,7 @@ fn intersect_all(fields: &mut [&mut dyn FieldSizeMut]) -> Option<bool> {
             size_mut
                 .get()
                 .intersection(final_len)
-                .map(|s| size_mut.set(s))
-                .flatten()
+                .and_then(|s| size_mut.set(s))
         })
         .try_fold(false, |acc, x| Some(acc | x?))
 }

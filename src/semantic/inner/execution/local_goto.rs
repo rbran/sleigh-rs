@@ -19,7 +19,7 @@ impl LocalGoto {
     ) -> Result<Self, Box<ExecutionError>> {
         //condition can have any size, preferencially 1 bit for true/false
         cond.iter_mut().for_each(|cond| {
-            cond.size_mut(sleigh, &execution)
+            cond.size_mut(sleigh, execution)
                 .update_action(|size| Some(size.set_possible_min()))
                 .unwrap();
         });

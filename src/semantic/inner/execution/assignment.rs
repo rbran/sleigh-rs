@@ -144,9 +144,9 @@ pub enum AssignmentOp {
 impl AssignmentOp {
     pub fn output_size_mut(&mut self) -> Box<dyn FieldSizeMut + '_> {
         match self {
-            AssignmentOp::TakeLsb(bytes) => Box::new(len::FieldSizeUnmutable(
-                FieldSize::from(FieldSize::new_bytes(*bytes)),
-            )),
+            AssignmentOp::TakeLsb(bytes) => {
+                Box::new(len::FieldSizeUnmutable(FieldSize::new_bytes(*bytes)))
+            }
             AssignmentOp::TrunkLsb {
                 bytes: _,
                 output_size,

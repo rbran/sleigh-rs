@@ -152,8 +152,8 @@ impl Sleigh {
         let params = pcode
             .params
             .into_iter()
-            .map(|(name, src)| -> Result<_, Box<ExecutionError>> {
-                Ok(execution.create_variable(name, src.clone(), None, false)?)
+            .map(|(name, src)| {
+                execution.create_variable(name, src.clone(), None, false)
             })
             .collect::<Result<_, _>>()
             .map_err(|e| {
