@@ -983,7 +983,7 @@ pub fn file_to_sleigh(filename: &Path) -> Result<Sleigh, Box<SleighError>> {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, path::Path};
+    use std::path::Path;
 
     use crate::file_to_sleigh;
 
@@ -995,7 +995,7 @@ mod test {
             //"x86/data/languages/x86-64.slaspec",
             "CP1600/data/languages/CP1600.slaspec",
             "SuperH/data/languages/sh-2.slaspec",
-            //"SuperH/data/languages/sh-2a.slaspec",
+            "SuperH/data/languages/sh-2a.slaspec",
             "SuperH/data/languages/sh-1.slaspec",
             //"Sparc/data/languages/SparcV9_64.slaspec",
             //"Sparc/data/languages/SparcV9_32.slaspec",
