@@ -66,7 +66,7 @@ impl Statement {
         solved: &mut T,
     ) -> Result<(), Box<ExecutionError>>
     where
-        T: SolverStatus + Default,
+        T: SolverStatus,
     {
         match self {
             Self::Build(_x) => (),

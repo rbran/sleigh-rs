@@ -989,7 +989,7 @@ pub trait ExecutionBuilder {
             Op::Lzcount => Unary::Lzcount(FieldSize::new_unsized()),
             Op::Zext => Unary::Zext(FieldSize::new_unsized()),
             Op::Sext => Unary::Sext(FieldSize::new_unsized()),
-            Op::FloatNan => Unary::FloatNan(FieldSize::new_unsized()),
+            Op::FloatNan => Unary::FloatNan(FieldSize::new_bool()),
             Op::FloatAbs => Unary::FloatAbs,
             Op::FloatSqrt => Unary::FloatSqrt,
             Op::Int2Float => Unary::Int2Float(FieldSize::new_unsized()),
