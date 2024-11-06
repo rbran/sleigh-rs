@@ -12,7 +12,7 @@ use crate::semantic::execution::{
     Unary as FinalUnary,
 };
 use crate::semantic::inner::execution::len;
-use crate::semantic::inner::{FieldSize, Sleigh, Solved, SolverStatus};
+use crate::semantic::inner::{FieldSize, Sleigh, SolverStatus};
 use crate::semantic::{disassembly, InstNext, InstStart};
 use crate::{
     AttachNumberId, BitrangeId, ContextId, ExecutionError, Number,
@@ -1318,10 +1318,17 @@ fn inner_expr_solve(
 
         //left/right/output can have any size, they are all just `0` or `!=0`
         (mut left, And | Xor | Or, mut right) => {
-            //left/right can have any lenght, so just try to solve the len
-            //if possible, otherwise just ignore it
-            left.solve(sleigh, execution, &mut Solved::default())?;
-            right.solve(sleigh, execution, &mut Solved::default())?;
+            //left/right can have any lenght
+            left.size_mut(sleigh, execution)
+                .update_action(|x| Some(x.set_possible_min()))
+                .unwrap();
+            right
+                .size_mut(sleigh, execution)
+                .update_action(|x| Some(x.set_possible_min()))
+                .unwrap();
+
+            left.solve(sleigh, execution, solved)?;
+            right.solve(sleigh, execution, solved)?;
             mark_unfinished_size!(&op.output_size, solved, &op.location,);
             Ok(Expr::Op(ExprBinaryOp {
                 location: op.location,
