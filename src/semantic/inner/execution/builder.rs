@@ -470,6 +470,10 @@ pub trait ExecutionBuilder {
                             }
                             Statement::MemWrite(x) => {
                                 Statement::MemWrite(MemWrite {
+                                    addr: translate_expr(
+                                        &x.addr,
+                                        &variables_map,
+                                    ),
                                     right: translate_expr(
                                         &x.right,
                                         &variables_map,
