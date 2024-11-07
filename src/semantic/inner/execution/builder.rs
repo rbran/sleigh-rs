@@ -728,10 +728,36 @@ pub trait ExecutionBuilder {
             }
             RawExprElement::Value(syntax::Value::Ident(src, value)) => {
                 let value = self.read_scope(&value, &src)?;
-                Ok(ExprElement::Value {
-                    location: src,
-                    value: ExprValue::from_read_scope(self.sleigh(), value),
-                })
+                // HACK add auto trunk if inst_*
+                match value {
+                    value @ (ReadScope::InstStart | ReadScope::InstNext) => {
+                        let mut size = FieldSize::new_unsized()
+                            .set_min_bits(1.try_into().unwrap())
+                            .unwrap();
+                        if let Some(addr_bytes) = self.sleigh().addr_bytes() {
+                            size = size
+                                .set_max_bytes(addr_bytes)
+                                .unwrap()
+                                .set_possible_bytes(addr_bytes)
+                                .unwrap();
+                        }
+                        Ok(ExprElement::new_op(
+                            src.clone(),
+                            Unary::TrunkLsb { trunk: 0, size },
+                            Expr::Value(ExprElement::Value {
+                                location: src.clone(),
+                                value: ExprValue::from_read_scope(
+                                    self.sleigh(),
+                                    value,
+                                ),
+                            }),
+                        ))
+                    }
+                    value => Ok(ExprElement::Value {
+                        location: src,
+                        value: ExprValue::from_read_scope(self.sleigh(), value),
+                    }),
+                }
             }
             RawExprElement::Reference(src, size, value) => {
                 let ref_bytes = size
