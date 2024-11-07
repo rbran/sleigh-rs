@@ -453,21 +453,30 @@ impl ExprElement {
                     }
                 })?;
 
-                // output size need to be equal to (input_size - op_bytes)
                 let input_size = input.size(sleigh, execution);
-                if let Some(max_bits) = input_size.max_bits() {
-                    let max_bits = max_bits.get() - *trunk * 8;
-                    modified |= size
-                        .update_action(|x| {
-                            x.set_max_bits(max_bits.try_into().unwrap())
-                        })
-                        .ok_or_else(|| VarSizeError::TrunkLsbTooSmall {
-                            lsb: *trunk,
-                            output: *size,
-                            input: input.size(sleigh, execution),
-                            location: input.src().clone(),
-                        })?;
-                }
+                modified |= size
+                    .update_action(|size| {
+                        // output size can't take less then 1 byte
+                        size.set_min_bits(8.try_into().unwrap()).and_then(
+                            |size| {
+                                if let Some(max_bits) = input_size.max_bits() {
+                                    let max_bits = max_bits.get() - *trunk * 8;
+                                    // output size need to be at most `input_size - op_bytes`
+                                    size.set_max_bits(
+                                        max_bits.try_into().unwrap(),
+                                    )
+                                } else {
+                                    Some(size)
+                                }
+                            },
+                        )
+                    })
+                    .ok_or_else(|| VarSizeError::TrunkLsbTooSmall {
+                        lsb: *trunk,
+                        output: *size,
+                        input: input.size(sleigh, execution),
+                        location: input.src().clone(),
+                    })?;
 
                 // if the input or output len are not possible, we are not done
                 if !input.size(sleigh, execution).is_possible()
@@ -1318,6 +1327,8 @@ fn inner_expr_solve(
 
         //left/right/output can have any size, they are all just `0` or `!=0`
         (mut left, And | Xor | Or, mut right) => {
+            // TODO those are binary and implicitly with a != 0 verification,
+            // we may need to add a set_possible_max for this
             //left/right can have any lenght
             left.size_mut(sleigh, execution)
                 .update_action(|x| Some(x.set_possible_min()))
