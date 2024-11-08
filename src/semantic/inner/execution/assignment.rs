@@ -11,8 +11,8 @@ use crate::{
 };
 
 use super::{
-    len, Execution, Expr, ExprBinaryOp, ExprElement, ExprUnaryOp, ExprValue,
-    FieldSize, FieldSizeMut, MemoryLocation, Unary,
+    len, Execution, Expr, ExprBinaryOp, ExprElement, ExprNumber, ExprUnaryOp,
+    ExprValue, FieldSize, FieldSizeMut, MemoryLocation, Unary,
 };
 
 #[derive(Clone, Debug)]
@@ -55,6 +55,11 @@ impl Assignment {
 
         // add auto truncate in mem deref
         if hack_auto_trunkate_mem_deref(self, sleigh, execution) {
+            solved.i_did_a_thing();
+        }
+
+        // add auto truncate in mem deref
+        if hack_auto_fix_bitrange_with_bitand(self, sleigh, execution) {
             solved.i_did_a_thing();
         }
 
@@ -281,7 +286,7 @@ fn hack_auto_trunkate_mem_deref(
     });
     let mut swap_right = Expr::Value(ExprElement::Value {
         location,
-        value: ExprValue::Int(super::ExprNumber {
+        value: ExprValue::Int(ExprNumber {
             size: FieldSize::default(),
             number: crate::Number::Positive(0),
         }),
@@ -378,6 +383,89 @@ fn hack_solve_simple_bin_ands(
 
         _ => false,
     }
+}
+
+fn hack_auto_fix_bitrange_with_bitand(
+    ass: &mut Assignment,
+    _sleigh: &Sleigh,
+    _execution: &Execution,
+) -> bool {
+    // left side need to be a bitrange op
+    let Some(AssignmentOp::BitRange(bitrange)) = &ass.op else {
+        return false;
+    };
+
+    // right side need to end with BitAnd with a number
+    let Expr::Op(ExprBinaryOp {
+        op: Binary::BitAnd,
+        left,
+        right,
+        ..
+    }) = &mut ass.right
+    else {
+        return false;
+    };
+    let number = match (&mut **left, &mut **right) {
+        (
+            Expr::Value(ExprElement::Value {
+                location: _,
+                value:
+                    super::ExprValue::Int(super::ExprNumber { size: _, number }),
+            }),
+            _,
+        )
+        | (
+            _,
+            Expr::Value(ExprElement::Value {
+                location: _,
+                value:
+                    super::ExprValue::Int(super::ExprNumber { size: _, number }),
+            }),
+        ) => *number,
+        _ => return false,
+    };
+
+    let Some(number) = number.as_unsigned() else {
+        return false;
+    };
+    // the number need to match the exact number of bits
+    let range = bitrange.end - bitrange.start;
+    if range > 64 {
+        return false;
+    }
+    if number != u64::MAX >> (u64::BITS - range as u32) {
+        return false;
+    }
+
+    // add the bitrange around the bitand
+
+    // dummy value for temporary use
+    let location = Span::File(crate::FileSpan {
+        start: crate::FileLocation {
+            file: std::rc::Rc::from(std::path::Path::new("")),
+            line: 0,
+            column: 0,
+        },
+        end_line: 0,
+        end_column: 0,
+    });
+    let mut swap_right = Expr::Value(ExprElement::Value {
+        location,
+        value: ExprValue::Int(ExprNumber {
+            size: FieldSize::default(),
+            number: crate::Number::Positive(0),
+        }),
+    });
+    core::mem::swap(&mut ass.right, &mut swap_right);
+    ass.right = Expr::Value(ExprElement::new_op(
+        ass.location.clone(),
+        Unary::BitRange {
+            range: 0..range,
+            size: FieldSize::Value(range.try_into().unwrap()),
+        },
+        swap_right,
+    ));
+    true
 }
 
 // HACK get extra info for the variable during it's creation
