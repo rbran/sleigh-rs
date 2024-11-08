@@ -53,6 +53,11 @@ impl Assignment {
             solved.i_did_a_thing();
         }
 
+        // add auto truncate in mem deref
+        if hack_auto_trunkate_mem_deref(self, sleigh, execution) {
+            solved.i_did_a_thing();
+        }
+
         // add extra information for the variable creation
         if hack_extra_var_info_creation(self, sleigh, execution) {
             solved.i_did_a_thing();
@@ -231,6 +236,66 @@ impl AssignmentOp {
             AssignmentOp::BitRange(x) => FinalAssignmentOp::BitRange(x),
         }
     }
+}
+
+// HACK auto trunkate mem deref
+// eg: R0 = *:3 ptr; # R0 is 1 byte
+fn hack_auto_trunkate_mem_deref(
+    ass: &mut Assignment,
+    sleigh: &Sleigh,
+    execution: &Execution,
+) -> bool {
+    // left need to have a known size
+    let Some(left_size) = ass.left_size(sleigh, execution).final_value() else {
+        return false;
+    };
+
+    // right need to be a mem deref need to have a defined size
+    let Expr::Value(ExprElement::Op(ExprUnaryOp {
+        location: _,
+        op: Unary::Dereference(MemoryLocation { size, .. }),
+        input: _,
+    })) = &ass.right
+    else {
+        return false;
+    };
+    let Some(right_size) = size.final_value() else {
+        return false;
+    };
+
+    // only if left side is smaller then the right side
+    if left_size >= right_size {
+        return false;
+    }
+
+    // add the implicit truncation
+    // dummy value for temporary use
+    let location = Span::File(crate::FileSpan {
+        start: crate::FileLocation {
+            file: std::rc::Rc::from(std::path::Path::new("")),
+            line: 0,
+            column: 0,
+        },
+        end_line: 0,
+        end_column: 0,
+    });
+    let mut swap_right = Expr::Value(ExprElement::Value {
+        location,
+        value: ExprValue::Int(super::ExprNumber {
+            size: FieldSize::default(),
+            number: crate::Number::Positive(0),
+        }),
+    });
+    core::mem::swap(&mut ass.right, &mut swap_right);
+    ass.right = Expr::Value(ExprElement::new_op(
+        ass.location.clone(),
+        Unary::BitRange {
+            range: 0..left_size.get(),
+            size: FieldSize::Value(left_size),
+        },
+        swap_right,
+    ));
+    true
 }
 
 // HACK auto solve simple assignments.

@@ -552,7 +552,7 @@ pub trait ExecutionBuilder {
         &mut self,
         input: syntax::block::execution::assignment::Assignment,
     ) -> Result<Statement, Box<ExecutionError>> {
-        let mut right = self.new_expr(input.right)?;
+        let right = self.new_expr(input.right)?;
         let var = self.write_scope(&input.ident, &input.src).ok();
         match (var, input.local) {
             //variable don't exists, create it
@@ -593,28 +593,7 @@ pub trait ExecutionBuilder {
             (Some(WriteValue::Varnode(var)), false) => {
                 let op =
                     input.op.map(|op| self.new_truncate(op)).transpose()?;
-                let var_ele = self.sleigh().varnode(var);
                 let addr = WriteValue::Varnode(var);
-                // TODO move this into solve?
-                // value can't be bigger then the varnode, although it can be
-                // smaller
-                let result = right
-                    .size_mut(self.sleigh(), self.execution())
-                    .update_action(|size| {
-                        size.set_max_bytes(var_ele.len_bytes)
-                            // optionally try to set a possible value
-                            .map(|size| {
-                                size.set_possible_bytes(var_ele.len_bytes)
-                                    .unwrap_or(size)
-                            })
-                    });
-                let _ =
-                    result.ok_or_else(|| VarSizeError::AssignmentSides {
-                        left: FieldSize::new_bytes(var_ele.len_bytes),
-                        right: right.size(self.sleigh(), self.execution()),
-                        location: input.src.clone(),
-                        backtrace: format!("{}:{}", file!(), line!()),
-                    })?;
                 Ok(Statement::Assignment(Assignment::new(
                     input.src.clone(),
                     addr,

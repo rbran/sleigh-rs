@@ -990,7 +990,7 @@ mod test {
     #[test]
     fn parse_all() {
         const ARCHS: &[&str] = &[
-            //"Atmel/data/languages/avr8eind.slaspec",
+            "Atmel/data/languages/avr8eind.slaspec",
             //"x86/data/languages/x86.slaspec",
             //"x86/data/languages/x86-64.slaspec",
             "CP1600/data/languages/CP1600.slaspec",

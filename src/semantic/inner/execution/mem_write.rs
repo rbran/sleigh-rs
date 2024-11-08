@@ -66,6 +66,11 @@ impl MemWrite {
         self.mem.solve(solved);
         self.addr.solve(sleigh, execution, solved)?;
         self.right.solve(sleigh, execution, solved)?;
+
+        if hack_auto_trunkate_mem_deref(self, sleigh, execution) {
+            solved.i_did_a_thing();
+        }
+
         // HACK: exception in case the right size is smaller then the left size,
         // truncate the right size with a msb(0)
         let left_size = self.mem.size.final_value();
@@ -154,4 +159,54 @@ impl MemWrite {
             right: self.right.convert(),
         }
     }
+}
+
+// HACK auto extend mem_write
+// eg: *:3 ptr = R1R0; # R1R0 is 2 bytes
+fn hack_auto_trunkate_mem_deref(
+    write: &mut MemWrite,
+    sleigh: &Sleigh,
+    execution: &Execution,
+) -> bool {
+    // left need to have a known size
+    let Some(left_size) = write.mem.size.final_value() else {
+        return false;
+    };
+
+    // right need to also have a defined size
+    let Some(right_size) = write.right.size(sleigh, execution).final_value()
+    else {
+        return false;
+    };
+
+    // only if left side is bigger then the right side
+    if left_size <= right_size {
+        return false;
+    }
+
+    // add the implicit truncation
+    // dummy value for temporary use
+    let location = Span::File(crate::FileSpan {
+        start: crate::FileLocation {
+            file: std::rc::Rc::from(std::path::Path::new("")),
+            line: 0,
+            column: 0,
+        },
+        end_line: 0,
+        end_column: 0,
+    });
+    let mut swap_right = Expr::Value(ExprElement::Value {
+        location,
+        value: ExprValue::Int(super::ExprNumber {
+            size: FieldSize::default(),
+            number: crate::Number::Positive(0),
+        }),
+    });
+    core::mem::swap(&mut write.right, &mut swap_right);
+    write.right = Expr::Value(ExprElement::new_op(
+        write.src.clone(),
+        Unary::Zext(FieldSize::Value(left_size)),
+        swap_right,
+    ));
+    true
 }
