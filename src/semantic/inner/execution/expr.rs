@@ -216,8 +216,7 @@ impl Expr {
                     let _ = right
                         .size_mut(sleigh, execution)
                         .update_action(|size| {
-                            size.set_max_bits(32.try_into().unwrap())?
-                                .set_possible_bits(32.try_into().unwrap())
+                            size.set_possible_bits(32.try_into().unwrap())
                         })
                         .unwrap();
                 }
