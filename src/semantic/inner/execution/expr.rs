@@ -1295,10 +1295,16 @@ fn inner_expr_solve(
             //NOTE right defaults to 32bits
             right.solve(sleigh, execution, solved)?;
 
-            // right can have any size
+            // right can have any size, 32bits if possible
             right
                 .size_mut(sleigh, execution)
-                .update_action(|s| Some(s.set_possible_min()))
+                .update_action(|s| {
+                    let s = s.set_possible_min();
+                    Some(
+                        s.set_possible_bits(32.try_into().unwrap())
+                            .unwrap_or(s),
+                    )
+                })
                 .unwrap();
 
             let restricted = len::a_generate_b(

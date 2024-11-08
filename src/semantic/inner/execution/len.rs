@@ -420,8 +420,6 @@ pub fn a_cmp_b(
 }
 
 /// a and b are the same value
-// TODO this should be set to execution solving?
-#[allow(dead_code)]
 pub fn a_equivalent_b(
     a: &mut dyn FieldSizeMut,
     b: &mut dyn FieldSizeMut,

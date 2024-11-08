@@ -1027,9 +1027,9 @@ mod test {
             "ARM/data/languages/ARM8_le.slaspec",
             "ARM/data/languages/ARM8_be.slaspec",
             "8085/data/languages/8085.slaspec",
-            //"HCS12/data/languages/HCS12X.slaspec",
+            "HCS12/data/languages/HCS12X.slaspec",
             "HCS12/data/languages/HC12.slaspec",
-            //"HCS12/data/languages/HCS12.slaspec",
+            "HCS12/data/languages/HCS12.slaspec",
             //"8048/data/languages/8048.slaspec",
             // TODO: cpool
             //"JVM/data/languages/JVM.slaspec",

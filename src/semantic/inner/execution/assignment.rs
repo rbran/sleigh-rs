@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::execution::Binary;
+use crate::execution::{Binary, VariableId};
 use crate::semantic::execution::{
     Assignment as FinalAssignment, AssignmentOp as FinalAssignmentOp,
     WriteValue,
@@ -126,6 +126,57 @@ impl Assignment {
             location: self.location,
             var: self.var,
             op: self.op.map(|op| op.convert()),
+            right: self.right.convert(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MacroParamAssignment {
+    pub var: VariableId,
+    pub right: Expr,
+}
+
+impl MacroParamAssignment {
+    pub fn new(var: VariableId, right: Expr) -> Self {
+        Self { var, right }
+    }
+    pub fn solve(
+        &mut self,
+        sleigh: &Sleigh,
+        execution: &Execution,
+        solved: &mut impl SolverStatus,
+    ) -> Result<(), Box<ExecutionError>> {
+        self.right.solve(sleigh, execution, solved)?;
+
+        let var = execution.variable(self.var);
+        let result = len::a_equivalent_b(
+            &mut &var.size,
+            &mut *self.right.size_mut(sleigh, execution),
+        );
+        let did_something =
+            result.ok_or_else(|| VarSizeError::AssignmentSides {
+                left: var.size.get(),
+                right: self.right.size(sleigh, execution),
+                location: self.right.src().clone(),
+                backtrace: format!("{}:{}", file!(), line!()),
+            })?;
+
+        if did_something {
+            solved.i_did_a_thing();
+        }
+
+        Ok(())
+    }
+
+    pub fn convert(self) -> FinalAssignment {
+        FinalAssignment {
+            location: self.right.src().clone(),
+            var: WriteValue::Local {
+                id: self.var,
+                creation: false,
+            },
+            op: None,
             right: self.right.convert(),
         }
     }

@@ -23,7 +23,8 @@ use super::{
     Assignment, AssignmentOp, BranchCall, CpuBranch, Execution, ExecutionError,
     Export, ExportLen, Expr, ExprCPool, ExprDisVar, ExprElement,
     ExprIntDynamic, ExprNew, ExprUnaryOp, ExprValue, FieldSize, LocalGoto,
-    MemWrite, MemoryLocation, Reference, Statement, UserCall,
+    MacroParamAssignment, MemWrite, MemoryLocation, Reference, Statement,
+    UserCall,
 };
 
 #[derive(Clone, Debug)]
@@ -379,24 +380,13 @@ pub trait ExecutionBuilder {
                     let old_var_id = pmacro.params[param_id];
                     let new_var = &variables_map[old_var_id.0];
                     match new_var {
-                        VariableAlias::Parameter(variable_id) => {
-                            let location = &pmacro
-                                .execution
-                                .variable(pmacro.params[param_id])
-                                .src;
-                            self.insert_statement(Statement::Assignment(
-                                Assignment::new(
-                                    location.clone(),
-                                    WriteValue::Local {
-                                        id: *variable_id,
-                                        creation: true,
-                                    },
-                                    None,
-                                    location.clone(),
+                        VariableAlias::Parameter(variable_id) => self
+                            .insert_statement(Statement::MacroParamAssignment(
+                                MacroParamAssignment::new(
+                                    *variable_id,
                                     param.clone(),
                                 ),
-                            ));
-                        }
+                            )),
                         VariableAlias::SubVarnode(_, _)
                         | VariableAlias::Alias(_)
                         | VariableAlias::NewVariable(_) => {}
@@ -467,6 +457,25 @@ pub trait ExecutionBuilder {
                                     op: x.op.clone().or(op),
                                     ..x.clone()
                                 })
+                            }
+                            Statement::MacroParamAssignment(x) => {
+                                let var = match variables_map[x.var.0] {
+                                    // TODO error, can't assign a value to anything other then a variable
+                                    VariableAlias::SubVarnode(_, _)
+                                    | VariableAlias::Parameter(_)
+                                    | VariableAlias::Alias(_) => panic!(),
+                                    VariableAlias::NewVariable(id) => id,
+                                };
+
+                                Statement::MacroParamAssignment(
+                                    MacroParamAssignment::new(
+                                        var,
+                                        translate_expr(
+                                            &x.right,
+                                            &variables_map,
+                                        ),
+                                    ),
+                                )
                             }
                             Statement::MemWrite(x) => {
                                 Statement::MemWrite(MemWrite {

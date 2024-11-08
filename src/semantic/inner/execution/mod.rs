@@ -56,6 +56,8 @@ pub enum Statement {
     Declare(VariableId),
     Assignment(Assignment),
     MemWrite(MemWrite),
+    // NOTE this only exits to facilitate the inlining of macros
+    MacroParamAssignment(MacroParamAssignment),
 }
 
 impl Statement {
@@ -77,6 +79,9 @@ impl Statement {
             Self::LocalGoto(x) => x.solve(sleigh, execution, solved)?,
             Self::UserCall(x) => x.solve(sleigh, execution, solved)?,
             Self::Assignment(x) => x.solve(sleigh, execution, solved)?,
+            Self::MacroParamAssignment(x) => {
+                x.solve(sleigh, execution, solved)?
+            }
             Self::MemWrite(x) => x.solve(sleigh, execution, solved)?,
         }
         Ok(())
@@ -92,6 +97,7 @@ impl Statement {
             Self::Build(x) => New::Build(x),
             Self::Declare(x) => New::Declare(x),
             Self::Assignment(x) => New::Assignment(x.convert()),
+            Self::MacroParamAssignment(x) => New::Assignment(x.convert()),
             Self::MemWrite(x) => New::MemWrite(x.convert()),
         }
     }
