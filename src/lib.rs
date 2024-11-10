@@ -991,7 +991,7 @@ mod test {
     fn parse_all() {
         const ARCHS: &[&str] = &[
             "Atmel/data/languages/avr8eind.slaspec",
-            //"x86/data/languages/x86.slaspec",
+            //"x85/data/languages/x86.slaspec",
             //"x86/data/languages/x86-64.slaspec",
             "CP1600/data/languages/CP1600.slaspec",
             "SuperH/data/languages/sh-2.slaspec",
@@ -1030,7 +1030,7 @@ mod test {
             "HCS12/data/languages/HCS12X.slaspec",
             "HCS12/data/languages/HC12.slaspec",
             "HCS12/data/languages/HCS12.slaspec",
-            //"8048/data/languages/8048.slaspec",
+            "8048/data/languages/8048.slaspec",
             // TODO: cpool
             //"JVM/data/languages/JVM.slaspec",
             //"Dalvik/data/languages/Dalvik_DEX_Oreo.slaspec",

@@ -58,7 +58,7 @@ impl Assignment {
             solved.i_did_a_thing();
         }
 
-        // add auto truncate in mem deref
+        // add auto truncate in simple bitand expr
         if hack_auto_fix_bitrange_with_bitand(self, sleigh, execution) {
             solved.i_did_a_thing();
         }
@@ -387,53 +387,21 @@ fn hack_solve_simple_bin_ands(
 
 fn hack_auto_fix_bitrange_with_bitand(
     ass: &mut Assignment,
-    _sleigh: &Sleigh,
-    _execution: &Execution,
+    sleigh: &Sleigh,
+    execution: &Execution,
 ) -> bool {
     // left side need to be a bitrange op
     let Some(AssignmentOp::BitRange(bitrange)) = &ass.op else {
         return false;
     };
+    let range = bitrange.end - bitrange.start;
 
-    // right side need to end with BitAnd with a number
-    let Expr::Op(ExprBinaryOp {
-        op: Binary::BitAnd,
-        left,
-        right,
-        ..
-    }) = &mut ass.right
+    // right side need to be bigger then the left side
+    let Some(right_size) = ass.right.size(sleigh, execution).final_value()
     else {
         return false;
     };
-    let number = match (&mut **left, &mut **right) {
-        (
-            Expr::Value(ExprElement::Value {
-                location: _,
-                value:
-                    super::ExprValue::Int(super::ExprNumber { size: _, number }),
-            }),
-            _,
-        )
-        | (
-            _,
-            Expr::Value(ExprElement::Value {
-                location: _,
-                value:
-                    super::ExprValue::Int(super::ExprNumber { size: _, number }),
-            }),
-        ) => *number,
-        _ => return false,
-    };
-
-    let Some(number) = number.as_unsigned() else {
-        return false;
-    };
-    // the number need to match the exact number of bits
-    let range = bitrange.end - bitrange.start;
-    if range > 64 {
-        return false;
-    }
-    if number != u64::MAX >> (u64::BITS - range as u32) {
+    if right_size.get() <= range {
         return false;
     }
 
