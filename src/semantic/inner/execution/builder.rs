@@ -372,8 +372,7 @@ pub trait ExecutionBuilder {
                     };
 
                 // mapping variable -> execution variable
-                let variables_map =
-                    map_variables(&pmacro, &params, self.execution_mut());
+                let variables_map = self.map_variables(&pmacro, &params);
 
                 // assign the values to the params
                 for (param_id, param) in params.iter().enumerate() {
@@ -1043,6 +1042,121 @@ pub trait ExecutionBuilder {
             location: input.src.clone(),
         })
     }
+
+    #[allow(private_interfaces)]
+    fn map_variables<'a>(
+        &mut self,
+        pmacro: &PcodeMacro,
+        params: &'a [Expr],
+    ) -> Vec<VariableAlias<'a>> {
+        pmacro
+            .execution
+            .variables
+            .iter()
+            .enumerate()
+            .map(|(var_id, var)| {
+                let var_id = VariableId(var_id);
+                // if the variable is a parameter and the parameter is a value,
+                // just make the variable an alias to the original value
+                let param_id = pmacro
+                    .params
+                    .iter()
+                    .position(|param_id| *param_id == var_id);
+                if let Some(param_id) = param_id {
+                    let param = &params[param_id];
+                    // HACK if the parameter is a single value, the param is simply
+                    // replaced
+                    if let Expr::Value(ExprElement::Value {
+                        location: _,
+                        value,
+                    }) = param
+                    {
+                        return VariableAlias::Alias(value);
+                    }
+
+                    // a varnode with bitrange, became a bitrange assignment
+                    if let Expr::Value(ExprElement::Op(ExprUnaryOp {
+                        op: Unary::BitRange { range, .. },
+                        input,
+                        ..
+                    })) = param
+                    {
+                        // NOTE this only apply to:
+                        // * Varnode
+                        // * TokenField that that translate to varnode
+                        // * Table that export a memory location
+                        match &**input {
+                            Expr::Value(ExprElement::Value {
+                                value: value @ ExprValue::Varnode(_),
+                                ..
+                            }) => {
+                                return VariableAlias::SubVarnode(
+                                    value,
+                                    range.clone(),
+                                )
+                            }
+                            Expr::Value(ExprElement::Value {
+                                value: value @ ExprValue::TokenField(tf_expr),
+                                ..
+                            }) => {
+                                let tf = self.sleigh().token_field(tf_expr.id);
+                                if let Some(
+                                    crate::token::TokenFieldAttach::Varnode(_),
+                                ) = tf.attach
+                                {
+                                    return VariableAlias::SubVarnode(
+                                        value,
+                                        range.clone(),
+                                    );
+                                }
+                            }
+                            Expr::Value(ExprElement::Value {
+                                value: value @ ExprValue::Table(table_id),
+                                ..
+                            }) => {
+                                let table = self.sleigh().table(*table_id);
+                                let table_export = table.export.borrow();
+                                if let Some(ExportLen::Reference(_)) =
+                                    &*table_export
+                                {
+                                    return VariableAlias::SubVarnode(
+                                        value,
+                                        range.clone(),
+                                    );
+                                }
+                            }
+                            // can't translate anything else into a writable bitrange
+                            _ => {}
+                        }
+                    }
+
+                    // otherwise just create a variable and assign the param value to it
+                    let id = self
+                        .execution_mut()
+                        .create_variable(
+                            format!("{}_{}", &pmacro.name, &var.name),
+                            var.src.clone(),
+                            Some(var.size.get()),
+                            var.explicit,
+                        )
+                        .unwrap();
+                    VariableAlias::Parameter(id)
+                } else {
+                    // if just a variable, create a new variable
+                    let id = self
+                        .execution_mut()
+                        .create_variable(
+                            format!("{}_{}", &pmacro.name, &var.name),
+                            var.src.clone(),
+                            Some(var.size.get()),
+                            var.explicit,
+                        )
+                        .unwrap();
+                    VariableAlias::NewVariable(id)
+                }
+            })
+            .collect()
+    }
 }
 
 fn reference_scope(
@@ -1122,89 +1236,6 @@ enum VariableAlias<'a> {
     SubVarnode(&'a ExprValue, Range<NumberUnsigned>),
     Parameter(VariableId),
     NewVariable(VariableId),
-}
-
-fn map_variables<'a>(
-    pmacro: &PcodeMacro,
-    params: &'a [Expr],
-    execution: &mut Execution,
-) -> Vec<VariableAlias<'a>> {
-    pmacro
-        .execution
-        .variables
-        .iter()
-        .enumerate()
-        .map(|(var_id, var)| {
-            let var_id = VariableId(var_id);
-            // if the variable is a parameter and the parameter is a value,
-            // just make the variable an alias to the original value
-            let param_id = pmacro
-                .params
-                .iter()
-                .position(|param_id| *param_id == var_id);
-            if let Some(param_id) = param_id {
-                match &params[param_id] {
-                    // HACK those exeptions are not listed
-                    // if the parameter is a single value, the param is simply
-                    // replaced
-                    Expr::Value(ExprElement::Value { location: _, value }) => {
-                        VariableAlias::Alias(value)
-                    }
-                    // a varnode with bitrange, became a bitrange assignment
-                    Expr::Value(ExprElement::Op(ExprUnaryOp {
-                        op:
-                            Unary::BitRange {
-                                range: bit,
-                                size: _,
-                            },
-                        input,
-                        ..
-                    })) if matches!(
-                        &input.as_ref(),
-                        Expr::Value(ExprElement::Value {
-                            location: _,
-                            value: ExprValue::Varnode(_)
-                                | ExprValue::TokenField(_),
-                        })
-                    ) =>
-                    {
-                        let Expr::Value(ExprElement::Value {
-                            location: _,
-                            value:
-                                value @ (ExprValue::Varnode(_)
-                                | ExprValue::TokenField(_)),
-                        }) = &input.as_ref()
-                        else {
-                            unreachable!();
-                        };
-                        VariableAlias::SubVarnode(value, bit.clone())
-                    }
-                    _ => {
-                        let id = execution
-                            .create_variable(
-                                format!("{}_{}", &pmacro.name, &var.name),
-                                var.src.clone(),
-                                Some(var.size.get()),
-                                var.explicit,
-                            )
-                            .unwrap();
-                        VariableAlias::Parameter(id)
-                    }
-                }
-            } else {
-                // if just a variable, create a new variable
-                let id = execution
-                    .create_variable(
-                        format!("{}_{}", &pmacro.name, &var.name),
-                        var.src.clone(),
-                        Some(var.size.get()),
-                        var.explicit,
-                    )
-                    .unwrap();
-                VariableAlias::NewVariable(id)
-            }
-        })
-        .collect()
 }
 
 fn translate_expr(expr: &Expr, variables_map: &[VariableAlias<'_>]) -> Expr {
@@ -1350,7 +1381,11 @@ fn translate_write(
                 };
                 (value, Some(AssignmentOp::BitRange(bits)))
             }
-            VariableAlias::SubVarnode(_, _) => todo!(),
+            VariableAlias::SubVarnode(ExprValue::Table(table_id), bits) => {
+                let value = WriteValue::TableExport(*table_id);
+                (value, Some(AssignmentOp::BitRange(bits)))
+            }
+            VariableAlias::SubVarnode(_, _) => unreachable!(),
             VariableAlias::Alias(value) => {
                 match value {
                     // TODO verify those assumptions
