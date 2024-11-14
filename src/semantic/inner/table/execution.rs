@@ -131,7 +131,13 @@ impl ExecutionBuilder for Builder<'_> {
                     attach_id,
                 })
             }
-            GlobalScope::Table(table) => Ok(WriteValue::TableExport(table)),
+            GlobalScope::Table(table_id) => {
+                crate::semantic::inner::execution::table_write(
+                    self.sleigh(),
+                    table_id,
+                    src,
+                )
+            }
             _ => Err(Box::new(ExecutionError::InvalidRef(src.clone()))),
         }
     }

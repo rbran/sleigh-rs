@@ -21,10 +21,9 @@ use crate::{
 
 use super::{
     Assignment, AssignmentOp, BranchCall, CpuBranch, Execution, ExecutionError,
-    Export, ExportLen, Expr, ExprCPool, ExprDisVar, ExprElement,
-    ExprIntDynamic, ExprNew, ExprUnaryOp, ExprValue, FieldSize, LocalGoto,
-    MacroParamAssignment, MemWrite, MemoryLocation, Reference, Statement,
-    UserCall,
+    Export, Expr, ExprCPool, ExprDisVar, ExprElement, ExprIntDynamic, ExprNew,
+    ExprUnaryOp, ExprValue, FieldSize, LocalGoto, MacroParamAssignment,
+    MemWrite, MemoryLocation, Reference, Statement, TableExportType, UserCall,
 };
 
 #[derive(Clone, Debug)]
@@ -251,7 +250,7 @@ pub trait ExecutionBuilder {
             //short circuit, AKA invalid combination of return types
             None => return Err(Box::new(ExecutionError::InvalidExport)),
             //there are no returns
-            Some(None) => ExportLen::None,
+            Some(None) => TableExportType::None,
             //some return type
             Some(Some(ret)) => ret,
         };
@@ -440,8 +439,9 @@ pub trait ExecutionBuilder {
                                 let (var, op) = translate_write(
                                     self.sleigh(),
                                     &x.var,
+                                    &x.location,
                                     &variables_map,
-                                );
+                                )?;
                                 if let Some((_new_op, _old_op)) =
                                     op.as_ref().zip(x.op.as_ref())
                                 {
@@ -1116,8 +1116,11 @@ pub trait ExecutionBuilder {
                             }) => {
                                 let table = self.sleigh().table(*table_id);
                                 let table_export = table.export.borrow();
-                                if let Some(ExportLen::Reference(_)) =
-                                    &*table_export
+                                if let Some(TableExportType::Reference {
+                                    len: _,
+                                    space: _,
+                                    also_values: _,
+                                }) = &*table_export
                                 {
                                     return VariableAlias::SubVarnode(
                                         value,
@@ -1355,15 +1358,16 @@ fn translate_value(
 fn translate_write(
     sleigh: &Sleigh,
     expr: &WriteValue,
+    location: &Span,
     variables_map: &[VariableAlias<'_>],
-) -> (WriteValue, Option<AssignmentOp>) {
+) -> Result<(WriteValue, Option<AssignmentOp>), Box<ExecutionError>> {
     match expr {
         WriteValue::Local { id, creation: _ } => match variables_map[id.0]
             .clone()
         {
             VariableAlias::SubVarnode(ExprValue::Varnode(varnode), bits) => {
                 let value = WriteValue::Varnode(*varnode);
-                (value, Some(AssignmentOp::BitRange(bits)))
+                Ok((value, Some(AssignmentOp::BitRange(bits))))
             }
             VariableAlias::SubVarnode(
                 ExprValue::TokenField(token_id),
@@ -1379,11 +1383,11 @@ fn translate_write(
                     token_field_id: token_id.id,
                     attach_id,
                 };
-                (value, Some(AssignmentOp::BitRange(bits)))
+                Ok((value, Some(AssignmentOp::BitRange(bits))))
             }
             VariableAlias::SubVarnode(ExprValue::Table(table_id), bits) => {
-                let value = WriteValue::TableExport(*table_id);
-                (value, Some(AssignmentOp::BitRange(bits)))
+                let value = table_write(sleigh, *table_id, location)?;
+                Ok((value, Some(AssignmentOp::BitRange(bits))))
             }
             VariableAlias::SubVarnode(_, _) => unreachable!(),
             VariableAlias::Alias(value) => {
@@ -1401,11 +1405,11 @@ fn translate_write(
                             id: *id,
                             creation: false,
                         };
-                        (value, None)
+                        Ok((value, None))
                     }
                     ExprValue::Varnode(id) => {
                         let value = WriteValue::Varnode(*id);
-                        (value, None)
+                        Ok((value, None))
                     }
                     ExprValue::TokenField(tf_expr) => {
                         let token_field = sleigh.token_field(tf_expr.id);
@@ -1419,7 +1423,7 @@ fn translate_write(
                             token_field_id: tf_expr.id,
                             attach_id,
                         };
-                        (value, None)
+                        Ok((value, None))
                     }
                     ExprValue::VarnodeDynamic(ExprVarnodeDynamic {
                         attach_id,
@@ -1430,7 +1434,7 @@ fn translate_write(
                             token_field_id: *token_field_id,
                             attach_id: *attach_id,
                         };
-                        (value, None)
+                        Ok((value, None))
                     }
                     ExprValue::VarnodeDynamic(ExprVarnodeDynamic {
                         attach_id: _,
@@ -1439,25 +1443,47 @@ fn translate_write(
                         todo!();
                     }
                     ExprValue::Table(id) => {
-                        let value = WriteValue::TableExport(*id);
-                        (value, None)
+                        let table = table_write(sleigh, *id, location)?;
+                        Ok((table, None))
                     }
                     ExprValue::IntDynamic(ExprIntDynamic { .. }) => {
                         panic!()
                     }
                 }
             }
-            VariableAlias::Parameter(id) | VariableAlias::NewVariable(id) => (
-                WriteValue::Local {
-                    id,
-                    creation: false,
-                },
-                None,
-            ),
+            VariableAlias::Parameter(id) | VariableAlias::NewVariable(id) => {
+                Ok((
+                    WriteValue::Local {
+                        id,
+                        creation: false,
+                    },
+                    None,
+                ))
+            }
         },
         x @ (WriteValue::Varnode(_)
         | WriteValue::Bitrange(_)
         | WriteValue::TokenField { .. }
-        | WriteValue::TableExport(_)) => (x.clone(), None),
+        | WriteValue::TableExport(_)) => Ok((x.clone(), None)),
     }
+}
+
+pub fn table_write(
+    sleigh: &Sleigh,
+    table_id: TableId,
+    location: &Span,
+) -> Result<WriteValue, Box<ExecutionError>> {
+    let table = sleigh.table(table_id);
+    let table = table.export.borrow();
+    let Some(TableExportType::Reference {
+        len: _,
+        space: _,
+        also_values: _,
+    }) = &*table
+    else {
+        return Err(Box::new(ExecutionError::WriteInvalidTable(
+            location.clone(),
+        )));
+    };
+    Ok(WriteValue::TableExport(table_id))
 }

@@ -13,7 +13,7 @@ use crate::{
 
 use super::disassembly;
 use super::execution::{
-    Execution, ExecutionBuilder, ExportLen, FieldSize, FieldSizeMut,
+    Execution, ExecutionBuilder, FieldSize, FieldSizeMut, TableExportType,
 };
 use super::pattern::{Pattern, PatternWalker};
 use super::with_block::WithBlockCurrent;
@@ -37,7 +37,7 @@ pub struct Table {
     //None means no constructors is able to define the return type, because
     //this table is empty or contructors are all `unimpl`.
     //Some(ExecutionExport::None) mean that this table doesn't export
-    pub export: RefCell<Option<ExportLen>>,
+    pub export: RefCell<Option<TableExportType>>,
 
     //HACK: pattern indirect recursion helper
     pub pattern_recursion_checked: RefCell<bool>,
@@ -386,7 +386,11 @@ impl Table {
         FinalTable {
             is_root: self.is_root,
             constructors,
-            export: self.export.borrow().unwrap_or_default().convert(),
+            export: self
+                .export
+                .borrow()
+                .unwrap_or(TableExportType::None)
+                .convert(),
             pattern_len: self.pattern_len.get().unwrap(),
             name: self.name.into(),
             matcher_order: matcher_order.into(),

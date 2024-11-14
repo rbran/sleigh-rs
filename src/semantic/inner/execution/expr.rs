@@ -21,8 +21,8 @@ use crate::{
 };
 
 use super::{
-    Execution, ExportLen, FieldSizeMut, FieldSizeUnmutable, MemoryLocation,
-    ReadScope, UserCall,
+    Execution, FieldSizeMut, FieldSizeUnmutable, MemoryLocation, ReadScope,
+    TableExportType, UserCall,
 };
 
 macro_rules! mark_unfinished_size {
@@ -390,11 +390,10 @@ impl ExprElement {
                 let table = sleigh.table(table.id);
                 match table.export.borrow().as_ref().unwrap_or_else(|| todo!())
                 {
-                    ExportLen::Reference(_) => (/*TODO*/),
-                    ExportLen::None
-                    | ExportLen::Const(_)
-                    | ExportLen::Value(_)
-                    | ExportLen::Multiple(_) => (/*TODO*/),
+                    TableExportType::Reference { .. } => (/*TODO*/),
+                    TableExportType::None
+                    | TableExportType::Const(_)
+                    | TableExportType::Value(_) => (/*TODO*/),
                 }
             }
             Self::Reference(Reference {

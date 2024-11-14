@@ -515,6 +515,9 @@ pub enum ExecutionError {
     #[error("Call user Function with invalid return Size {0}")]
     UserFunctionReturnSize(Span),
 
+    #[error("Can't write to this type of table export {0}")]
+    WriteInvalidTable(Span),
+
     //TODO remove this
     #[error("Invalid amb1: {0}")]
     InvalidAmb1(Span),
@@ -991,7 +994,7 @@ mod test {
     fn parse_all() {
         const ARCHS: &[&str] = &[
             "Atmel/data/languages/avr8eind.slaspec",
-            //"x85/data/languages/x86.slaspec",
+            //"x86/data/languages/x86.slaspec",
             //"x86/data/languages/x86-64.slaspec",
             "CP1600/data/languages/CP1600.slaspec",
             "SuperH/data/languages/sh-2.slaspec",

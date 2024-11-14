@@ -39,7 +39,7 @@ pub struct Execution {
     pub variables: Vec<Variable>,
     pub blocks: Vec<Block>,
 
-    pub return_value: ExportLen,
+    pub return_value: TableExportType,
 
     //entry_block have no name and is not on self.labels
     pub entry_block: BlockId,
@@ -113,7 +113,7 @@ impl Execution {
             src,
             blocks: vec![entry_block],
             variables: vec![],
-            return_value: ExportLen::default(),
+            return_value: TableExportType::None,
             entry_block: BlockId(0),
         }
     }

@@ -32,6 +32,7 @@ impl Assignment {
         location: Span,
         right: Expr,
     ) -> Self {
+        // TODO table export can't be writen if is value or const
         Self {
             var_location,
             var,

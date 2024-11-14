@@ -439,6 +439,14 @@ pub enum Export {
     Value(Expr),
     /// Reference to a memory
     Reference { addr: Expr, memory: MemoryLocation },
+    /// a value that translate into a varnode (AKA reference)
+    AttachVarnode {
+        location: Span,
+        attach_value: DynamicValueType,
+        attach_id: AttachVarnodeId,
+    },
+    /// a subtable re-exported
+    Table { location: Span, table_id: TableId },
 }
 
 impl Export {
@@ -452,6 +460,15 @@ impl Export {
             Export::Value(value) => value.len_bits(sleigh, execution),
             Export::Reference { addr: _, memory } => {
                 (memory.len_bytes.get() * 8).try_into().unwrap()
+            }
+            Export::AttachVarnode { attach_id, .. } => {
+                (sleigh.attach_varnodes_len_bytes(*attach_id).get() * 8)
+                    .try_into()
+                    .unwrap()
+            }
+            Export::Table { table_id, .. } => {
+                let table = sleigh.table(*table_id);
+                table.export.unwrap().len()
             }
         }
     }

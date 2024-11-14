@@ -1,39 +1,44 @@
+use crate::execution::DynamicValueType;
 use crate::semantic::execution::ExportLen as FinalExportLen;
 use crate::semantic::execution::{Export as FinalExport, ExportConst};
 use crate::semantic::inner::pattern::Pattern;
 use crate::semantic::inner::{Sleigh, SolverStatus};
 use crate::syntax::block::execution::op::ByteRangeLsb;
 use crate::{
-    ExecutionError, Number, NumberNonZeroUnsigned, Span, VarSizeError,
+    AttachVarnodeId, ExecutionError, Number, NumberNonZeroUnsigned, SpaceId,
+    Span, TableId, VarSizeError,
 };
 
 use super::{
     Execution, Expr, ExprElement, ExprNumber, ExprValue, FieldSize,
-    FieldSizeMut, MemoryLocation, ReadScope,
+    FieldSizeMut, FieldSizeTableExport, FieldSizeUnmutable, MemoryLocation,
+    ReadScope,
 };
 
 /// Changes allowed:
 /// Const -> Value -> Reference -> Multiple
-#[derive(Clone, Copy, Debug, Default)]
-pub enum ExportLen {
+#[derive(Clone, Copy, Debug)]
+pub enum TableExportType {
     //don't return
-    #[default]
     None,
     // value that is known at Dissassembly time
     Const(FieldSize),
     // value that can be know at execution time
     Value(FieldSize),
     // References/registers and other mem locations, all with the same size
-    Reference(FieldSize),
-    // multiple source, can by any kind of return, value or address,
-    // but all with the same size
-    Multiple(FieldSize),
+    Reference {
+        len: FieldSize,
+        // None means multiple diferent SpaceIds used
+        space: Option<SpaceId>,
+        // mean some constructors also export values
+        also_values: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
 pub enum Export {
     Const {
-        len_bits: FieldSize,
+        len: FieldSize,
         location: Span,
         export: ExportConst,
     },
@@ -42,62 +47,99 @@ pub enum Export {
         addr: Expr,
         memory: MemoryLocation,
     },
+    AttachVarnode {
+        location: Span,
+        attach_value: DynamicValueType,
+        attach_id: AttachVarnodeId,
+    },
+    Table {
+        location: Span,
+        table_id: TableId,
+    },
 }
 
-impl ExportLen {
+impl TableExportType {
     pub fn export_nothing(&self) -> bool {
         matches!(self, Self::None)
     }
     pub fn size(&self) -> Option<&FieldSize> {
         match self {
             Self::None => None,
-            Self::Const(size)
-            | Self::Value(size)
-            | Self::Reference(size)
-            | Self::Multiple(size) => Some(size),
+            Self::Const(len)
+            | Self::Value(len)
+            | Self::Reference { len, .. } => Some(len),
         }
     }
     pub fn size_mut(&mut self) -> Option<&mut FieldSize> {
         match self {
             Self::None => None,
-            Self::Const(size)
-            | Self::Value(size)
-            | Self::Reference(size)
-            | Self::Multiple(size) => Some(size),
-        }
-    }
-    fn set_len(self, other_len: FieldSize) -> Option<Self> {
-        match self {
-            Self::None => None,
-            Self::Const(len) => Some(Self::Const(len.intersection(other_len)?)),
-            Self::Value(len) => Some(Self::Value(len.intersection(other_len)?)),
-            Self::Reference(len) => {
-                Some(Self::Reference(len.intersection(other_len)?))
-            }
-            Self::Multiple(len) => {
-                Some(Self::Multiple(len.intersection(other_len)?))
-            }
+            Self::Const(len)
+            | Self::Value(len)
+            | Self::Reference { len, .. } => Some(len),
         }
     }
     pub fn combine(self, other: Self) -> Option<Self> {
         match (self, other) {
             //if both return nothing, the result is to return nothing
             (Self::None, Self::None) => Some(Self::None),
+            // one constructor exporting and other don't is forbidden
             (Self::None, _) | (_, Self::None) => None,
-            // const can be transformed into anything else, as long its the
-            // same len
-            (Self::Const(len_a), type_b) | (type_b, Self::Const(len_a)) => {
-                type_b.set_len(len_a)
+
+            // both constants become a constant
+            (Self::Const(len_a), Self::Const(len_b)) => {
+                Some(Self::Const(len_a.intersection(len_b)?))
             }
-            // Value can be anything but Const
-            (Self::Value(len_a), type_b) | (type_b, Self::Value(len_a)) => {
-                type_b.set_len(len_a)
-            }
-            (Self::Reference(len_a), type_b)
-            | (type_b, Self::Reference(len_a)) => type_b.set_len(len_a),
-            (Self::Multiple(len_a), Self::Multiple(len_b)) => {
-                Some(Self::Multiple(len_a.intersection(len_b)?))
-            }
+
+            // if one value and a constant, result in a value
+            (
+                Self::Const(len_a) | Self::Value(len_a),
+                Self::Const(len_b) | Self::Value(len_b),
+            ) => Some(Self::Value(len_a.intersection(len_b)?)),
+
+            // export a reference and also a value
+            (
+                Self::Value(len_a) | Self::Const(len_a),
+                Self::Reference {
+                    len,
+                    space,
+                    also_values: _,
+                },
+            )
+            | (
+                Self::Reference {
+                    len,
+                    space,
+                    also_values: _,
+                },
+                Self::Value(len_a) | Self::Const(len_a),
+            ) => Some(Self::Reference {
+                len: len_a.intersection(len)?,
+                space,
+                also_values: true,
+            }),
+
+            // combine both references
+            (
+                Self::Reference {
+                    len,
+                    space,
+                    also_values,
+                },
+                Self::Reference {
+                    len: other_len,
+                    space: other_space,
+                    also_values: other_also_values,
+                },
+            ) => Some(Self::Reference {
+                len: len.intersection(other_len)?,
+                // only if both uses the same space
+                space: space
+                    .zip(other_space)
+                    .filter(|(a, b)| a == b)
+                    .map(|(a, _b)| a),
+                // if one export values, result also do
+                also_values: also_values | other_also_values,
+            }),
         }
     }
     //TODO from Option into a Result
@@ -106,24 +148,20 @@ impl ExportLen {
             Self::None => None,
             Self::Const(len) => Some(len.possible_value().unwrap()),
             Self::Value(len) => Some(len.possible_value().unwrap()),
-            Self::Reference(len) => Some(len.possible_value().unwrap()),
-            Self::Multiple(len) => Some(len.possible_value().unwrap()),
+            Self::Reference { len, .. } => Some(len.possible_value().unwrap()),
         }
     }
     pub fn convert(self) -> Option<FinalExportLen> {
         match self {
-            ExportLen::None => None,
-            ExportLen::Const(x) => {
+            Self::None => None,
+            Self::Const(x) => {
                 Some(FinalExportLen::Const(x.possible_value().unwrap()))
             }
-            ExportLen::Value(x) => {
+            Self::Value(x) => {
                 Some(FinalExportLen::Value(x.possible_value().unwrap()))
             }
-            ExportLen::Reference(x) => {
-                Some(FinalExportLen::Reference(x.possible_value().unwrap()))
-            }
-            ExportLen::Multiple(x) => {
-                Some(FinalExportLen::Multiple(x.possible_value().unwrap()))
+            Self::Reference { len, .. } => {
+                Some(FinalExportLen::Reference(len.possible_value().unwrap()))
             }
         }
     }
@@ -139,15 +177,15 @@ impl ExportConst {
         match read_scope {
             ExeVar(var) => Ok(ExportConst::ExeVar(var)),
             DisVar(var) => Ok(ExportConst::DisVar(var)),
-            TokenField(ass) => Ok(ExportConst::TokenField(ass)),
-            Context(cont) => Ok(ExportConst::Context(cont)),
+            TokenField(tf_id) => Ok(ExportConst::TokenField(tf_id)),
+            Context(ctx_id) => Ok(ExportConst::Context(ctx_id)),
             InstStart => Ok(ExportConst::InstructionStart),
             Table(expr_table) => {
                 let table = sleigh.table(expr_table);
                 match *table.export.borrow() {
-                    Some(ExportLen::Const(_) | ExportLen::Value(_)) => {
-                        Ok(ExportConst::Table(expr_table))
-                    }
+                    Some(
+                        TableExportType::Const(_) | TableExportType::Value(_),
+                    ) => Ok(ExportConst::Table(expr_table)),
                     //TODO more specific error
                     //a const can only export const or context
                     Some(_) => Err(Box::new(ExecutionError::InvalidRef(
@@ -194,9 +232,37 @@ impl Export {
                     },
                 )
             }
+
+            // if the value is just an token_field or context that translate to varnode,
+            // then is actually a reference
+            Expr::Value(ExprElement::Value {
+                location,
+                value: ExprValue::VarnodeDynamic(var_dyn),
+            }) => Ok(Export::AttachVarnode {
+                location: location.clone(),
+                attach_value: var_dyn.attach_value,
+                attach_id: var_dyn.attach_id,
+            }),
+
+            // exporting a table don't change the inner exported value
+            Expr::Value(ExprElement::Value {
+                location,
+                value: ExprValue::Table(table_id),
+            }) => {
+                let table = sleigh.table(table_id);
+                match *table.export.borrow() {
+                    // don't allow export a table that don't export
+                    Some(TableExportType::None) | None => Err(Box::new(
+                        ExecutionError::WriteInvalidTable(location),
+                    )),
+                    _ => Ok(Export::Table { table_id, location }),
+                }
+            }
+
             expr => Ok(Self::Value(expr)),
         }
     }
+
     pub fn new_const(
         sleigh: &Sleigh,
         _pattern: &Pattern,
@@ -219,7 +285,7 @@ impl Export {
         //}
         let size = FieldSize::new_bytes(size);
         Ok(Self::Const {
-            len_bits: size,
+            len: size,
             location: src,
             export: value,
         })
@@ -269,19 +335,47 @@ impl Export {
         &self,
         sleigh: &Sleigh,
         execution: &Execution,
-    ) -> ExportLen {
+    ) -> TableExportType {
         match self {
             Export::Value(value) => {
-                ExportLen::Value(value.size(sleigh, execution))
+                TableExportType::Value(value.size(sleigh, execution))
             }
             Export::Reference { addr: _, memory } => {
-                ExportLen::Reference(memory.size)
+                TableExportType::Reference {
+                    len: memory.size,
+                    space: Some(memory.space),
+                    also_values: false,
+                }
             }
             Export::Const {
-                len_bits: len,
+                len,
                 location: _,
                 export: _,
-            } => ExportLen::Const(*len),
+            } => TableExportType::Const(*len),
+
+            Export::AttachVarnode {
+                attach_value: _,
+                location: _,
+                attach_id,
+            } => {
+                let attach_bytes = sleigh.attach_varnodes_len_bytes(*attach_id);
+                let attach_varnodes = sleigh.attach_varnode(*attach_id);
+                let varnode_id = attach_varnodes.0[0].1;
+                let varnode = sleigh.varnode(varnode_id);
+                TableExportType::Reference {
+                    len: FieldSize::new_bytes(attach_bytes),
+                    space: Some(varnode.space),
+                    also_values: false,
+                }
+            }
+
+            Export::Table {
+                table_id,
+                location: _,
+            } => {
+                let table = sleigh.table(*table_id);
+                table.export.borrow().to_owned().unwrap()
+            }
         }
     }
     pub fn src(&self) -> &Span {
@@ -289,9 +383,12 @@ impl Export {
             Self::Value(expr) | Export::Reference { addr: expr, .. } => {
                 expr.src()
             }
-            Self::Const { location, .. } => location,
+            Self::Table { location, .. }
+            | Self::Const { location, .. }
+            | Export::AttachVarnode { location, .. } => location,
         }
     }
+    #[deprecated]
     pub fn output_size(
         &self,
         sleigh: &Sleigh,
@@ -301,7 +398,18 @@ impl Export {
             Self::Value(expr) => expr.size(sleigh, execution),
             //TODO verify this
             Self::Reference { addr: _, memory } => memory.size,
-            Self::Const { len_bits: len, .. } => *len,
+            Self::Const { len, .. } => *len,
+            Self::AttachVarnode { attach_id, .. } => {
+                let attach_bytes = sleigh.attach_varnodes_len_bytes(*attach_id);
+                FieldSize::new_bytes(attach_bytes)
+            }
+            Self::Table {
+                table_id,
+                location: _,
+            } => {
+                let table = sleigh.table(*table_id);
+                *table.export.borrow().unwrap().size().unwrap()
+            }
         }
     }
     pub fn output_size_mut<'a>(
@@ -313,7 +421,20 @@ impl Export {
             Self::Value(expr) => expr.size_mut(sleigh, variables),
             //TODO verify this
             Self::Reference { addr: _, memory } => Box::new(&mut memory.size),
-            Self::Const { len_bits, .. } => Box::new(len_bits),
+            Self::Const { len: len_bits, .. } => Box::new(len_bits),
+            Self::AttachVarnode { attach_id, .. } => {
+                let attach_bytes = sleigh.attach_varnodes_len_bytes(*attach_id);
+                Box::new(FieldSizeUnmutable::from(FieldSize::new_bytes(
+                    attach_bytes,
+                )))
+            }
+            Self::Table {
+                location: _,
+                table_id,
+            } => {
+                let table = sleigh.table(*table_id);
+                Box::new(FieldSizeTableExport(&table.export))
+            }
         }
     }
     pub fn solve(
@@ -323,7 +444,7 @@ impl Export {
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
         match self {
-            Self::Const { .. } => Ok(()),
+            Self::AttachVarnode { .. } | Self::Const { .. } => Ok(()),
             Self::Value(expr) => expr.solve(sleigh, execution, solved),
             Self::Reference { addr, memory } => {
                 addr.solve(sleigh, execution, solved)?;
@@ -333,12 +454,13 @@ impl Export {
                 }
                 Ok(())
             }
+            Self::Table { .. } => Ok(()),
         }
     }
     pub fn convert(self) -> FinalExport {
         match self {
             Self::Const {
-                len_bits,
+                len: len_bits,
                 location,
                 export,
             } => FinalExport::Const {
@@ -351,6 +473,19 @@ impl Export {
                 addr: addr.convert(),
                 memory: memory.convert(),
             },
+            Self::AttachVarnode {
+                location,
+                attach_value,
+                attach_id,
+            } => FinalExport::AttachVarnode {
+                location,
+                attach_value,
+                attach_id,
+            },
+
+            Self::Table { location, table_id } => {
+                FinalExport::Table { location, table_id }
+            }
         }
     }
 }

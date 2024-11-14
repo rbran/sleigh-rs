@@ -1,7 +1,9 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ops::{Bound, RangeBounds};
 
 use crate::NumberNonZeroUnsigned;
+
+use super::TableExportType;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FieldRange {
@@ -364,6 +366,18 @@ impl FieldSizeMut for FieldSizeUnmutable {
 impl From<FieldSize> for FieldSizeUnmutable {
     fn from(input: FieldSize) -> Self {
         Self(input)
+    }
+}
+
+pub struct FieldSizeTableExport<'a>(
+    pub(crate) &'a RefCell<Option<TableExportType>>,
+);
+impl<'a> FieldSizeMut for FieldSizeTableExport<'a> {
+    fn get(&self) -> FieldSize {
+        *self.0.borrow().unwrap().size().unwrap()
+    }
+    fn set(&mut self, size: FieldSize) -> Option<bool> {
+        (self.get() == size).then_some(false)
     }
 }
 
