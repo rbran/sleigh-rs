@@ -915,14 +915,13 @@ pub trait ExecutionBuilder {
                             att_var_id,
                         )) = tf.attach
                         {
-                            let attach =
-                                self.sleigh().attach_varnode(att_var_id);
-                            let var_id = attach.0[0].1;
-                            let var = self.sleigh().varnode(var_id);
-                            let value = ExprValue::TokenField(ExprTokenField {
-                                size: FieldSize::new_bytes(var.len_bytes),
-                                id,
-                            });
+                            let value =
+                                ExprValue::VarnodeDynamic(ExprVarnodeDynamic {
+                                    attach_id: att_var_id,
+                                    attach_value: DynamicValueType::TokenField(
+                                        id,
+                                    ),
+                                });
                             return Ok(ExprElement::new_op(
                                 x.src.clone(),
                                 Unary::TakeLsb(x.value.try_into().unwrap()),
