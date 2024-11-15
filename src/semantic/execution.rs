@@ -411,35 +411,13 @@ pub struct Build {
 }
 
 #[derive(Clone, Debug)]
-pub enum ExportConst {
-    DisVar(disassembly::VariableId),
-    /// Attach values are limited
-    TokenField(TokenFieldId),
-    /// Attach values are limited
-    Context(ContextId),
-    // the instruction start addr,
-    InstructionStart,
-    /// only if also export Const or Context value
-    Table(TableId),
-    ExeVar(VariableId),
-}
-
-#[derive(Clone, Debug)]
 pub enum Export {
-    /// export a value that is known before the execution step.
-    Const {
-        /// len in bits of the exported value
-        len_bits: NumberNonZeroUnsigned,
-        /// location of the value exported
-        location: Span,
-        /// exported value
-        export: ExportConst,
-    },
-    /// Arbitrarelly values
-    Value(Expr),
     /// Reference to a memory
+    /// NOTE not the same as deref a memory address
+    /// a regular Expr Deref exports the result on a deref.
+    /// a Export Deref export the location itself, and read/write is done a demand
     Reference { addr: Expr, memory: MemoryLocation },
-    /// a value that translate into a varnode (AKA reference)
+    /// a value that translate into a varnode (AKA reference with extra steps)
     AttachVarnode {
         location: Span,
         attach_value: DynamicValueType,
@@ -447,6 +425,9 @@ pub enum Export {
     },
     /// a subtable re-exported
     Table { location: Span, table_id: TableId },
+
+    /// other complex expressions
+    Value(Expr),
 }
 
 impl Export {
@@ -456,7 +437,6 @@ impl Export {
         execution: &Execution,
     ) -> NumberNonZeroUnsigned {
         match self {
-            Export::Const { len_bits, .. } => *len_bits,
             Export::Value(value) => value.len_bits(sleigh, execution),
             Export::Reference { addr: _, memory } => {
                 (memory.len_bytes.get() * 8).try_into().unwrap()

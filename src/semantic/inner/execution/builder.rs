@@ -297,6 +297,7 @@ pub trait ExecutionBuilder {
                 let read_scope = self.read_scope(&value, &src)?;
                 Export::new_const(
                     self.sleigh(),
+                    self.execution(),
                     self.pattern(),
                     read_scope,
                     size,

@@ -1,18 +1,21 @@
 use crate::execution::DynamicValueType;
+use crate::semantic::execution::Export as FinalExport;
 use crate::semantic::execution::ExportLen as FinalExportLen;
-use crate::semantic::execution::{Export as FinalExport, ExportConst};
 use crate::semantic::inner::pattern::Pattern;
 use crate::semantic::inner::{Sleigh, SolverStatus};
-use crate::syntax::block::execution::op::ByteRangeLsb;
 use crate::{
     AttachVarnodeId, ExecutionError, Number, NumberNonZeroUnsigned, SpaceId,
     Span, TableId, VarSizeError,
 };
 
+use super::ExprContext;
+use super::ExprDisVar;
+use super::ExprIntDynamic;
+use super::ExprTokenField;
+use super::ReadScope;
 use super::{
     Execution, Expr, ExprElement, ExprNumber, ExprValue, FieldSize,
     FieldSizeMut, FieldSizeTableExport, FieldSizeUnmutable, MemoryLocation,
-    ReadScope,
 };
 
 /// Changes allowed:
@@ -37,12 +40,6 @@ pub enum TableExportType {
 
 #[derive(Clone, Debug)]
 pub enum Export {
-    Const {
-        len: FieldSize,
-        location: Span,
-        export: ExportConst,
-    },
-    Value(Expr),
     Reference {
         addr: Expr,
         memory: MemoryLocation,
@@ -56,6 +53,9 @@ pub enum Export {
         location: Span,
         table_id: TableId,
     },
+
+    /// other complex expressions
+    Value(Expr),
 }
 
 impl TableExportType {
@@ -167,41 +167,6 @@ impl TableExportType {
     }
 }
 
-impl ExportConst {
-    pub fn from_read_scope(
-        sleigh: &Sleigh,
-        read_scope: ReadScope,
-        location: Span,
-    ) -> Result<Self, Box<ExecutionError>> {
-        use ReadScope::*;
-        match read_scope {
-            ExeVar(var) => Ok(ExportConst::ExeVar(var)),
-            DisVar(var) => Ok(ExportConst::DisVar(var)),
-            TokenField(tf_id) => Ok(ExportConst::TokenField(tf_id)),
-            Context(ctx_id) => Ok(ExportConst::Context(ctx_id)),
-            InstStart => Ok(ExportConst::InstructionStart),
-            Table(expr_table) => {
-                let table = sleigh.table(expr_table);
-                match *table.export.borrow() {
-                    Some(
-                        TableExportType::Const(_) | TableExportType::Value(_),
-                    ) => Ok(ExportConst::Table(expr_table)),
-                    //TODO more specific error
-                    //a const can only export const or context
-                    Some(_) => Err(Box::new(ExecutionError::InvalidRef(
-                        location.clone(),
-                    ))),
-                    //to constructors are available yet, can't use this table
-                    None => Err(Box::new(ExecutionError::InvalidRef(
-                        location.clone(),
-                    ))),
-                }
-            }
-            x => todo!("Error export invalid const {:#?}", x),
-        }
-    }
-}
-
 impl Export {
     pub fn new_value(
         sleigh: &Sleigh,
@@ -265,31 +230,34 @@ impl Export {
 
     pub fn new_const(
         sleigh: &Sleigh,
+        execution: &Execution,
         _pattern: &Pattern,
         read_scope: ReadScope,
-        size: ByteRangeLsb,
+        size: crate::syntax::block::execution::op::ByteRangeLsb,
         src: Span,
     ) -> Result<Self, Box<ExecutionError>> {
-        let value =
-            ExportConst::from_read_scope(sleigh, read_scope, src.clone())?;
-        let size = NumberNonZeroUnsigned::new(size.value).unwrap(/*TODO*/);
-        // TODO: if the value is a disassembly variable, we define it's len
-        //if let ExportConst::DisVar(id) = value {
-        //    let variable = &pattern.disassembly_variables[id.0];
-        //    let value_type = variable
-        //        .value_type
-        //        .get()
-        //        .set_len(size)
-        //        .ok_or(ExecutionError::InvalidExport)?;
-        //    variable.value_type.set(value_type);
-        //}
-        let size = FieldSize::new_bytes(size);
-        Ok(Self::Const {
-            len: size,
-            location: src,
-            export: value,
-        })
+        let mut value = ExprValue::from_read_scope(sleigh, read_scope);
+        let og_size = value.size(sleigh, execution);
+        let num_bytes = NumberNonZeroUnsigned::new(size.value).unwrap(/*TODO*/);
+        let value_bits = (num_bytes.get() * 8).try_into().unwrap();
+        value
+            .size_mut(sleigh, execution)
+            .update_action(|size| size.set_final_value(value_bits))
+            .ok_or_else(|| {
+                Box::new(ExecutionError::VarSize(
+                    VarSizeError::TakeLsbTooSmall {
+                        lsb: num_bytes,
+                        input: og_size,
+                        location: src.clone(),
+                    },
+                ))
+            })?;
+        Ok(Self::Value(Expr::Value(ExprElement::Value {
+            location: src.clone(),
+            value,
+        })))
     }
+
     pub fn new_reference(
         sleigh: &Sleigh,
         _pattern: &Pattern,
@@ -337,6 +305,25 @@ impl Export {
         execution: &Execution,
     ) -> TableExportType {
         match self {
+            Export::Value(Expr::Value(ExprElement::Value {
+                value:
+                    ExprValue::Context(ExprContext { size, .. })
+                    | ExprValue::TokenField(ExprTokenField { size, .. })
+                    | ExprValue::DisVar(ExprDisVar { size, .. })
+                    | ExprValue::IntDynamic(ExprIntDynamic { size, .. }),
+                ..
+            })) => TableExportType::Const(*size),
+            Export::Value(Expr::Value(ExprElement::Value {
+                value: ExprValue::InstStart(_),
+                ..
+            })) => {
+                // TODO error here? Or make addr_bytes always available?
+                TableExportType::Const(FieldSize::new_bytes(
+                    sleigh.addr_bytes().unwrap(),
+                ))
+            }
+
+            // any other expr is a value being exportd
             Export::Value(value) => {
                 TableExportType::Value(value.size(sleigh, execution))
             }
@@ -347,11 +334,6 @@ impl Export {
                     also_values: false,
                 }
             }
-            Export::Const {
-                len,
-                location: _,
-                export: _,
-            } => TableExportType::Const(*len),
 
             Export::AttachVarnode {
                 attach_value: _,
@@ -384,7 +366,6 @@ impl Export {
                 expr.src()
             }
             Self::Table { location, .. }
-            | Self::Const { location, .. }
             | Export::AttachVarnode { location, .. } => location,
         }
     }
@@ -398,7 +379,6 @@ impl Export {
             Self::Value(expr) => expr.size(sleigh, execution),
             //TODO verify this
             Self::Reference { addr: _, memory } => memory.size,
-            Self::Const { len, .. } => *len,
             Self::AttachVarnode { attach_id, .. } => {
                 let attach_bytes = sleigh.attach_varnodes_len_bytes(*attach_id);
                 FieldSize::new_bytes(attach_bytes)
@@ -421,7 +401,6 @@ impl Export {
             Self::Value(expr) => expr.size_mut(sleigh, variables),
             //TODO verify this
             Self::Reference { addr: _, memory } => Box::new(&mut memory.size),
-            Self::Const { len: len_bits, .. } => Box::new(len_bits),
             Self::AttachVarnode { attach_id, .. } => {
                 let attach_bytes = sleigh.attach_varnodes_len_bytes(*attach_id);
                 Box::new(FieldSizeUnmutable::from(FieldSize::new_bytes(
@@ -444,7 +423,7 @@ impl Export {
         solved: &mut impl SolverStatus,
     ) -> Result<(), Box<ExecutionError>> {
         match self {
-            Self::AttachVarnode { .. } | Self::Const { .. } => Ok(()),
+            Self::AttachVarnode { .. } => Ok(()),
             Self::Value(expr) => expr.solve(sleigh, execution, solved),
             Self::Reference { addr, memory } => {
                 addr.solve(sleigh, execution, solved)?;
@@ -459,15 +438,6 @@ impl Export {
     }
     pub fn convert(self) -> FinalExport {
         match self {
-            Self::Const {
-                len: len_bits,
-                location,
-                export,
-            } => FinalExport::Const {
-                len_bits: len_bits.possible_value().unwrap(),
-                location,
-                export,
-            },
             Self::Value(expr) => FinalExport::Value(expr.convert()),
             Self::Reference { addr, memory } => FinalExport::Reference {
                 addr: addr.convert(),
