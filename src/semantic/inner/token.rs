@@ -6,7 +6,7 @@ use crate::semantic::{
 };
 use crate::{syntax, FieldBits};
 
-use super::{FieldSize, GlobalScope, PrintFlags, Sleigh};
+use super::{GlobalScope, PrintFlags, Sleigh};
 
 pub struct TokenField {
     pub name: String,
@@ -50,28 +50,6 @@ impl TokenField {
         //TODO what if print_flags are set?
         self.attach = Some(attach);
         Ok(())
-    }
-
-    #[deprecated]
-    pub fn exec_value_len(&self, sleigh: &Sleigh) -> FieldSize {
-        // return the meaning len, or if not meaning len, the raw field len
-        match self.attach {
-            // is only created after the finalization if attach is None
-            Some(TokenFieldAttach::NoAttach(_)) |
-            // does not affect the token_field len
-            Some(TokenFieldAttach::Literal(_)) | None => {
-                FieldSize::default().set_min_bits(self.bits.len()).unwrap()
-            }
-            Some(TokenFieldAttach::Varnode(attach_id)) => {
-                let varnodes = sleigh.attach_varnode(attach_id);
-                //all varnodes have the same len
-                varnodes.execution_len(sleigh)
-            }
-            Some(TokenFieldAttach::Number(_, attach_id)) => {
-                let attach = sleigh.attach_number(attach_id);
-                attach.execution_len()
-            }
-        }
     }
 
     pub fn convert(self) -> FinalTokenField {

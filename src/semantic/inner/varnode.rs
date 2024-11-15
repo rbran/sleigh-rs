@@ -7,7 +7,6 @@ use crate::semantic::{
 };
 use crate::{FieldBits, NumberNonZeroUnsigned, NumberUnsigned, SleighError};
 
-use super::execution::FieldSize;
 use super::{GlobalScope, PrintFlags, Sleigh};
 
 #[derive(Debug)]
@@ -47,22 +46,6 @@ impl Context {
         //TODO what if print_flags are set?
         self.attach = Some(attach);
         Ok(())
-    }
-
-    #[deprecated]
-    pub fn exec_value_size(&self, sleigh: &Sleigh) -> FieldSize {
-        match self.attach {
-            Some(ContextAttach::NoAttach(_))
-            | Some(ContextAttach::Literal(_))
-            | None => FieldSize::default()
-                .set_min_bits(self.bitrange.bits.len())
-                .unwrap(),
-            Some(ContextAttach::Varnode(attach_id)) => {
-                let varnodes = sleigh.attach_varnode(attach_id);
-                //all varnodes have the same len
-                varnodes.execution_len(sleigh)
-            }
-        }
     }
 
     pub fn convert(self) -> FinalContext {

@@ -13,16 +13,6 @@ use super::{PrintBase, ValueFmt};
 #[derive(Clone, Debug)]
 pub struct AttachVarnode(pub Box<[(usize, VarnodeId)]>);
 impl AttachVarnode {
-    #[deprecated]
-    pub(crate) fn execution_len(
-        &self,
-        sleigh: &super::inner::Sleigh,
-    ) -> FieldSize {
-        //all varnodes have the same len
-        let varnode_bytes = sleigh.varnode(self.0[0].1).len_bytes;
-        FieldSize::new_bytes(varnode_bytes)
-    }
-
     pub fn find_value(&self, index: usize) -> Option<VarnodeId> {
         self.0
             .iter()
@@ -56,17 +46,6 @@ impl AttachLiteral {
 #[derive(Clone, Debug)]
 pub struct AttachNumber(pub Box<[(usize, Number)]>);
 impl AttachNumber {
-    #[deprecated]
-    pub(crate) fn execution_len(&self) -> FieldSize {
-        let len_bits = self
-            .0
-            .iter()
-            .map(|(_i, v)| v.bits_required())
-            .max()
-            .unwrap();
-        let len_bits = NumberNonZeroUnsigned::new(len_bits.into()).unwrap();
-        FieldSize::default().set_min_bits(len_bits).unwrap()
-    }
     pub fn is_signed(&self) -> bool {
         self.0.iter().any(|(_i, v)| v.is_negative())
     }

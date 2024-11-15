@@ -369,7 +369,6 @@ impl Export {
             | Export::AttachVarnode { location, .. } => location,
         }
     }
-    #[deprecated]
     pub fn output_size(
         &self,
         sleigh: &Sleigh,
