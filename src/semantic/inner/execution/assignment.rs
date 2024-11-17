@@ -50,7 +50,7 @@ impl Assignment {
         self.right.solve(sleigh, execution, solved)?;
 
         // solve simple expr that don't follow many rules
-        if hack_solve_simple_bin_ands(self, sleigh, execution) {
+        if hack_solve_simple_bin_ands(self, sleigh, execution)? {
             solved.i_did_a_thing();
         }
 
@@ -310,10 +310,10 @@ fn hack_solve_simple_bin_ands(
     ass: &mut Assignment,
     sleigh: &Sleigh,
     execution: &Execution,
-) -> bool {
+) -> Result<bool, Box<VarSizeError>> {
     // left need to have a known size
     let Some(ass_size) = ass.left_size(sleigh, execution).final_value() else {
-        return false;
+        return Ok(false);
     };
 
     fn get_simple_value_size(value: &mut ExprValue) -> Option<&mut FieldSize> {
@@ -331,12 +331,19 @@ fn hack_solve_simple_bin_ands(
         // if a simple value, just assign the size to the value
         Expr::Value(ExprElement::Value { location: _, value }) => {
             let Some(var_size) = get_simple_value_size(value) else {
-                return false;
+                return Ok(false);
             };
 
             var_size
                 .update_action(|var| var.set_final_value(ass_size))
-                .unwrap()
+                .ok_or_else(|| {
+                    Box::new(VarSizeError::AssignmentSides {
+                        left: FieldSize::new_bits(ass_size),
+                        right: ass.right.size(sleigh, execution),
+                        location: ass.location.clone(),
+                        backtrace: format!("{}:{}", file!(), line!()),
+                    })
+                })
         }
 
         // if a simple binary expr with two simple values, just set all of then to the same size
@@ -358,31 +365,51 @@ fn hack_solve_simple_bin_ands(
                 }),
             ) = (left.as_mut(), right.as_mut())
             else {
-                return false;
+                return Ok(false);
             };
 
             let Some(left_size) = get_simple_value_size(expr_left) else {
-                return false;
+                return Ok(false);
             };
 
             let Some(right_size) = get_simple_value_size(expr_right) else {
-                return false;
+                return Ok(false);
             };
 
-            let mut result = false;
-            result |= left_size
-                .update_action(|x| x.set_final_value(ass_size))
-                .unwrap();
-            result |= right_size
-                .update_action(|x| x.set_final_value(ass_size))
-                .unwrap();
-            result |= output_size
-                .update_action(|x| x.set_final_value(ass_size))
-                .unwrap();
-            result
+            let result_right =
+                right_size.update_action(|x| x.set_final_value(ass_size));
+            let result_right = result_right.ok_or_else(|| {
+                Box::new(VarSizeError::AssignmentSides {
+                    left: FieldSize::new_bits(ass_size),
+                    right: right.size(sleigh, execution),
+                    location: ass.location.clone(),
+                    backtrace: format!("{}:{}", file!(), line!()),
+                })
+            })?;
+            let result_left =
+                left_size.update_action(|x| x.set_final_value(ass_size));
+            let result_left = result_left.ok_or_else(|| {
+                Box::new(VarSizeError::AssignmentSides {
+                    left: FieldSize::new_bits(ass_size),
+                    right: right.size(sleigh, execution),
+                    location: ass.location.clone(),
+                    backtrace: format!("{}:{}", file!(), line!()),
+                })
+            })?;
+            let result_output =
+                output_size.update_action(|x| x.set_final_value(ass_size));
+            let result_output = result_output.ok_or_else(|| {
+                Box::new(VarSizeError::AssignmentSides {
+                    left: FieldSize::new_bits(ass_size),
+                    right: ass.right.size(sleigh, execution),
+                    location: ass.location.clone(),
+                    backtrace: format!("{}:{}", file!(), line!()),
+                })
+            })?;
+            Ok(result_left | result_right | result_output)
         }
 
-        _ => false,
+        _ => Ok(false),
     }
 }
 

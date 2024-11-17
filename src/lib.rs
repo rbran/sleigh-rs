@@ -1032,7 +1032,7 @@ mod test {
             "Loongarch/data/languages/loongarch64_f64.slaspec",
             "Loongarch/data/languages/loongarch32_f64.slaspec",
             "Loongarch/data/languages/loongarch32_f32.slaspec",
-            //"PIC/data/languages/pic12c5xx.slaspec",
+            "PIC/data/languages/pic12c5xx.slaspec",
             //"PIC/data/languages/dsPIC30F.slaspec",
             //"PIC/data/languages/pic17c7xx.slaspec",
             //"PIC/data/languages/PIC24H.slaspec",
