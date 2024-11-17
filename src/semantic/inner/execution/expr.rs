@@ -729,8 +729,8 @@ impl ExprValue {
                     // Raw value for the TokenField
                     _ => {
                         // TokenField size auto adjust it's size
-                        let size = FieldSize::default()
-                            .set_min_bits(tf.bits.len())
+                        let size = FieldSize::new_unsized()
+                            .set_possible_bits(tf.bits.len())
                             .unwrap();
                         Self::TokenField(ExprTokenField { size, id: tf_id })
                     }

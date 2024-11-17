@@ -1169,6 +1169,8 @@ fn reference_scope(
     sleigh: &Sleigh,
 ) -> Result<ExprElement, Box<ExecutionError>> {
     match read {
+        // TODO only if token field translate into varnode? If not what does it means?
+        // maybe the address for the pattern block...
         ReadScope::TokenField(id) => Ok(ExprElement::Reference(Reference {
             location: src.clone(),
             len: ref_bytes.map(FieldSize::new_bytes).unwrap_or_default(),
