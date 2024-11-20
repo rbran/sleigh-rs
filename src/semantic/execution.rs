@@ -384,6 +384,8 @@ pub enum AssignmentWrite {
     TableExport {
         table_id: TableId,
         op: Option<AssignmentOp>,
+        // number of bytes to write in case of memory reference
+        size: Option<NumberNonZeroUnsigned>,
     },
 }
 

@@ -6,6 +6,7 @@ use crate::semantic::execution::{
     AssignmentWrite as FinalAssignmentType,
     AssignmentWriteVariable as FinalAssignmentValueWrite,
 };
+use crate::semantic::inner::execution::TableExportType;
 use crate::semantic::inner::{Sleigh, SolverStatus};
 use crate::{
     AttachVarnodeId, BitrangeId, ExecutionError, NumberNonZeroUnsigned,
@@ -41,6 +42,13 @@ pub enum AssignmentWrite {
         table_id: TableId,
         op: Option<AssignmentOp>,
     },
+    // table export, if a reference, the size is just a sugestion,
+    // each write could have a diferent size.
+    // should only be created if the write have diferent size from the export
+    TableReferenceExport {
+        table_id: TableId,
+        size: FieldSize,
+    },
 }
 impl AssignmentWrite {
     fn convert(self) -> FinalAssignmentType {
@@ -61,6 +69,14 @@ impl AssignmentWrite {
                 FinalAssignmentType::TableExport {
                     table_id,
                     op: op.map(AssignmentOp::convert),
+                    size: None,
+                }
+            }
+            AssignmentWrite::TableReferenceExport { table_id, size } => {
+                FinalAssignmentType::TableExport {
+                    table_id,
+                    op: None,
+                    size: size.possible_value(),
                 }
             }
         }
@@ -126,6 +142,11 @@ impl Assignment {
     ) -> Result<(), Box<ExecutionError>> {
         self.right.solve(sleigh, execution, solved)?;
 
+        // change the table mem write size
+        if hack_solve_table_reference_export_size(self, sleigh, execution) {
+            solved.i_did_a_thing();
+        }
+
         // solve simple expr that don't follow many rules
         if hack_solve_simple_bin_ands(self, sleigh, execution)? {
             solved.i_did_a_thing();
@@ -178,7 +199,7 @@ impl Assignment {
                 if let Some(op) = op {
                     if op.output_size().is_undefined() {
                         solved.iam_not_finished(
-                            self.right.src(),
+                            &self.var_location,
                             file!(),
                             line!(),
                         )
@@ -189,7 +210,7 @@ impl Assignment {
                         let var = execution.variable(*id);
                         if var.size.get().is_undefined() {
                             solved.iam_not_finished(
-                                self.right.src(),
+                                &self.var_location,
                                 file!(),
                                 line!(),
                             )
@@ -202,7 +223,11 @@ impl Assignment {
             }
             AssignmentWrite::Memory { mem, addr } => {
                 if mem.size.is_undefined() {
-                    solved.iam_not_finished(self.right.src(), file!(), line!())
+                    solved.iam_not_finished(
+                        &self.var_location,
+                        file!(),
+                        line!(),
+                    )
                 }
                 addr.solve(sleigh, execution, solved)?;
             }
@@ -210,11 +235,20 @@ impl Assignment {
                 if let Some(op) = op {
                     if op.output_size().is_undefined() {
                         solved.iam_not_finished(
-                            self.right.src(),
+                            &self.var_location,
                             file!(),
                             line!(),
                         )
                     }
+                }
+            }
+            AssignmentWrite::TableReferenceExport { table_id: _, size } => {
+                if size.is_undefined() {
+                    solved.iam_not_finished(
+                        &self.var_location,
+                        file!(),
+                        line!(),
+                    )
                 }
             }
         }
@@ -256,6 +290,7 @@ impl Assignment {
                 op: None,
                 value: AssignmentWriteVariable::Local { id, creation: _ },
             } => execution.variable(*id).size.get(),
+            AssignmentWrite::TableReferenceExport { size, .. } => *size,
         }
     }
 
@@ -265,6 +300,9 @@ impl Assignment {
         execution: &'a Execution,
     ) -> (Box<dyn FieldSizeMut + 'a>, Box<dyn FieldSizeMut + 'a>) {
         let left = match &mut self.var {
+            AssignmentWrite::TableReferenceExport { size, .. } => {
+                Box::new(size)
+            }
             AssignmentWrite::Variable { op: Some(op), .. }
             | AssignmentWrite::TableExport { op: Some(op), .. } => {
                 op.output_size_mut()
@@ -430,6 +468,52 @@ impl AssignmentOp {
             AssignmentOp::BitRange(x) => FinalAssignmentOp::BitRange(x),
         }
     }
+}
+
+// HACK solve table export reference size
+// eg: Mem = temp:1; # Mem is a ref to 4 bytes in Ram
+fn hack_solve_table_reference_export_size(
+    ass: &mut Assignment,
+    sleigh: &Sleigh,
+    execution: &Execution,
+) -> bool {
+    // left need to be a table
+    let AssignmentWrite::TableExport { table_id, op: None } = &ass.var else {
+        return false;
+    };
+    // table need to export a reference
+    let table = sleigh.table(*table_id);
+    let table_export = *table.export.borrow();
+    let Some(TableExportType::Reference {
+        len: left_size,
+        space: _,
+        also_values: _,
+    }) = table_export
+    else {
+        return false;
+    };
+    // table with a defined export size
+    let Some(left_size) = left_size.final_value() else {
+        return false;
+    };
+
+    // right need to have a defined size
+    let Some(right_size) = ass.right.size(sleigh, execution).final_value()
+    else {
+        return false;
+    };
+
+    // only if right and left size differ
+    if left_size == right_size {
+        return false;
+    }
+
+    // write the number of bytes of the right side
+    ass.var = AssignmentWrite::TableReferenceExport {
+        table_id: *table_id,
+        size: FieldSize::new_bits(right_size),
+    };
+    true
 }
 
 // HACK auto solve simple assignments.

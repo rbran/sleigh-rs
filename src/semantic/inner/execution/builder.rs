@@ -1608,6 +1608,12 @@ fn translate_write(
                 op: op.to_owned(),
             })
         }
+        AssignmentWrite::TableReferenceExport { table_id, size } => {
+            Ok(AssignmentWrite::TableReferenceExport {
+                table_id: *table_id,
+                size: *size,
+            })
+        }
     }
 }
 
