@@ -19,7 +19,7 @@ use super::{
 };
 
 /// Changes allowed:
-/// Const -> Value -> Reference -> Multiple
+/// Const -> Value -> Reference
 #[derive(Clone, Copy, Debug)]
 pub enum TableExportType {
     //don't return

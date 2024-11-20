@@ -1,7 +1,6 @@
-use crate::execution::WriteValue;
 use crate::semantic::execution::BlockId;
 use crate::semantic::inner::execution::{
-    Execution, ExecutionBuilder, ReadScope,
+    Execution, ExecutionBuilder, ReadScope, WriteValue,
 };
 use crate::semantic::inner::pattern::Pattern;
 use crate::semantic::inner::Sleigh;
@@ -132,11 +131,7 @@ impl ExecutionBuilder for Builder<'_> {
                 })
             }
             GlobalScope::Table(table_id) => {
-                crate::semantic::inner::execution::table_write(
-                    self.sleigh(),
-                    table_id,
-                    src,
-                )
+                Ok(WriteValue::TableExport(table_id))
             }
             _ => Err(Box::new(ExecutionError::InvalidRef(src.clone()))),
         }

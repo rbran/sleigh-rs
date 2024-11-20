@@ -5,7 +5,6 @@ use crate::execution::{DynamicValueType, ExprVarnodeDynamic};
 use crate::semantic::disassembly;
 use crate::semantic::execution::{
     BlockId, Build, RefTable, RefTokenField, ReferencedValue, VariableId,
-    WriteValue,
 };
 use crate::semantic::inner::execution::{
     Block, ExprBitrange, ExprNumber, ExprTokenField, Unary,
@@ -15,15 +14,17 @@ use crate::semantic::inner::pcode_macro::PcodeMacro;
 use crate::semantic::inner::{GlobalScope, Sleigh};
 use crate::semantic::{InstNext, InstStart, SpaceId, TableId};
 use crate::{
-    syntax, BitrangeId, ContextId, Number, NumberNonZeroUnsigned,
-    NumberUnsigned, Span, TokenFieldId, VarSizeError, VarnodeId,
+    syntax, AttachVarnodeId, BitrangeId, ContextId, Number,
+    NumberNonZeroUnsigned, NumberUnsigned, Span, TokenFieldId, VarSizeError,
+    VarnodeId,
 };
 
 use super::{
-    Assignment, AssignmentOp, BranchCall, CpuBranch, Execution, ExecutionError,
-    Export, Expr, ExprCPool, ExprDisVar, ExprElement, ExprIntDynamic, ExprNew,
-    ExprUnaryOp, ExprValue, FieldSize, LocalGoto, MacroParamAssignment,
-    MemWrite, MemoryLocation, Reference, Statement, TableExportType, UserCall,
+    Assignment, AssignmentOp, AssignmentType, AssignmentValueWrite, BranchCall,
+    CpuBranch, Execution, ExecutionError, Export, Expr, ExprCPool, ExprDisVar,
+    ExprElement, ExprIntDynamic, ExprNew, ExprUnaryOp, ExprValue, FieldSize,
+    LocalGoto, MacroParamAssignment, MemoryLocation, Reference, Statement,
+    TableExportType, UserCall,
 };
 
 #[derive(Clone, Debug)]
@@ -37,6 +38,23 @@ pub enum ReadScope {
     Table(TableId),
     DisVar(disassembly::VariableId),
     ExeVar(VariableId),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum WriteValue {
+    Varnode(VarnodeId),
+    Bitrange(BitrangeId),
+    ///only with attach variable
+    TokenField {
+        token_field_id: TokenFieldId,
+        attach_id: AttachVarnodeId,
+    },
+    // TODO Context translated into varnode
+    TableExport(TableId),
+    Local {
+        id: VariableId,
+        creation: bool,
+    },
 }
 
 pub trait ExecutionBuilder {
@@ -190,7 +208,7 @@ pub trait ExecutionBuilder {
                 }
                 syntax::block::execution::Statement::MemWrite(x) => {
                     let assignment = self.new_mem_write(x)?;
-                    self.insert_statement(Statement::MemWrite(assignment));
+                    self.insert_statement(Statement::Assignment(assignment));
                 }
             }
         }
@@ -437,24 +455,18 @@ pub trait ExecutionBuilder {
                                 })
                             }
                             Statement::Assignment(x) => {
-                                let (var, op) = translate_write(
+                                let var = translate_write(
                                     self.sleigh(),
                                     &x.var,
                                     &x.location,
                                     &variables_map,
                                 )?;
-                                if let Some((_new_op, _old_op)) =
-                                    op.as_ref().zip(x.op.as_ref())
-                                {
-                                    todo!("consiliate two operation on macro");
-                                }
                                 Statement::Assignment(Assignment {
                                     right: translate_expr(
                                         &x.right,
                                         &variables_map,
                                     ),
                                     var,
-                                    op: x.op.clone().or(op),
                                     ..x.clone()
                                 })
                             }
@@ -476,19 +488,6 @@ pub trait ExecutionBuilder {
                                         ),
                                     ),
                                 )
-                            }
-                            Statement::MemWrite(x) => {
-                                Statement::MemWrite(MemWrite {
-                                    addr: translate_expr(
-                                        &x.addr,
-                                        &variables_map,
-                                    ),
-                                    right: translate_expr(
-                                        &x.right,
-                                        &variables_map,
-                                    ),
-                                    ..x.clone()
-                                })
                             }
                             Statement::Declare(old_id) => {
                                 match variables_map[old_id.0].clone() {
@@ -576,11 +575,13 @@ pub trait ExecutionBuilder {
                 )?;
                 Ok(Statement::Assignment(Assignment::new(
                     input.src.clone(),
-                    WriteValue::Local {
-                        id: new_var_id,
-                        creation: local,
+                    AssignmentType::WriteValue {
+                        value: AssignmentValueWrite::Local {
+                            id: new_var_id,
+                            creation: local,
+                        },
+                        op: None,
                     },
-                    None,
                     input.src,
                     right,
                 )))
@@ -591,25 +592,102 @@ pub trait ExecutionBuilder {
             }
             //Assign to varnode
             (Some(WriteValue::Varnode(var)), false) => {
+                let value = AssignmentValueWrite::Varnode(var);
                 let op =
                     input.op.map(|op| self.new_truncate(op)).transpose()?;
-                let addr = WriteValue::Varnode(var);
+                let addr = AssignmentType::WriteValue { value, op };
                 Ok(Statement::Assignment(Assignment::new(
                     input.src.clone(),
                     addr,
-                    op,
                     input.src,
                     right,
                 )))
             }
-            //variable exists, just return it
-            (Some(var), false) => {
+            // assign to table
+            (Some(WriteValue::TableExport(table_id)), false) => {
+                let table = self.sleigh().table(table_id);
+                let table_export = *table.export.borrow();
+                // TODO can we assign to table with op?
                 let op =
                     input.op.map(|op| self.new_truncate(op)).transpose()?;
+                match table_export {
+                    // assignment to the table export address
+                    Some(TableExportType::Reference {
+                        len: _,
+                        space: _,
+                        also_values: _,
+                    }) => Ok(Statement::Assignment(Assignment::new(
+                        input.src.clone(),
+                        AssignmentType::WriteTableExport { table_id, op },
+                        input.src,
+                        right,
+                    ))),
+                    // TODO is this required, if so where?
+                    // HACK: write to a table that export a value is actually a
+                    // mem_write with the table export being the address
+                    // for the default space
+                    Some(TableExportType::Const(_))
+                    | Some(TableExportType::Value(_)) => {
+                        todo!();
+                        // let space = self
+                        //     .sleigh()
+                        //     .default_space()
+                        //     .ok_or_else(|| ExecutionError::DefaultSpace)?;
+                        // let mem = MemoryLocation {
+                        //     space,
+                        //     size: FieldSize::new_unsized(),
+                        //     location: input.src.clone(),
+                        // };
+                        // Ok(Statement::MemWrite(MemWrite::new(
+                        //     self.sleigh(),
+                        //     self.execution(),
+                        //     Expr::new_value(ExprElement::Value {
+                        //         location: input.src.clone(),
+                        //         value: ExprValue::Table(table_id),
+                        //     }),
+                        //     mem,
+                        //     input.src,
+                        //     right,
+                        // )))
+                    }
+                    // table is unimpl or simply don't export
+                    None | Some(TableExportType::None) => Err(Box::new(
+                        ExecutionError::WriteInvalidTable(input.src),
+                    )),
+                }
+            }
+            //variable exists, just return it
+            (
+                Some(
+                    var @ (WriteValue::Bitrange(_)
+                    | WriteValue::TokenField { .. }
+                    | WriteValue::Local { .. }),
+                ),
+                false,
+            ) => {
+                let op =
+                    input.op.map(|op| self.new_truncate(op)).transpose()?;
+                let value = match var {
+                    WriteValue::Bitrange(bit) => {
+                        AssignmentValueWrite::Bitrange(bit)
+                    }
+                    WriteValue::TokenField {
+                        token_field_id,
+                        attach_id,
+                    } => AssignmentValueWrite::TokenField {
+                        token_field_id,
+                        attach_id,
+                    },
+                    WriteValue::Local { id, creation } => {
+                        AssignmentValueWrite::Local { creation, id }
+                    }
+                    WriteValue::Varnode(_) | WriteValue::TableExport(_) => {
+                        unreachable!()
+                    }
+                };
                 Ok(Statement::Assignment(Assignment::new(
                     input.src.clone(),
-                    var,
-                    op,
+                    AssignmentType::WriteValue { value, op },
                     input.src,
                     right,
                 )))
@@ -619,18 +697,13 @@ pub trait ExecutionBuilder {
     fn new_mem_write(
         &mut self,
         input: syntax::block::execution::assignment::MemWrite,
-    ) -> Result<MemWrite, Box<ExecutionError>> {
+    ) -> Result<Assignment, Box<ExecutionError>> {
         let mem = self.new_addr_derefence(&input.mem)?;
         let addr = self.new_expr(input.addr)?;
+        let location = addr.src().clone();
         let right = self.new_expr(input.right)?;
-        Ok(MemWrite::new(
-            self.sleigh(),
-            self.execution(),
-            addr,
-            mem,
-            input.src,
-            right,
-        ))
+        let var = AssignmentType::WriteMemory { mem, addr };
+        Ok(Assignment::new(location, var, input.src, right))
     }
     fn new_truncate(
         &self,
@@ -1359,40 +1432,59 @@ fn translate_value(
 
 fn translate_write(
     sleigh: &Sleigh,
-    expr: &WriteValue,
+    expr: &AssignmentType,
     location: &Span,
     variables_map: &[VariableAlias<'_>],
-) -> Result<(WriteValue, Option<AssignmentOp>), Box<ExecutionError>> {
+) -> Result<AssignmentType, Box<ExecutionError>> {
     match expr {
-        WriteValue::Local { id, creation: _ } => match variables_map[id.0]
-            .clone()
-        {
-            VariableAlias::SubVarnode(ExprValue::Varnode(varnode), bits) => {
-                let value = WriteValue::Varnode(*varnode);
-                Ok((value, Some(AssignmentOp::BitRange(bits))))
-            }
-            VariableAlias::SubVarnode(
-                ExprValue::TokenField(token_id),
-                bits,
+        // TODO check the creation flag, it should only be used on local variables
+        AssignmentType::WriteValue {
+            value: AssignmentValueWrite::Local { id, creation: _ },
+            op,
+        } => match (variables_map[id.0].clone(), op.to_owned()) {
+            (
+                VariableAlias::SubVarnode(ExprValue::Varnode(varnode), bits),
+                None,
             ) => {
-                let token_field = sleigh.token_field(token_id.id);
+                let op = Some(AssignmentOp::BitRange(bits));
+                let value = AssignmentValueWrite::Varnode(*varnode);
+                Ok(AssignmentType::WriteValue { op, value })
+            }
+            (
+                VariableAlias::SubVarnode(
+                    ExprValue::TokenField(token_field_expr),
+                    bits,
+                ),
+                None,
+            ) => {
+                let token_field = sleigh.token_field(token_field_expr.id);
                 let Some(crate::token::TokenFieldAttach::Varnode(attach_id)) =
                     token_field.attach
                 else {
                     todo!();
                 };
-                let value = WriteValue::TokenField {
-                    token_field_id: token_id.id,
+                let op = Some(AssignmentOp::BitRange(bits));
+                let value = AssignmentValueWrite::TokenField {
+                    token_field_id: token_field_expr.id,
                     attach_id,
                 };
-                Ok((value, Some(AssignmentOp::BitRange(bits))))
+                Ok(AssignmentType::WriteValue { op, value })
             }
-            VariableAlias::SubVarnode(ExprValue::Table(table_id), bits) => {
-                let value = table_write(sleigh, *table_id, location)?;
-                Ok((value, Some(AssignmentOp::BitRange(bits))))
+            (
+                VariableAlias::SubVarnode(ExprValue::Table(table_id), bits),
+                None,
+            ) => {
+                table_write(sleigh, *table_id, location)?;
+                Ok(AssignmentType::WriteTableExport {
+                    table_id: *table_id,
+                    op: Some(AssignmentOp::BitRange(bits)),
+                })
             }
-            VariableAlias::SubVarnode(_, _) => unreachable!(),
-            VariableAlias::Alias(value) => {
+            (VariableAlias::SubVarnode(_, _), None) => unreachable!(),
+            (VariableAlias::SubVarnode(_, _), Some(_)) => {
+                Err(Box::new(ExecutionError::MacroBuildInvalid))
+            }
+            (VariableAlias::Alias(value), op) => {
                 match value {
                     // TODO verify those assumptions
                     ExprValue::Int(_)
@@ -1402,17 +1494,17 @@ fn translate_write(
                     | ExprValue::Bitrange(_)
                     | ExprValue::DisVar(_) => panic!(),
 
-                    ExprValue::ExeVar(id) => {
-                        let value = WriteValue::Local {
+                    ExprValue::ExeVar(id) => Ok(AssignmentType::WriteValue {
+                        op,
+                        value: AssignmentValueWrite::Local {
                             id: *id,
                             creation: false,
-                        };
-                        Ok((value, None))
-                    }
-                    ExprValue::Varnode(id) => {
-                        let value = WriteValue::Varnode(*id);
-                        Ok((value, None))
-                    }
+                        },
+                    }),
+                    ExprValue::Varnode(id) => Ok(AssignmentType::WriteValue {
+                        op,
+                        value: AssignmentValueWrite::Varnode(*id),
+                    }),
                     ExprValue::TokenField(tf_expr) => {
                         let token_field = sleigh.token_field(tf_expr.id);
                         let Some(crate::token::TokenFieldAttach::Varnode(
@@ -1421,23 +1513,25 @@ fn translate_write(
                         else {
                             todo!();
                         };
-                        let value = WriteValue::TokenField {
-                            token_field_id: tf_expr.id,
-                            attach_id,
-                        };
-                        Ok((value, None))
+                        Ok(AssignmentType::WriteValue {
+                            op,
+                            value: AssignmentValueWrite::TokenField {
+                                token_field_id: tf_expr.id,
+                                attach_id,
+                            },
+                        })
                     }
                     ExprValue::VarnodeDynamic(ExprVarnodeDynamic {
                         attach_id,
                         attach_value:
                             DynamicValueType::TokenField(token_field_id),
-                    }) => {
-                        let value = WriteValue::TokenField {
+                    }) => Ok(AssignmentType::WriteValue {
+                        op,
+                        value: AssignmentValueWrite::TokenField {
                             token_field_id: *token_field_id,
                             attach_id: *attach_id,
-                        };
-                        Ok((value, None))
-                    }
+                        },
+                    }),
                     ExprValue::VarnodeDynamic(ExprVarnodeDynamic {
                         attach_id: _,
                         attach_value: DynamicValueType::Context(_context_id),
@@ -1445,28 +1539,78 @@ fn translate_write(
                         todo!();
                     }
                     ExprValue::Table(id) => {
-                        let table = table_write(sleigh, *id, location)?;
-                        Ok((table, None))
+                        table_write(sleigh, *id, location)?;
+                        Ok(AssignmentType::WriteTableExport {
+                            table_id: *id,
+                            op,
+                        })
                     }
                     ExprValue::IntDynamic(ExprIntDynamic { .. }) => {
                         panic!()
                     }
                 }
             }
-            VariableAlias::Parameter(id) | VariableAlias::NewVariable(id) => {
-                Ok((
-                    WriteValue::Local {
-                        id,
-                        creation: false,
-                    },
-                    None,
-                ))
+            (
+                VariableAlias::Parameter(id) | VariableAlias::NewVariable(id),
+                op,
+            ) => {
+                let value = AssignmentValueWrite::Local {
+                    id,
+                    creation: false,
+                };
+                Ok(AssignmentType::WriteValue { op, value })
             }
         },
-        x @ (WriteValue::Varnode(_)
-        | WriteValue::Bitrange(_)
-        | WriteValue::TokenField { .. }
-        | WriteValue::TableExport(_)) => Ok((x.clone(), None)),
+        AssignmentType::WriteValue {
+            value: AssignmentValueWrite::Bitrange(bitrange_id),
+            op,
+        } => {
+            let value = AssignmentValueWrite::Bitrange(*bitrange_id);
+            Ok(AssignmentType::WriteValue {
+                op: op.to_owned(),
+                value,
+            })
+        }
+        AssignmentType::WriteValue {
+            value: AssignmentValueWrite::Varnode(varnode_id),
+            op,
+        } => {
+            let value = AssignmentValueWrite::Varnode(*varnode_id);
+            Ok(AssignmentType::WriteValue {
+                op: op.to_owned(),
+                value,
+            })
+        }
+        AssignmentType::WriteValue {
+            value:
+                AssignmentValueWrite::TokenField {
+                    token_field_id,
+                    attach_id,
+                },
+            op,
+        } => {
+            let value = AssignmentValueWrite::TokenField {
+                token_field_id: *token_field_id,
+                attach_id: *attach_id,
+            };
+            Ok(AssignmentType::WriteValue {
+                op: op.to_owned(),
+                value,
+            })
+        }
+        AssignmentType::WriteMemory { mem, addr } => {
+            let addr = translate_expr(addr, &variables_map);
+            Ok(AssignmentType::WriteMemory {
+                mem: mem.clone(),
+                addr,
+            })
+        }
+        AssignmentType::WriteTableExport { table_id, op } => {
+            Ok(AssignmentType::WriteTableExport {
+                table_id: *table_id,
+                op: op.to_owned(),
+            })
+        }
     }
 }
 
@@ -1474,7 +1618,7 @@ pub fn table_write(
     sleigh: &Sleigh,
     table_id: TableId,
     location: &Span,
-) -> Result<WriteValue, Box<ExecutionError>> {
+) -> Result<(), Box<ExecutionError>> {
     let table = sleigh.table(table_id);
     let table = table.export.borrow();
     let Some(TableExportType::Reference {
@@ -1487,5 +1631,5 @@ pub fn table_write(
             location.clone(),
         )));
     };
-    Ok(WriteValue::TableExport(table_id))
+    Ok(())
 }

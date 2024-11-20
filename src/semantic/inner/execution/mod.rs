@@ -16,8 +16,6 @@ mod len;
 pub use len::*;
 mod export;
 pub use export::*;
-mod mem_write;
-pub use mem_write::*;
 mod block;
 pub use block::*;
 mod assignment;
@@ -30,8 +28,6 @@ mod cpu_branch;
 pub use cpu_branch::*;
 mod variables;
 pub use variables::*;
-mod write_value;
-//pub use write_value::*;
 
 #[derive(Clone, Debug)]
 pub struct Execution {
@@ -55,7 +51,6 @@ pub enum Statement {
     Build(Build),
     Declare(VariableId),
     Assignment(Assignment),
-    MemWrite(MemWrite),
     // NOTE this only exits to facilitate the inlining of macros
     MacroParamAssignment(MacroParamAssignment),
 }
@@ -82,7 +77,6 @@ impl Statement {
             Self::MacroParamAssignment(x) => {
                 x.solve(sleigh, execution, solved)?
             }
-            Self::MemWrite(x) => x.solve(sleigh, execution, solved)?,
         }
         Ok(())
     }
@@ -98,7 +92,6 @@ impl Statement {
             Self::Declare(x) => New::Declare(x),
             Self::Assignment(x) => New::Assignment(x.convert()),
             Self::MacroParamAssignment(x) => New::Assignment(x.convert()),
-            Self::MemWrite(x) => New::MemWrite(x.convert()),
         }
     }
 }

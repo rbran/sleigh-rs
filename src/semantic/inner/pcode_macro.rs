@@ -1,8 +1,7 @@
-use crate::execution::WriteValue;
 use crate::semantic::execution::{BlockId, Build, VariableId};
 use crate::{syntax, ExecutionError, PcodeMacroError, SleighError, Span};
 
-use super::execution::{Execution, ExecutionBuilder, ReadScope};
+use super::execution::{Execution, ExecutionBuilder, ReadScope, WriteValue};
 use super::pattern::Pattern;
 use super::{GlobalScope, PcodeMacroId, Sleigh};
 

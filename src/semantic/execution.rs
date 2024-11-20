@@ -66,8 +66,6 @@ pub enum Statement {
     Build(Build),
     Declare(VariableId),
     Assignment(Assignment),
-    // TODO make MemWrite a subtype of Assignment
-    MemWrite(MemWrite),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -364,30 +362,40 @@ pub struct LocalGoto {
 }
 
 #[derive(Clone, Debug)]
-pub enum WriteValue {
-    Varnode(VarnodeId),
-    Bitrange(BitrangeId),
-    ///only with attach variable
-    TokenField {
-        token_field_id: TokenFieldId,
-        attach_id: AttachVarnodeId,
-    },
-    // TODO Context translated into varnode
-    TableExport(TableId),
-    Local {
-        id: VariableId,
-        creation: bool,
-    },
-}
-
-#[derive(Clone, Debug)]
 pub struct Assignment {
     /// assigment location
     pub location: Span,
     /// left side of the assignment location
-    pub var: WriteValue,
-    pub op: Option<AssignmentOp>,
+    pub var: AssignmentType,
     pub right: Expr,
+}
+
+#[derive(Clone, Debug)]
+pub enum AssignmentType {
+    WriteValue {
+        value: AssignmentValueWrite,
+        op: Option<AssignmentOp>,
+    },
+    WriteMemory {
+        mem: MemoryLocation,
+        addr: Expr,
+    },
+    // write to memory based on the table export
+    WriteTableExport {
+        table_id: TableId,
+        op: Option<AssignmentOp>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub enum AssignmentValueWrite {
+    Varnode(VarnodeId),
+    Bitrange(BitrangeId),
+    TokenField {
+        token_field_id: TokenFieldId,
+        attach_id: AttachVarnodeId,
+    },
+    Variable(VariableId),
 }
 
 #[derive(Clone, Debug)]
@@ -395,13 +403,6 @@ pub enum AssignmentOp {
     TakeLsb(NumberNonZeroUnsigned),
     TrunkLsb(NumberUnsigned),
     BitRange(Range<NumberUnsigned>),
-}
-
-#[derive(Clone, Debug)]
-pub struct MemWrite {
-    pub addr: Expr,
-    pub mem: MemoryLocation,
-    pub right: Expr,
 }
 
 #[derive(Clone, Debug)]

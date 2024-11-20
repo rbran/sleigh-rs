@@ -3,32 +3,110 @@ use std::ops::Range;
 use crate::execution::{Binary, VariableId};
 use crate::semantic::execution::{
     Assignment as FinalAssignment, AssignmentOp as FinalAssignmentOp,
-    WriteValue,
+    AssignmentType as FinalAssignmentType,
+    AssignmentValueWrite as FinalAssignmentValueWrite,
 };
 use crate::semantic::inner::{Sleigh, SolverStatus};
 use crate::{
-    ExecutionError, NumberNonZeroUnsigned, NumberUnsigned, Span, VarSizeError,
+    AttachVarnodeId, BitrangeId, ExecutionError, NumberNonZeroUnsigned,
+    NumberUnsigned, Span, TableId, TokenFieldId, VarSizeError, VarnodeId,
 };
 
 use super::{
     len, Execution, Expr, ExprBinaryOp, ExprElement, ExprNumber, ExprUnaryOp,
-    ExprValue, FieldSize, FieldSizeMut, MemoryLocation, Unary,
+    ExprValue, FieldSize, FieldSizeMut, FieldSizeTableExport,
+    FieldSizeUnmutable, MemoryLocation, Unary,
 };
 
 #[derive(Clone, Debug)]
 pub struct Assignment {
     pub location: Span,
     pub var_location: Span,
-    pub var: WriteValue,
-    pub op: Option<AssignmentOp>,
+    pub var: AssignmentType,
     pub right: Expr,
+}
+
+#[derive(Clone, Debug)]
+pub enum AssignmentType {
+    WriteValue {
+        value: AssignmentValueWrite,
+        op: Option<AssignmentOp>,
+    },
+    WriteMemory {
+        mem: MemoryLocation,
+        addr: Expr,
+    },
+    // write to memory based on the table export
+    WriteTableExport {
+        table_id: TableId,
+        op: Option<AssignmentOp>,
+    },
+}
+impl AssignmentType {
+    fn convert(self) -> FinalAssignmentType {
+        match self {
+            AssignmentType::WriteValue { value, op } => {
+                FinalAssignmentType::WriteValue {
+                    value: value.convert(),
+                    op: op.map(AssignmentOp::convert),
+                }
+            }
+            AssignmentType::WriteMemory { mem, addr } => {
+                FinalAssignmentType::WriteMemory {
+                    mem: mem.convert(),
+                    addr: addr.convert(),
+                }
+            }
+            AssignmentType::WriteTableExport { table_id, op } => {
+                FinalAssignmentType::WriteTableExport {
+                    table_id,
+                    op: op.map(AssignmentOp::convert),
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum AssignmentValueWrite {
+    Varnode(VarnodeId),
+    Bitrange(BitrangeId),
+    TokenField {
+        token_field_id: TokenFieldId,
+        attach_id: AttachVarnodeId,
+    },
+    Local {
+        id: VariableId,
+        creation: bool,
+    },
+}
+impl AssignmentValueWrite {
+    fn convert(self) -> FinalAssignmentValueWrite {
+        match self {
+            AssignmentValueWrite::Varnode(var) => {
+                FinalAssignmentValueWrite::Varnode(var)
+            }
+            AssignmentValueWrite::Bitrange(bit) => {
+                FinalAssignmentValueWrite::Bitrange(bit)
+            }
+            AssignmentValueWrite::TokenField {
+                token_field_id,
+                attach_id,
+            } => FinalAssignmentValueWrite::TokenField {
+                token_field_id,
+                attach_id,
+            },
+            AssignmentValueWrite::Local { id, creation: _ } => {
+                FinalAssignmentValueWrite::Variable(id)
+            }
+        }
+    }
 }
 
 impl Assignment {
     pub fn new(
         var_location: Span,
-        var: WriteValue,
-        op: Option<AssignmentOp>,
+        var: AssignmentType,
         location: Span,
         right: Expr,
     ) -> Self {
@@ -36,7 +114,6 @@ impl Assignment {
         Self {
             var_location,
             var,
-            op,
             location,
             right,
         }
@@ -54,11 +131,6 @@ impl Assignment {
             solved.i_did_a_thing();
         }
 
-        // add auto truncate in mem deref
-        if hack_auto_trunkate_mem_deref(self, sleigh, execution) {
-            solved.i_did_a_thing();
-        }
-
         // add auto truncate in simple bitand expr
         if hack_auto_fix_bitrange_with_bitand(self, sleigh, execution) {
             solved.i_did_a_thing();
@@ -70,8 +142,7 @@ impl Assignment {
         }
 
         // identify the implicity truncation for varnodes
-        if hack_assignemnt_left_hand_truncation_implied(self, sleigh, execution)
-        {
+        if hack_auto_zext_right_side(self, sleigh, execution) {
             solved.i_did_a_thing();
         }
 
@@ -80,18 +151,19 @@ impl Assignment {
             solved.i_did_a_thing();
         }
 
+        // add auto truncate in mem deref
+        if hack_auto_trunkate_right_side(self, sleigh, execution) {
+            solved.i_did_a_thing();
+        }
+
         // TODO check left size can be truncated correctly
 
         // left and right sizes are the same
-
-        let modified = len::a_receive_b(
-            &mut *self
-                .op
-                .as_mut()
-                .map(|trunc| trunc.output_size_mut())
-                .unwrap_or_else(|| self.var.size_mut(sleigh, execution)),
-            &mut *self.right.size_mut(sleigh, execution),
-        );
+        let modified = {
+            let (mut left, mut right) =
+                self.left_and_right_size_mut(sleigh, execution);
+            len::a_receive_b(&mut *left, &mut *right)
+        };
         if modified.ok_or_else(|| VarSizeError::AssignmentSides {
             left: self.left_size(sleigh, execution),
             right: self.right.size(sleigh, execution),
@@ -101,44 +173,161 @@ impl Assignment {
             solved.i_did_a_thing()
         }
 
-        if self.var.size(sleigh, execution).is_undefined()
-            || self.right.size(sleigh, execution).is_undefined()
-        {
-            solved.iam_not_finished(self.right.src(), file!(), line!())
+        match &mut self.var {
+            AssignmentType::WriteValue { value, op } => {
+                if let Some(op) = op {
+                    if op.output_size().is_undefined() {
+                        solved.iam_not_finished(
+                            self.right.src(),
+                            file!(),
+                            line!(),
+                        )
+                    }
+                }
+                match value {
+                    AssignmentValueWrite::Local { id, creation: _ } => {
+                        let var = execution.variable(*id);
+                        if var.size.get().is_undefined() {
+                            solved.iam_not_finished(
+                                self.right.src(),
+                                file!(),
+                                line!(),
+                            )
+                        }
+                    }
+                    AssignmentValueWrite::Varnode(_)
+                    | AssignmentValueWrite::Bitrange(_)
+                    | AssignmentValueWrite::TokenField { .. } => {}
+                }
+            }
+            AssignmentType::WriteMemory { mem, addr } => {
+                if mem.size.is_undefined() {
+                    solved.iam_not_finished(self.right.src(), file!(), line!())
+                }
+                addr.solve(sleigh, execution, solved)?;
+            }
+            AssignmentType::WriteTableExport { table_id: _, op } => {
+                if let Some(op) = op {
+                    if op.output_size().is_undefined() {
+                        solved.iam_not_finished(
+                            self.right.src(),
+                            file!(),
+                            line!(),
+                        )
+                    }
+                }
+            }
         }
 
         Ok(())
     }
 
-    pub fn left_size<'a>(
-        &'a self,
-        sleigh: &'a Sleigh,
-        execution: &'a Execution,
+    pub fn left_size(
+        &self,
+        sleigh: &Sleigh,
+        execution: &Execution,
     ) -> FieldSize {
-        self.op
-            .as_ref()
-            .map(|trunc| trunc.output_size())
-            .unwrap_or_else(|| self.var.size(sleigh, execution))
+        match &self.var {
+            AssignmentType::WriteTableExport { table_id, op: None } => {
+                let table = sleigh.table(*table_id);
+                let table_export = *table.export.borrow();
+                *table_export.unwrap().size().unwrap()
+            }
+            AssignmentType::WriteMemory { mem, .. } => mem.size,
+            AssignmentType::WriteValue { op: Some(op), .. }
+            | AssignmentType::WriteTableExport { op: Some(op), .. } => {
+                op.output_size()
+            }
+            AssignmentType::WriteValue {
+                op: None,
+                value: AssignmentValueWrite::Varnode(var),
+            } => FieldSize::new_bytes(sleigh.varnode(*var).len_bytes),
+            AssignmentType::WriteValue {
+                op: None,
+                value: AssignmentValueWrite::Bitrange(bit),
+            } => FieldSize::new_bits(sleigh.bitrange(*bit).bits.len()),
+            AssignmentType::WriteValue {
+                op: None,
+                value: AssignmentValueWrite::TokenField { attach_id, .. },
+            } => FieldSize::new_bytes(
+                sleigh.attach_varnodes_len_bytes(*attach_id),
+            ),
+            AssignmentType::WriteValue {
+                op: None,
+                value: AssignmentValueWrite::Local { id, creation: _ },
+            } => execution.variable(*id).size.get(),
+        }
     }
 
-    pub fn left_size_mut<'a>(
+    pub fn left_and_right_size_mut<'a>(
         &'a mut self,
         sleigh: &'a Sleigh,
         execution: &'a Execution,
-    ) -> Box<dyn FieldSizeMut + 'a> {
-        self.op
-            .as_mut()
-            .map(|trunc| trunc.output_size_mut())
-            .unwrap_or_else(|| self.var.size_mut(sleigh, execution))
+    ) -> (Box<dyn FieldSizeMut + 'a>, Box<dyn FieldSizeMut + 'a>) {
+        let left = match &mut self.var {
+            AssignmentType::WriteValue { op: Some(op), .. }
+            | AssignmentType::WriteTableExport { op: Some(op), .. } => {
+                op.output_size_mut()
+            }
+            AssignmentType::WriteMemory { mem, .. } => Box::new(&mut mem.size),
+            AssignmentType::WriteValue {
+                op: None,
+                value: AssignmentValueWrite::Varnode(var),
+            } => Box::new(FieldSizeUnmutable(FieldSize::new_bytes(
+                sleigh.varnode(*var).len_bytes,
+            ))),
+            AssignmentType::WriteValue {
+                op: None,
+                value: AssignmentValueWrite::Bitrange(bit),
+            } => Box::new(FieldSizeUnmutable(FieldSize::new_bits(
+                sleigh.bitrange(*bit).bits.len(),
+            ))),
+            AssignmentType::WriteValue {
+                op: None,
+                value: AssignmentValueWrite::TokenField { attach_id, .. },
+            } => Box::new(FieldSizeUnmutable(FieldSize::new_bytes(
+                sleigh.attach_varnodes_len_bytes(*attach_id),
+            ))),
+            AssignmentType::WriteValue {
+                op: None,
+                value: AssignmentValueWrite::Local { id, creation: _ },
+            } => Box::new(&execution.variable(*id).size),
+            AssignmentType::WriteTableExport { table_id, op: None } => {
+                let table = sleigh.table(*table_id);
+                Box::new(FieldSizeTableExport(&table.export))
+            }
+        };
+        let right = self.right.size_mut(sleigh, execution);
+        (left, right)
     }
 
     pub fn convert(self) -> FinalAssignment {
         FinalAssignment {
             location: self.location,
-            var: self.var,
-            op: self.op.map(|op| op.convert()),
+            var: self.var.convert(),
             right: self.right.convert(),
         }
+    }
+
+    fn swap_right(&mut self, mut new_right: impl FnMut(Expr) -> Expr) {
+        // dummy value for temporary use
+        let mut swap_right = Expr::Value(ExprElement::Value {
+            location: Span::File(crate::FileSpan {
+                start: crate::FileLocation {
+                    file: std::rc::Rc::from(std::path::Path::new("")),
+                    line: 0,
+                    column: 0,
+                },
+                end_line: 0,
+                end_column: 0,
+            }),
+            value: ExprValue::Int(ExprNumber {
+                size: FieldSize::default(),
+                number: crate::Number::Positive(0),
+            }),
+        });
+        core::mem::swap(&mut self.right, &mut swap_right);
+        self.right = new_right(swap_right);
     }
 }
 
@@ -183,11 +372,10 @@ impl MacroParamAssignment {
     pub fn convert(self) -> FinalAssignment {
         FinalAssignment {
             location: self.right.src().clone(),
-            var: WriteValue::Local {
-                id: self.var,
-                creation: false,
+            var: FinalAssignmentType::WriteValue {
+                value: FinalAssignmentValueWrite::Variable(self.var),
+                op: None,
             },
-            op: None,
             right: self.right.convert(),
         }
     }
@@ -242,66 +430,6 @@ impl AssignmentOp {
             AssignmentOp::BitRange(x) => FinalAssignmentOp::BitRange(x),
         }
     }
-}
-
-// HACK auto trunkate mem deref
-// eg: R0 = *:3 ptr; # R0 is 1 byte
-fn hack_auto_trunkate_mem_deref(
-    ass: &mut Assignment,
-    sleigh: &Sleigh,
-    execution: &Execution,
-) -> bool {
-    // left need to have a known size
-    let Some(left_size) = ass.left_size(sleigh, execution).final_value() else {
-        return false;
-    };
-
-    // right need to be a mem deref need to have a defined size
-    let Expr::Value(ExprElement::Op(ExprUnaryOp {
-        location: _,
-        op: Unary::Dereference(MemoryLocation { size, .. }),
-        input: _,
-    })) = &ass.right
-    else {
-        return false;
-    };
-    let Some(right_size) = size.final_value() else {
-        return false;
-    };
-
-    // only if left side is smaller then the right side
-    if left_size >= right_size {
-        return false;
-    }
-
-    // add the implicit truncation
-    // dummy value for temporary use
-    let location = Span::File(crate::FileSpan {
-        start: crate::FileLocation {
-            file: std::rc::Rc::from(std::path::Path::new("")),
-            line: 0,
-            column: 0,
-        },
-        end_line: 0,
-        end_column: 0,
-    });
-    let mut swap_right = Expr::Value(ExprElement::Value {
-        location,
-        value: ExprValue::Int(ExprNumber {
-            size: FieldSize::default(),
-            number: crate::Number::Positive(0),
-        }),
-    });
-    core::mem::swap(&mut ass.right, &mut swap_right);
-    ass.right = Expr::Value(ExprElement::new_op(
-        ass.location.clone(),
-        Unary::BitRange {
-            range: 0..left_size.get(),
-            size: FieldSize::Value(left_size),
-        },
-        swap_right,
-    ));
-    true
 }
 
 // HACK auto solve simple assignments.
@@ -419,7 +547,11 @@ fn hack_auto_fix_bitrange_with_bitand(
     execution: &Execution,
 ) -> bool {
     // left side need to be a bitrange op
-    let Some(AssignmentOp::BitRange(bitrange)) = &ass.op else {
+    let AssignmentType::WriteValue {
+        op: Some(AssignmentOp::BitRange(bitrange)),
+        value: _,
+    } = &ass.var
+    else {
         return false;
     };
     let range = bitrange.end - bitrange.start;
@@ -434,33 +566,16 @@ fn hack_auto_fix_bitrange_with_bitand(
     }
 
     // add the bitrange around the bitand
-
-    // dummy value for temporary use
-    let location = Span::File(crate::FileSpan {
-        start: crate::FileLocation {
-            file: std::rc::Rc::from(std::path::Path::new("")),
-            line: 0,
-            column: 0,
-        },
-        end_line: 0,
-        end_column: 0,
+    ass.swap_right(|swap_right| {
+        Expr::Value(ExprElement::new_op(
+            swap_right.src().clone(),
+            Unary::BitRange {
+                range: 0..range,
+                size: FieldSize::Value(range.try_into().unwrap()),
+            },
+            swap_right,
+        ))
     });
-    let mut swap_right = Expr::Value(ExprElement::Value {
-        location,
-        value: ExprValue::Int(ExprNumber {
-            size: FieldSize::default(),
-            number: crate::Number::Positive(0),
-        }),
-    });
-    core::mem::swap(&mut ass.right, &mut swap_right);
-    ass.right = Expr::Value(ExprElement::new_op(
-        ass.location.clone(),
-        Unary::BitRange {
-            range: 0..range,
-            size: FieldSize::Value(range.try_into().unwrap()),
-        },
-        swap_right,
-    ));
     true
 }
 
@@ -471,11 +586,15 @@ fn hack_extra_var_info_creation(
     _sleigh: &Sleigh,
     execution: &Execution,
 ) -> bool {
-    let WriteValue::Local { id, creation: true } = ass.var else {
+    let AssignmentType::WriteValue {
+        op: _,
+        value: AssignmentValueWrite::Local { id, creation: true },
+    } = &ass.var
+    else {
         return false;
     };
 
-    let var = execution.variable(id);
+    let var = execution.variable(*id);
     if !var.size.get().is_fully_undefined() {
         return false;
     }
@@ -500,23 +619,80 @@ fn hack_extra_var_info_creation(
     }
 }
 
+// HACK truncate the right side if left side is smaller
+// eg mem: R0 = *:3 ptr; # R0 is 1 byte
+fn hack_auto_trunkate_right_side(
+    ass: &mut Assignment,
+    sleigh: &Sleigh,
+    execution: &Execution,
+) -> bool {
+    // left need to have a known size
+    let Some(left_size) = ass.left_size(sleigh, execution).final_value() else {
+        return false;
+    };
+
+    // right need to have a known size
+    let right_size = ass.right.size(sleigh, execution);
+    let Some(right_size) = right_size.final_value() else {
+        return false;
+    };
+
+    // only if left side is smaller then the right side
+    if left_size >= right_size {
+        return false;
+    }
+
+    match &mut ass.right {
+        // if right side is deref and left side is byte sized, just adjust the mem read-size
+        Expr::Value(ExprElement::Op(ExprUnaryOp {
+            location: _,
+            op: Unary::Dereference(MemoryLocation { size, .. }),
+            input: _,
+        })) if left_size.get() % 8 == 0 => {
+            *size = FieldSize::new_bits(left_size);
+        }
+
+        // otherwise just add a implici truncation to the right
+        _ => ass.swap_right(|swap_right| {
+            Expr::Value(ExprElement::new_op(
+                swap_right.src().clone(),
+                Unary::BitRange {
+                    range: 0..left_size.get(),
+                    size: FieldSize::Value(left_size),
+                },
+                swap_right,
+            ))
+        }),
+    }
+    true
+}
+
 // HACK: sometimes when assigning a value smaller then the size of the left side,
 // eg one bit registers are declare as one
 // byte instead of bitranges (eg flags on X86 like ZF), and assigned
 // binary values to it, when that happen, it's unclear if zext or a left
 // hand truncation happen, I'll stick with left hand operation for now
-fn hack_assignemnt_left_hand_truncation_implied(
+fn hack_auto_zext_right_side(
     ass: &mut Assignment,
     sleigh: &Sleigh,
     execution: &Execution,
 ) -> bool {
-    // left hand need to be an varnode or local variable
-    let left_size = match &ass.var {
-        WriteValue::Varnode(id) => {
+    // left hand need to have a known size
+    let left_size = match &mut ass.var {
+        // can be a varnode
+        AssignmentType::WriteValue {
+            value: AssignmentValueWrite::Varnode(id),
+            op: None,
+        } => {
             let var = sleigh.varnode(*id);
-            var.len_bytes.get() * 8
+            let len = var.len_bytes.get() * 8;
+            len.try_into().unwrap()
         }
-        WriteValue::Local { id, creation: _ } => {
+        // local variable
+        AssignmentType::WriteValue {
+            value: AssignmentValueWrite::Local { id, creation: _ },
+            op: None,
+        } => {
             let var = execution.variable(*id);
             // TODO maybe allow non explicit declared variables
             if !var.explicit {
@@ -525,28 +701,34 @@ fn hack_assignemnt_left_hand_truncation_implied(
             let Some(bits) = var.size.get().final_value() else {
                 return false;
             };
-            bits.get()
+            bits
+        }
+        // or mem write
+        AssignmentType::WriteMemory { mem, addr: _ } => {
+            let Some(size) = mem.size.final_value() else {
+                return false;
+            };
+            size
         }
         _ => return false,
     };
-
-    // can't have operators on the left side
-    if ass.op.is_some() {
-        return false;
-    }
 
     // left side need to be smaller then the right side
     let Some(right_size) = ass.right.size(sleigh, execution).max_bits() else {
         return false;
     };
-    if left_size < right_size.get() {
+    if left_size <= right_size {
         return false;
     }
 
-    // NOTE this could also be solved by adding a zext to the right side, but
-    // it seems that a left hand truncation is implied because this only happens
-    // if the rest of the varnode is not important.
-    ass.op = Some(AssignmentOp::BitRange(0..right_size.get()));
+    // add a zext to the right side
+    ass.swap_right(|swap_right| {
+        Expr::new_value(ExprElement::new_op(
+            swap_right.src().clone(),
+            Unary::Zext(FieldSize::new_bits(left_size)),
+            swap_right,
+        ))
+    });
     true
 }
 
@@ -572,33 +754,16 @@ fn hack_1_byte_varnode_assign_to_bit(
     }
 
     // truncate the right size to one bit
-
-    // dummy value for temporary use
-    let location = Span::File(crate::FileSpan {
-        start: crate::FileLocation {
-            file: std::rc::Rc::from(std::path::Path::new("")),
-            line: 0,
-            column: 0,
-        },
-        end_line: 0,
-        end_column: 0,
+    ass.swap_right(|swap_right| {
+        Expr::Value(ExprElement::new_op(
+            swap_right.src().clone(),
+            Unary::BitRange {
+                range: 0..1,
+                size: FieldSize::Value(1.try_into().unwrap()),
+            },
+            swap_right,
+        ))
     });
-    let mut swap_right = Expr::Value(ExprElement::Value {
-        location,
-        value: ExprValue::Int(super::ExprNumber {
-            size: FieldSize::default(),
-            number: crate::Number::Positive(0),
-        }),
-    });
-    core::mem::swap(&mut ass.right, &mut swap_right);
-    ass.right = Expr::Value(ExprElement::new_op(
-        ass.location.clone(),
-        Unary::BitRange {
-            range: 0..1,
-            size: FieldSize::Value(1.try_into().unwrap()),
-        },
-        swap_right,
-    ));
 
     true
 }
