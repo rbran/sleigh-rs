@@ -20,11 +20,11 @@ use crate::{
 };
 
 use super::{
-    Assignment, AssignmentOp, AssignmentType, AssignmentValueWrite, BranchCall,
-    CpuBranch, Execution, ExecutionError, Export, Expr, ExprCPool, ExprDisVar,
-    ExprElement, ExprIntDynamic, ExprNew, ExprUnaryOp, ExprValue, FieldSize,
-    LocalGoto, MacroParamAssignment, MemoryLocation, Reference, Statement,
-    TableExportType, UserCall,
+    Assignment, AssignmentOp, AssignmentWrite, AssignmentWriteVariable,
+    BranchCall, CpuBranch, Execution, ExecutionError, Export, Expr, ExprCPool,
+    ExprDisVar, ExprElement, ExprIntDynamic, ExprNew, ExprUnaryOp, ExprValue,
+    FieldSize, LocalGoto, MacroParamAssignment, MemoryLocation, Reference,
+    Statement, TableExportType, UserCall,
 };
 
 #[derive(Clone, Debug)]
@@ -575,8 +575,8 @@ pub trait ExecutionBuilder {
                 )?;
                 Ok(Statement::Assignment(Assignment::new(
                     input.src.clone(),
-                    AssignmentType::WriteValue {
-                        value: AssignmentValueWrite::Local {
+                    AssignmentWrite::Variable {
+                        value: AssignmentWriteVariable::Local {
                             id: new_var_id,
                             creation: local,
                         },
@@ -592,10 +592,10 @@ pub trait ExecutionBuilder {
             }
             //Assign to varnode
             (Some(WriteValue::Varnode(var)), false) => {
-                let value = AssignmentValueWrite::Varnode(var);
+                let value = AssignmentWriteVariable::Varnode(var);
                 let op =
                     input.op.map(|op| self.new_truncate(op)).transpose()?;
-                let addr = AssignmentType::WriteValue { value, op };
+                let addr = AssignmentWrite::Variable { value, op };
                 Ok(Statement::Assignment(Assignment::new(
                     input.src.clone(),
                     addr,
@@ -618,7 +618,7 @@ pub trait ExecutionBuilder {
                         also_values: _,
                     }) => Ok(Statement::Assignment(Assignment::new(
                         input.src.clone(),
-                        AssignmentType::WriteTableExport { table_id, op },
+                        AssignmentWrite::TableExport { table_id, op },
                         input.src,
                         right,
                     ))),
@@ -669,17 +669,17 @@ pub trait ExecutionBuilder {
                     input.op.map(|op| self.new_truncate(op)).transpose()?;
                 let value = match var {
                     WriteValue::Bitrange(bit) => {
-                        AssignmentValueWrite::Bitrange(bit)
+                        AssignmentWriteVariable::Bitrange(bit)
                     }
                     WriteValue::TokenField {
                         token_field_id,
                         attach_id,
-                    } => AssignmentValueWrite::TokenField {
+                    } => AssignmentWriteVariable::TokenField {
                         token_field_id,
                         attach_id,
                     },
                     WriteValue::Local { id, creation } => {
-                        AssignmentValueWrite::Local { creation, id }
+                        AssignmentWriteVariable::Local { creation, id }
                     }
                     WriteValue::Varnode(_) | WriteValue::TableExport(_) => {
                         unreachable!()
@@ -687,7 +687,7 @@ pub trait ExecutionBuilder {
                 };
                 Ok(Statement::Assignment(Assignment::new(
                     input.src.clone(),
-                    AssignmentType::WriteValue { value, op },
+                    AssignmentWrite::Variable { value, op },
                     input.src,
                     right,
                 )))
@@ -702,7 +702,7 @@ pub trait ExecutionBuilder {
         let addr = self.new_expr(input.addr)?;
         let location = addr.src().clone();
         let right = self.new_expr(input.right)?;
-        let var = AssignmentType::WriteMemory { mem, addr };
+        let var = AssignmentWrite::Memory { mem, addr };
         Ok(Assignment::new(location, var, input.src, right))
     }
     fn new_truncate(
@@ -1432,14 +1432,14 @@ fn translate_value(
 
 fn translate_write(
     sleigh: &Sleigh,
-    expr: &AssignmentType,
+    expr: &AssignmentWrite,
     location: &Span,
     variables_map: &[VariableAlias<'_>],
-) -> Result<AssignmentType, Box<ExecutionError>> {
+) -> Result<AssignmentWrite, Box<ExecutionError>> {
     match expr {
         // TODO check the creation flag, it should only be used on local variables
-        AssignmentType::WriteValue {
-            value: AssignmentValueWrite::Local { id, creation: _ },
+        AssignmentWrite::Variable {
+            value: AssignmentWriteVariable::Local { id, creation: _ },
             op,
         } => match (variables_map[id.0].clone(), op.to_owned()) {
             (
@@ -1447,8 +1447,8 @@ fn translate_write(
                 None,
             ) => {
                 let op = Some(AssignmentOp::BitRange(bits));
-                let value = AssignmentValueWrite::Varnode(*varnode);
-                Ok(AssignmentType::WriteValue { op, value })
+                let value = AssignmentWriteVariable::Varnode(*varnode);
+                Ok(AssignmentWrite::Variable { op, value })
             }
             (
                 VariableAlias::SubVarnode(
@@ -1464,18 +1464,18 @@ fn translate_write(
                     todo!();
                 };
                 let op = Some(AssignmentOp::BitRange(bits));
-                let value = AssignmentValueWrite::TokenField {
+                let value = AssignmentWriteVariable::TokenField {
                     token_field_id: token_field_expr.id,
                     attach_id,
                 };
-                Ok(AssignmentType::WriteValue { op, value })
+                Ok(AssignmentWrite::Variable { op, value })
             }
             (
                 VariableAlias::SubVarnode(ExprValue::Table(table_id), bits),
                 None,
             ) => {
                 table_write(sleigh, *table_id, location)?;
-                Ok(AssignmentType::WriteTableExport {
+                Ok(AssignmentWrite::TableExport {
                     table_id: *table_id,
                     op: Some(AssignmentOp::BitRange(bits)),
                 })
@@ -1494,16 +1494,16 @@ fn translate_write(
                     | ExprValue::Bitrange(_)
                     | ExprValue::DisVar(_) => panic!(),
 
-                    ExprValue::ExeVar(id) => Ok(AssignmentType::WriteValue {
+                    ExprValue::ExeVar(id) => Ok(AssignmentWrite::Variable {
                         op,
-                        value: AssignmentValueWrite::Local {
+                        value: AssignmentWriteVariable::Local {
                             id: *id,
                             creation: false,
                         },
                     }),
-                    ExprValue::Varnode(id) => Ok(AssignmentType::WriteValue {
+                    ExprValue::Varnode(id) => Ok(AssignmentWrite::Variable {
                         op,
-                        value: AssignmentValueWrite::Varnode(*id),
+                        value: AssignmentWriteVariable::Varnode(*id),
                     }),
                     ExprValue::TokenField(tf_expr) => {
                         let token_field = sleigh.token_field(tf_expr.id);
@@ -1513,9 +1513,9 @@ fn translate_write(
                         else {
                             todo!();
                         };
-                        Ok(AssignmentType::WriteValue {
+                        Ok(AssignmentWrite::Variable {
                             op,
-                            value: AssignmentValueWrite::TokenField {
+                            value: AssignmentWriteVariable::TokenField {
                                 token_field_id: tf_expr.id,
                                 attach_id,
                             },
@@ -1525,9 +1525,9 @@ fn translate_write(
                         attach_id,
                         attach_value:
                             DynamicValueType::TokenField(token_field_id),
-                    }) => Ok(AssignmentType::WriteValue {
+                    }) => Ok(AssignmentWrite::Variable {
                         op,
-                        value: AssignmentValueWrite::TokenField {
+                        value: AssignmentWriteVariable::TokenField {
                             token_field_id: *token_field_id,
                             attach_id: *attach_id,
                         },
@@ -1540,10 +1540,7 @@ fn translate_write(
                     }
                     ExprValue::Table(id) => {
                         table_write(sleigh, *id, location)?;
-                        Ok(AssignmentType::WriteTableExport {
-                            table_id: *id,
-                            op,
-                        })
+                        Ok(AssignmentWrite::TableExport { table_id: *id, op })
                     }
                     ExprValue::IntDynamic(ExprIntDynamic { .. }) => {
                         panic!()
@@ -1554,59 +1551,59 @@ fn translate_write(
                 VariableAlias::Parameter(id) | VariableAlias::NewVariable(id),
                 op,
             ) => {
-                let value = AssignmentValueWrite::Local {
+                let value = AssignmentWriteVariable::Local {
                     id,
                     creation: false,
                 };
-                Ok(AssignmentType::WriteValue { op, value })
+                Ok(AssignmentWrite::Variable { op, value })
             }
         },
-        AssignmentType::WriteValue {
-            value: AssignmentValueWrite::Bitrange(bitrange_id),
+        AssignmentWrite::Variable {
+            value: AssignmentWriteVariable::Bitrange(bitrange_id),
             op,
         } => {
-            let value = AssignmentValueWrite::Bitrange(*bitrange_id);
-            Ok(AssignmentType::WriteValue {
+            let value = AssignmentWriteVariable::Bitrange(*bitrange_id);
+            Ok(AssignmentWrite::Variable {
                 op: op.to_owned(),
                 value,
             })
         }
-        AssignmentType::WriteValue {
-            value: AssignmentValueWrite::Varnode(varnode_id),
+        AssignmentWrite::Variable {
+            value: AssignmentWriteVariable::Varnode(varnode_id),
             op,
         } => {
-            let value = AssignmentValueWrite::Varnode(*varnode_id);
-            Ok(AssignmentType::WriteValue {
+            let value = AssignmentWriteVariable::Varnode(*varnode_id);
+            Ok(AssignmentWrite::Variable {
                 op: op.to_owned(),
                 value,
             })
         }
-        AssignmentType::WriteValue {
+        AssignmentWrite::Variable {
             value:
-                AssignmentValueWrite::TokenField {
+                AssignmentWriteVariable::TokenField {
                     token_field_id,
                     attach_id,
                 },
             op,
         } => {
-            let value = AssignmentValueWrite::TokenField {
+            let value = AssignmentWriteVariable::TokenField {
                 token_field_id: *token_field_id,
                 attach_id: *attach_id,
             };
-            Ok(AssignmentType::WriteValue {
+            Ok(AssignmentWrite::Variable {
                 op: op.to_owned(),
                 value,
             })
         }
-        AssignmentType::WriteMemory { mem, addr } => {
-            let addr = translate_expr(addr, &variables_map);
-            Ok(AssignmentType::WriteMemory {
+        AssignmentWrite::Memory { mem, addr } => {
+            let addr = translate_expr(addr, variables_map);
+            Ok(AssignmentWrite::Memory {
                 mem: mem.clone(),
                 addr,
             })
         }
-        AssignmentType::WriteTableExport { table_id, op } => {
-            Ok(AssignmentType::WriteTableExport {
+        AssignmentWrite::TableExport { table_id, op } => {
+            Ok(AssignmentWrite::TableExport {
                 table_id: *table_id,
                 op: op.to_owned(),
             })

@@ -3,8 +3,8 @@ use std::ops::Range;
 use crate::execution::{Binary, VariableId};
 use crate::semantic::execution::{
     Assignment as FinalAssignment, AssignmentOp as FinalAssignmentOp,
-    AssignmentType as FinalAssignmentType,
-    AssignmentValueWrite as FinalAssignmentValueWrite,
+    AssignmentWrite as FinalAssignmentType,
+    AssignmentWriteVariable as FinalAssignmentValueWrite,
 };
 use crate::semantic::inner::{Sleigh, SolverStatus};
 use crate::{
@@ -22,43 +22,43 @@ use super::{
 pub struct Assignment {
     pub location: Span,
     pub var_location: Span,
-    pub var: AssignmentType,
+    pub var: AssignmentWrite,
     pub right: Expr,
 }
 
 #[derive(Clone, Debug)]
-pub enum AssignmentType {
-    WriteValue {
-        value: AssignmentValueWrite,
+pub enum AssignmentWrite {
+    Variable {
+        value: AssignmentWriteVariable,
         op: Option<AssignmentOp>,
     },
-    WriteMemory {
+    Memory {
         mem: MemoryLocation,
         addr: Expr,
     },
     // write to memory based on the table export
-    WriteTableExport {
+    TableExport {
         table_id: TableId,
         op: Option<AssignmentOp>,
     },
 }
-impl AssignmentType {
+impl AssignmentWrite {
     fn convert(self) -> FinalAssignmentType {
         match self {
-            AssignmentType::WriteValue { value, op } => {
-                FinalAssignmentType::WriteValue {
+            AssignmentWrite::Variable { value, op } => {
+                FinalAssignmentType::Variable {
                     value: value.convert(),
                     op: op.map(AssignmentOp::convert),
                 }
             }
-            AssignmentType::WriteMemory { mem, addr } => {
-                FinalAssignmentType::WriteMemory {
+            AssignmentWrite::Memory { mem, addr } => {
+                FinalAssignmentType::Memory {
                     mem: mem.convert(),
                     addr: addr.convert(),
                 }
             }
-            AssignmentType::WriteTableExport { table_id, op } => {
-                FinalAssignmentType::WriteTableExport {
+            AssignmentWrite::TableExport { table_id, op } => {
+                FinalAssignmentType::TableExport {
                     table_id,
                     op: op.map(AssignmentOp::convert),
                 }
@@ -68,7 +68,7 @@ impl AssignmentType {
 }
 
 #[derive(Clone, Debug)]
-pub enum AssignmentValueWrite {
+pub enum AssignmentWriteVariable {
     Varnode(VarnodeId),
     Bitrange(BitrangeId),
     TokenField {
@@ -80,23 +80,23 @@ pub enum AssignmentValueWrite {
         creation: bool,
     },
 }
-impl AssignmentValueWrite {
+impl AssignmentWriteVariable {
     fn convert(self) -> FinalAssignmentValueWrite {
         match self {
-            AssignmentValueWrite::Varnode(var) => {
+            AssignmentWriteVariable::Varnode(var) => {
                 FinalAssignmentValueWrite::Varnode(var)
             }
-            AssignmentValueWrite::Bitrange(bit) => {
+            AssignmentWriteVariable::Bitrange(bit) => {
                 FinalAssignmentValueWrite::Bitrange(bit)
             }
-            AssignmentValueWrite::TokenField {
+            AssignmentWriteVariable::TokenField {
                 token_field_id,
                 attach_id,
             } => FinalAssignmentValueWrite::TokenField {
                 token_field_id,
                 attach_id,
             },
-            AssignmentValueWrite::Local { id, creation: _ } => {
+            AssignmentWriteVariable::Local { id, creation: _ } => {
                 FinalAssignmentValueWrite::Variable(id)
             }
         }
@@ -106,7 +106,7 @@ impl AssignmentValueWrite {
 impl Assignment {
     pub fn new(
         var_location: Span,
-        var: AssignmentType,
+        var: AssignmentWrite,
         location: Span,
         right: Expr,
     ) -> Self {
@@ -174,7 +174,7 @@ impl Assignment {
         }
 
         match &mut self.var {
-            AssignmentType::WriteValue { value, op } => {
+            AssignmentWrite::Variable { value, op } => {
                 if let Some(op) = op {
                     if op.output_size().is_undefined() {
                         solved.iam_not_finished(
@@ -185,7 +185,7 @@ impl Assignment {
                     }
                 }
                 match value {
-                    AssignmentValueWrite::Local { id, creation: _ } => {
+                    AssignmentWriteVariable::Local { id, creation: _ } => {
                         let var = execution.variable(*id);
                         if var.size.get().is_undefined() {
                             solved.iam_not_finished(
@@ -195,18 +195,18 @@ impl Assignment {
                             )
                         }
                     }
-                    AssignmentValueWrite::Varnode(_)
-                    | AssignmentValueWrite::Bitrange(_)
-                    | AssignmentValueWrite::TokenField { .. } => {}
+                    AssignmentWriteVariable::Varnode(_)
+                    | AssignmentWriteVariable::Bitrange(_)
+                    | AssignmentWriteVariable::TokenField { .. } => {}
                 }
             }
-            AssignmentType::WriteMemory { mem, addr } => {
+            AssignmentWrite::Memory { mem, addr } => {
                 if mem.size.is_undefined() {
                     solved.iam_not_finished(self.right.src(), file!(), line!())
                 }
                 addr.solve(sleigh, execution, solved)?;
             }
-            AssignmentType::WriteTableExport { table_id: _, op } => {
+            AssignmentWrite::TableExport { table_id: _, op } => {
                 if let Some(op) = op {
                     if op.output_size().is_undefined() {
                         solved.iam_not_finished(
@@ -228,33 +228,33 @@ impl Assignment {
         execution: &Execution,
     ) -> FieldSize {
         match &self.var {
-            AssignmentType::WriteTableExport { table_id, op: None } => {
+            AssignmentWrite::TableExport { table_id, op: None } => {
                 let table = sleigh.table(*table_id);
                 let table_export = *table.export.borrow();
                 *table_export.unwrap().size().unwrap()
             }
-            AssignmentType::WriteMemory { mem, .. } => mem.size,
-            AssignmentType::WriteValue { op: Some(op), .. }
-            | AssignmentType::WriteTableExport { op: Some(op), .. } => {
+            AssignmentWrite::Memory { mem, .. } => mem.size,
+            AssignmentWrite::Variable { op: Some(op), .. }
+            | AssignmentWrite::TableExport { op: Some(op), .. } => {
                 op.output_size()
             }
-            AssignmentType::WriteValue {
+            AssignmentWrite::Variable {
                 op: None,
-                value: AssignmentValueWrite::Varnode(var),
+                value: AssignmentWriteVariable::Varnode(var),
             } => FieldSize::new_bytes(sleigh.varnode(*var).len_bytes),
-            AssignmentType::WriteValue {
+            AssignmentWrite::Variable {
                 op: None,
-                value: AssignmentValueWrite::Bitrange(bit),
+                value: AssignmentWriteVariable::Bitrange(bit),
             } => FieldSize::new_bits(sleigh.bitrange(*bit).bits.len()),
-            AssignmentType::WriteValue {
+            AssignmentWrite::Variable {
                 op: None,
-                value: AssignmentValueWrite::TokenField { attach_id, .. },
+                value: AssignmentWriteVariable::TokenField { attach_id, .. },
             } => FieldSize::new_bytes(
                 sleigh.attach_varnodes_len_bytes(*attach_id),
             ),
-            AssignmentType::WriteValue {
+            AssignmentWrite::Variable {
                 op: None,
-                value: AssignmentValueWrite::Local { id, creation: _ },
+                value: AssignmentWriteVariable::Local { id, creation: _ },
             } => execution.variable(*id).size.get(),
         }
     }
@@ -265,34 +265,34 @@ impl Assignment {
         execution: &'a Execution,
     ) -> (Box<dyn FieldSizeMut + 'a>, Box<dyn FieldSizeMut + 'a>) {
         let left = match &mut self.var {
-            AssignmentType::WriteValue { op: Some(op), .. }
-            | AssignmentType::WriteTableExport { op: Some(op), .. } => {
+            AssignmentWrite::Variable { op: Some(op), .. }
+            | AssignmentWrite::TableExport { op: Some(op), .. } => {
                 op.output_size_mut()
             }
-            AssignmentType::WriteMemory { mem, .. } => Box::new(&mut mem.size),
-            AssignmentType::WriteValue {
+            AssignmentWrite::Memory { mem, .. } => Box::new(&mut mem.size),
+            AssignmentWrite::Variable {
                 op: None,
-                value: AssignmentValueWrite::Varnode(var),
+                value: AssignmentWriteVariable::Varnode(var),
             } => Box::new(FieldSizeUnmutable(FieldSize::new_bytes(
                 sleigh.varnode(*var).len_bytes,
             ))),
-            AssignmentType::WriteValue {
+            AssignmentWrite::Variable {
                 op: None,
-                value: AssignmentValueWrite::Bitrange(bit),
+                value: AssignmentWriteVariable::Bitrange(bit),
             } => Box::new(FieldSizeUnmutable(FieldSize::new_bits(
                 sleigh.bitrange(*bit).bits.len(),
             ))),
-            AssignmentType::WriteValue {
+            AssignmentWrite::Variable {
                 op: None,
-                value: AssignmentValueWrite::TokenField { attach_id, .. },
+                value: AssignmentWriteVariable::TokenField { attach_id, .. },
             } => Box::new(FieldSizeUnmutable(FieldSize::new_bytes(
                 sleigh.attach_varnodes_len_bytes(*attach_id),
             ))),
-            AssignmentType::WriteValue {
+            AssignmentWrite::Variable {
                 op: None,
-                value: AssignmentValueWrite::Local { id, creation: _ },
+                value: AssignmentWriteVariable::Local { id, creation: _ },
             } => Box::new(&execution.variable(*id).size),
-            AssignmentType::WriteTableExport { table_id, op: None } => {
+            AssignmentWrite::TableExport { table_id, op: None } => {
                 let table = sleigh.table(*table_id);
                 Box::new(FieldSizeTableExport(&table.export))
             }
@@ -372,7 +372,7 @@ impl MacroParamAssignment {
     pub fn convert(self) -> FinalAssignment {
         FinalAssignment {
             location: self.right.src().clone(),
-            var: FinalAssignmentType::WriteValue {
+            var: FinalAssignmentType::Variable {
                 value: FinalAssignmentValueWrite::Variable(self.var),
                 op: None,
             },
@@ -547,7 +547,7 @@ fn hack_auto_fix_bitrange_with_bitand(
     execution: &Execution,
 ) -> bool {
     // left side need to be a bitrange op
-    let AssignmentType::WriteValue {
+    let AssignmentWrite::Variable {
         op: Some(AssignmentOp::BitRange(bitrange)),
         value: _,
     } = &ass.var
@@ -586,9 +586,9 @@ fn hack_extra_var_info_creation(
     _sleigh: &Sleigh,
     execution: &Execution,
 ) -> bool {
-    let AssignmentType::WriteValue {
+    let AssignmentWrite::Variable {
         op: _,
-        value: AssignmentValueWrite::Local { id, creation: true },
+        value: AssignmentWriteVariable::Local { id, creation: true },
     } = &ass.var
     else {
         return false;
@@ -680,8 +680,8 @@ fn hack_auto_zext_right_side(
     // left hand need to have a known size
     let left_size = match &mut ass.var {
         // can be a varnode
-        AssignmentType::WriteValue {
-            value: AssignmentValueWrite::Varnode(id),
+        AssignmentWrite::Variable {
+            value: AssignmentWriteVariable::Varnode(id),
             op: None,
         } => {
             let var = sleigh.varnode(*id);
@@ -689,8 +689,8 @@ fn hack_auto_zext_right_side(
             len.try_into().unwrap()
         }
         // local variable
-        AssignmentType::WriteValue {
-            value: AssignmentValueWrite::Local { id, creation: _ },
+        AssignmentWrite::Variable {
+            value: AssignmentWriteVariable::Local { id, creation: _ },
             op: None,
         } => {
             let var = execution.variable(*id);
@@ -704,7 +704,7 @@ fn hack_auto_zext_right_side(
             bits
         }
         // or mem write
-        AssignmentType::WriteMemory { mem, addr: _ } => {
+        AssignmentWrite::Memory { mem, addr: _ } => {
             let Some(size) = mem.size.final_value() else {
                 return false;
             };

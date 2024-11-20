@@ -366,29 +366,29 @@ pub struct Assignment {
     /// assigment location
     pub location: Span,
     /// left side of the assignment location
-    pub var: AssignmentType,
+    pub var: AssignmentWrite,
     pub right: Expr,
 }
 
 #[derive(Clone, Debug)]
-pub enum AssignmentType {
-    WriteValue {
-        value: AssignmentValueWrite,
+pub enum AssignmentWrite {
+    Variable {
+        value: AssignmentWriteVariable,
         op: Option<AssignmentOp>,
     },
-    WriteMemory {
+    Memory {
         mem: MemoryLocation,
         addr: Expr,
     },
     // write to memory based on the table export
-    WriteTableExport {
+    TableExport {
         table_id: TableId,
         op: Option<AssignmentOp>,
     },
 }
 
 #[derive(Clone, Debug)]
-pub enum AssignmentValueWrite {
+pub enum AssignmentWriteVariable {
     Varnode(VarnodeId),
     Bitrange(BitrangeId),
     TokenField {
