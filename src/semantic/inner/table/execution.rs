@@ -1,3 +1,4 @@
+use crate::execution::DynamicValueType;
 use crate::semantic::execution::BlockId;
 use crate::semantic::inner::execution::{
     Execution, ExecutionBuilder, ReadScope, WriteValue,
@@ -5,6 +6,7 @@ use crate::semantic::inner::execution::{
 use crate::semantic::inner::pattern::Pattern;
 use crate::semantic::inner::Sleigh;
 use crate::semantic::token::TokenFieldAttach;
+use crate::varnode::ContextAttach;
 use crate::{ExecutionError, Span};
 
 #[derive(Debug)]
@@ -125,8 +127,21 @@ impl ExecutionBuilder for Builder<'_> {
                         src.clone(),
                     )));
                 };
-                Ok(WriteValue::TokenField {
-                    token_field_id,
+                Ok(WriteValue::DynVarnode {
+                    value_id: DynamicValueType::TokenField(token_field_id),
+                    attach_id,
+                })
+            }
+            GlobalScope::Context(context_id) => {
+                //filter field with meaning to variable
+                let meaning = self.sleigh().context(context_id).attach;
+                let Some(ContextAttach::Varnode(attach_id)) = meaning else {
+                    return Err(Box::new(ExecutionError::InvalidRef(
+                        src.clone(),
+                    )));
+                };
+                Ok(WriteValue::DynVarnode {
+                    value_id: DynamicValueType::Context(context_id),
                     attach_id,
                 })
             }

@@ -1,4 +1,6 @@
+use crate::execution::DynamicValueType;
 use crate::semantic::execution::{BlockId, Build, VariableId};
+use crate::varnode::ContextAttach;
 use crate::{syntax, ExecutionError, PcodeMacroError, SleighError, Span};
 
 use super::execution::{Execution, ExecutionBuilder, ReadScope, WriteValue};
@@ -114,6 +116,19 @@ impl ExecutionBuilder for Builder<'_, '_> {
             .get_global(name)
             .ok_or_else(|| Box::new(ExecutionError::MissingRef(src.clone())))?
         {
+            GlobalScope::Context(context_id) => {
+                //filter field with meaning to variable
+                let meaning = self.sleigh().context(context_id).attach;
+                let Some(ContextAttach::Varnode(attach_id)) = meaning else {
+                    return Err(Box::new(ExecutionError::InvalidRef(
+                        src.clone(),
+                    )));
+                };
+                Ok(WriteValue::DynVarnode {
+                    value_id: DynamicValueType::Context(context_id),
+                    attach_id,
+                })
+            }
             Varnode(x) => Ok(WriteValue::Varnode(x)),
             Bitrange(x) => Ok(WriteValue::Bitrange(x)),
             _ => Err(Box::new(ExecutionError::InvalidRef(src.clone()))),

@@ -44,9 +44,8 @@ pub enum ReadScope {
 pub(crate) enum WriteValue {
     Varnode(VarnodeId),
     Bitrange(BitrangeId),
-    ///only with attach variable
-    TokenField {
-        token_field_id: TokenFieldId,
+    DynVarnode {
+        value_id: DynamicValueType,
         attach_id: AttachVarnodeId,
     },
     // TODO Context translated into varnode
@@ -660,7 +659,7 @@ pub trait ExecutionBuilder {
             (
                 Some(
                     var @ (WriteValue::Bitrange(_)
-                    | WriteValue::TokenField { .. }
+                    | WriteValue::DynVarnode { .. }
                     | WriteValue::Local { .. }),
                 ),
                 false,
@@ -671,11 +670,11 @@ pub trait ExecutionBuilder {
                     WriteValue::Bitrange(bit) => {
                         AssignmentWriteVariable::Bitrange(bit)
                     }
-                    WriteValue::TokenField {
-                        token_field_id,
+                    WriteValue::DynVarnode {
+                        value_id,
                         attach_id,
-                    } => AssignmentWriteVariable::TokenField {
-                        token_field_id,
+                    } => AssignmentWriteVariable::DynVarnode {
+                        value_id,
                         attach_id,
                     },
                     WriteValue::Local { id, creation } => {
@@ -1464,8 +1463,8 @@ fn translate_write(
                     todo!();
                 };
                 let op = Some(AssignmentOp::BitRange(bits));
-                let value = AssignmentWriteVariable::TokenField {
-                    token_field_id: token_field_expr.id,
+                let value = AssignmentWriteVariable::DynVarnode {
+                    value_id: DynamicValueType::TokenField(token_field_expr.id),
                     attach_id,
                 };
                 Ok(AssignmentWrite::Variable { op, value })
@@ -1515,29 +1514,24 @@ fn translate_write(
                         };
                         Ok(AssignmentWrite::Variable {
                             op,
-                            value: AssignmentWriteVariable::TokenField {
-                                token_field_id: tf_expr.id,
+                            value: AssignmentWriteVariable::DynVarnode {
+                                value_id: DynamicValueType::TokenField(
+                                    tf_expr.id,
+                                ),
                                 attach_id,
                             },
                         })
                     }
                     ExprValue::VarnodeDynamic(ExprVarnodeDynamic {
                         attach_id,
-                        attach_value:
-                            DynamicValueType::TokenField(token_field_id),
+                        attach_value,
                     }) => Ok(AssignmentWrite::Variable {
                         op,
-                        value: AssignmentWriteVariable::TokenField {
-                            token_field_id: *token_field_id,
+                        value: AssignmentWriteVariable::DynVarnode {
+                            value_id: *attach_value,
                             attach_id: *attach_id,
                         },
                     }),
-                    ExprValue::VarnodeDynamic(ExprVarnodeDynamic {
-                        attach_id: _,
-                        attach_value: DynamicValueType::Context(_context_id),
-                    }) => {
-                        todo!();
-                    }
                     ExprValue::Table(id) => {
                         table_write(sleigh, *id, location)?;
                         Ok(AssignmentWrite::TableExport { table_id: *id, op })
@@ -1578,21 +1572,10 @@ fn translate_write(
                 value,
             })
         }
-        AssignmentWrite::Variable {
-            value:
-                AssignmentWriteVariable::TokenField {
-                    token_field_id,
-                    attach_id,
-                },
-            op,
-        } => {
-            let value = AssignmentWriteVariable::TokenField {
-                token_field_id: *token_field_id,
-                attach_id: *attach_id,
-            };
+        AssignmentWrite::Variable { value, op } => {
             Ok(AssignmentWrite::Variable {
                 op: op.to_owned(),
-                value,
+                value: *value,
             })
         }
         AssignmentWrite::Memory { mem, addr } => {

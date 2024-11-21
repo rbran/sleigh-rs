@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::execution::{Binary, VariableId};
+use crate::execution::{Binary, DynamicValueType, VariableId};
 use crate::semantic::execution::{
     Assignment as FinalAssignment, AssignmentOp as FinalAssignmentOp,
     AssignmentWrite as FinalAssignmentType,
@@ -10,7 +10,7 @@ use crate::semantic::inner::execution::TableExportType;
 use crate::semantic::inner::{Sleigh, SolverStatus};
 use crate::{
     AttachVarnodeId, BitrangeId, ExecutionError, NumberNonZeroUnsigned,
-    NumberUnsigned, Span, TableId, TokenFieldId, VarSizeError, VarnodeId,
+    NumberUnsigned, Span, TableId, VarSizeError, VarnodeId,
 };
 
 use super::{
@@ -83,12 +83,12 @@ impl AssignmentWrite {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum AssignmentWriteVariable {
     Varnode(VarnodeId),
     Bitrange(BitrangeId),
-    TokenField {
-        token_field_id: TokenFieldId,
+    DynVarnode {
+        value_id: DynamicValueType,
         attach_id: AttachVarnodeId,
     },
     Local {
@@ -105,11 +105,11 @@ impl AssignmentWriteVariable {
             AssignmentWriteVariable::Bitrange(bit) => {
                 FinalAssignmentValueWrite::Bitrange(bit)
             }
-            AssignmentWriteVariable::TokenField {
-                token_field_id,
+            AssignmentWriteVariable::DynVarnode {
+                value_id,
                 attach_id,
-            } => FinalAssignmentValueWrite::TokenField {
-                token_field_id,
+            } => FinalAssignmentValueWrite::DynVarnode {
+                value_id,
                 attach_id,
             },
             AssignmentWriteVariable::Local { id, creation: _ } => {
@@ -222,7 +222,7 @@ impl Assignment {
                     }
                     AssignmentWriteVariable::Varnode(_)
                     | AssignmentWriteVariable::Bitrange(_)
-                    | AssignmentWriteVariable::TokenField { .. } => {}
+                    | AssignmentWriteVariable::DynVarnode { .. } => {}
                 }
             }
             AssignmentWrite::Memory { mem, addr } => {
@@ -286,7 +286,7 @@ impl Assignment {
             } => FieldSize::new_bits(sleigh.bitrange(*bit).bits.len()),
             AssignmentWrite::Variable {
                 op: None,
-                value: AssignmentWriteVariable::TokenField { attach_id, .. },
+                value: AssignmentWriteVariable::DynVarnode { attach_id, .. },
             } => FieldSize::new_bytes(
                 sleigh.attach_varnodes_len_bytes(*attach_id),
             ),
@@ -326,7 +326,7 @@ impl Assignment {
             ))),
             AssignmentWrite::Variable {
                 op: None,
-                value: AssignmentWriteVariable::TokenField { attach_id, .. },
+                value: AssignmentWriteVariable::DynVarnode { attach_id, .. },
             } => Box::new(FieldSizeUnmutable(FieldSize::new_bytes(
                 sleigh.attach_varnodes_len_bytes(*attach_id),
             ))),

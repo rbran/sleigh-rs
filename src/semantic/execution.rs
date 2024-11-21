@@ -283,7 +283,7 @@ pub enum ExprVarnode {
 }
 
 /// Only used for types with attachment values to Varnodes/Ints
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum DynamicValueType {
     TokenField(TokenFieldId),
     Context(ContextId),
@@ -393,8 +393,8 @@ pub enum AssignmentWrite {
 pub enum AssignmentWriteVariable {
     Varnode(VarnodeId),
     Bitrange(BitrangeId),
-    TokenField {
-        token_field_id: TokenFieldId,
+    DynVarnode {
+        value_id: DynamicValueType,
         attach_id: AttachVarnodeId,
     },
     Variable(VariableId),
