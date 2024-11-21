@@ -177,6 +177,10 @@ impl Assignment {
             solved.i_did_a_thing();
         }
 
+        if hack_force_solve_usercall(self, sleigh, execution)? {
+            solved.i_did_a_thing();
+        }
+
         // TODO check left size can be truncated correctly
 
         // left and right sizes are the same
@@ -850,4 +854,29 @@ fn hack_1_byte_varnode_assign_to_bit(
     });
 
     true
+}
+
+// HACK force solving simple usercall
+// eg YmmReg1 = vpblendd_avx2( vexVVVV_YmmReg, YmmReg2_m256, imm8:1 ); # vpblendd_avx2 is pcodeop
+fn hack_force_solve_usercall(
+    ass: &mut Assignment,
+    sleigh: &Sleigh,
+    execution: &Execution,
+) -> Result<bool, Box<VarSizeError>> {
+    // if right is a simple user_call
+    let Expr::Value(ExprElement::UserCall(usercall)) = &ass.right else {
+        return Ok(false);
+    };
+    let location = usercall.location.clone();
+    // user the same size on both sides
+    let (mut left_size, mut right_size) =
+        ass.left_and_right_size_mut(sleigh, execution);
+    len::a_equivalent_b(&mut *left_size, &mut *right_size).ok_or_else(|| {
+        Box::new(VarSizeError::AssignmentSides {
+            left: left_size.get(),
+            right: right_size.get(),
+            location: location.clone(),
+            backtrace: format!("{}:{}", file!(), line!()),
+        })
+    })
 }
