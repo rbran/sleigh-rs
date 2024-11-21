@@ -475,6 +475,13 @@ pub fn a_receive_b(
         modified |= intersect_all(&mut [a, b])?;
     }
 
+    // if one allow possible_value and the other do not, forward the possible_value
+    modified |= match (a.get().possible_value(), b.get().possible_value()) {
+        (Some(a), None) => b.update_action(|b| b.set_possible_bits(a)).unwrap(),
+        (None, Some(b)) => a.update_action(|a| a.set_possible_bits(b)).unwrap(),
+        (Some(_), Some(_)) | (None, None) => false,
+    };
+
     // if b allow possible min, a also allow min
     if b.get().possible_min() {
         modified |= a.update_action(|a| Some(a.set_possible_min())).unwrap();
