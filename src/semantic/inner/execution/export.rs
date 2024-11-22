@@ -429,6 +429,11 @@ impl Export {
                 value,
                 input_len,
             } => {
+                if hack_export_simple_disassembly_value(
+                    value, sleigh, execution,
+                ) {
+                    solved.i_did_a_thing();
+                }
                 // input can have any size
                 value.solve(sleigh, execution, solved)?;
                 *input_len = value.size(sleigh, execution);
