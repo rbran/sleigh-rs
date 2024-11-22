@@ -423,7 +423,13 @@ impl Export {
     ) -> Result<(), Box<ExecutionError>> {
         match self {
             Self::AttachVarnode { .. } => Ok(()),
-            Self::Value(expr) => expr.solve(sleigh, execution, solved),
+            Self::Value(expr) => {
+                if hack_export_simple_disassembly_value(expr, sleigh, execution)
+                {
+                    solved.i_did_a_thing();
+                }
+                expr.solve(sleigh, execution, solved)
+            }
             Self::Reference { addr, memory } => {
                 addr.solve(sleigh, execution, solved)?;
                 memory.solve(solved);
@@ -457,4 +463,37 @@ impl Export {
             }
         }
     }
+}
+
+// HACK allow tables to export disassembly values without any clue to the required size of it
+// eg:
+// ```
+// # RIP/EIP relative address - NOTE: export of size 0 is intentional so it may be adjusted
+// pcRelSimm32: addr	is simm32 [ addr=inst_next+simm32; ] { export addr; }
+// ```
+fn hack_export_simple_disassembly_value(
+    expr: &mut Expr,
+    sleigh: &Sleigh,
+    execution: &Execution,
+) -> bool {
+    // export size need to be undefined
+    if !expr.size(sleigh, execution).is_fully_undefined() {
+        return false;
+    }
+
+    // exported value need to be a simple disassembly variable
+    let Expr::Value(ExprElement::Value {
+        location: _,
+        value: ExprValue::DisVar(dis_expr),
+    }) = expr
+    else {
+        return false;
+    };
+
+    // set the variable to have the possible len of 64bits
+    dis_expr.size = dis_expr
+        .size
+        .set_possible_bits(64.try_into().unwrap())
+        .unwrap();
+    true
 }

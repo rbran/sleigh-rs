@@ -627,7 +627,7 @@ pub trait ExecutionBuilder {
                     // for the default space
                     Some(TableExportType::Const(_))
                     | Some(TableExportType::Value(_)) => {
-                        todo!();
+                        todo!("write to {:?}", &input.src);
                         // let space = self
                         //     .sleigh()
                         //     .default_space()

@@ -381,6 +381,20 @@ impl<'a> FieldSizeMut for FieldSizeTableExport<'a> {
     }
 }
 
+pub struct FieldSizeRefMut<'a>(pub(crate) std::cell::RefMut<'a, FieldSize>);
+impl<'a> FieldSizeMut for FieldSizeRefMut<'a> {
+    fn get(&self) -> FieldSize {
+        *self.0
+    }
+    fn set(&mut self, size: FieldSize) -> Option<bool> {
+        let modify = *self.0 != size;
+        if modify {
+            *self.0 = size;
+        }
+        Some(modify)
+    }
+}
+
 fn intersect_all(fields: &mut [&mut dyn FieldSizeMut]) -> Option<bool> {
     let final_len = fields
         .iter_mut()
@@ -573,6 +587,74 @@ pub fn a_b_generate_c(
             }
         }
         _ => {}
+    }
+
+    Some(modified)
+}
+
+// multiple inputs generate a single output
+// use by combining multiple exports statement into a single constructors export
+// and multiples constructors into a single table export
+pub fn n_generate_a(
+    n: &mut [FieldSize],
+    mut c: &mut FieldSize,
+) -> Option<bool> {
+    let mut modified = false;
+    // start with the final output size
+    let mut acc = c.get();
+    let mut possible_min = acc.possible_min();
+
+    for input_size in n.iter_mut() {
+        let input_size = input_size.get();
+        // combine all the input sizes with the current output size
+        acc = acc.intersection(input_size)?;
+        // if any is possible_min, they all will be possible_min
+        possible_min |= input_size.possible_min();
+    }
+
+    if possible_min {
+        acc = acc.set_possible_min();
+    }
+
+    // update the input sizes
+    for input_size in n.iter_mut() {
+        modified |= input_size.update_action(|mut size| {
+            if possible_min {
+                size = size.set_possible_min();
+            }
+            size.intersection(acc)
+        })?;
+    }
+
+    // get the possible_value if all inputs and output have the same possible_value
+    // NOTE: None means no possible_value found, Some(None) means there multiple possible values
+    let mut possible_value = acc.possible_value().map(Some);
+    for input_size in n.iter_mut() {
+        let Some(input_size) = input_size.get().possible_value() else {
+            break;
+        };
+        match possible_value {
+            None => possible_value = Some(Some(input_size)),
+            Some(Some(value)) if value == input_size => {},
+            Some(Some(_value)) /*if _value != input_size*/ => {
+                possible_value = Some(None);
+                break;
+            },
+            Some(None) => unreachable!(),
+        }
+    }
+
+    // update values to include the final value
+    if let Some(Some(possible_value)) = possible_value {
+        acc.update_action(|x| x.set_possible_bits(possible_value))?;
+    }
+    modified |= c.set(acc)?;
+    for input_size in n.iter_mut() {
+        if let Some(Some(possible_value)) = possible_value {
+            modified |= input_size
+                .update_action(|size| size.set_possible_bits(possible_value))?;
+        }
+        input_size.update_action(|size| size.intersection(acc))?;
     }
 
     Some(modified)

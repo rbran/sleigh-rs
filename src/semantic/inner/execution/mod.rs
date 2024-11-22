@@ -1,3 +1,5 @@
+use std::cell::{Ref, RefMut};
+
 use crate::semantic::execution::{
     BlockId, BranchCall, Build, Execution as FinalExecution,
     Statement as FinalStatement, VariableId,
@@ -12,7 +14,7 @@ mod expr;
 pub use expr::*;
 mod op;
 pub use op::*;
-mod len;
+pub(crate) mod len;
 pub use len::*;
 mod export;
 pub use export::*;
@@ -120,58 +122,33 @@ impl Execution {
             .try_for_each(|block| block.solve(sleigh, self, solved))?;
 
         //get the export sizes, otherwise we are finished
-        let mut return_size =
-            if let Some(size) = self.return_value.size().cloned() {
-                size
-            } else {
-                return Ok(());
-            };
-        //find and combine all the output sizes
-        let mut modified = self
-            .blocks
-            .iter()
-            .filter(|block| block.next.is_none())
-            .filter_map(|block| {
-                let last = block.statements.last()?.borrow();
-                match &*last {
-                    Statement::Export(exp) => {
-                        Some(exp.output_size(sleigh, self))
-                    }
-                    _ => None,
-                }
-            })
-            .try_fold(false, |acc, out_size| {
-                return_size
-                    .update_action(|size| size.intersection(out_size))
-                    .map(|modified| acc | modified)
-                    .ok_or_else(|| Box::new(ExecutionError::InvalidExport))
-            })?;
-        //update all the export output sizes
-        self.blocks
-            .iter()
-            .filter(|block| block.next.is_none())
-            .filter_map(|block| block.statements.last())
-            .for_each(|statement| {
-                let mut statement = statement.borrow_mut();
-                if let Statement::Export(export) = &mut *statement {
-                    modified |= export
-                        .output_size_mut(sleigh, self)
-                        .update_action(|size| size.intersection(return_size))
-                        .unwrap();
-                }
-            });
-        modified |= self
-            .return_value
-            .size_mut()
-            .unwrap()
-            .update_action(|size| size.intersection(return_size))
-            .unwrap();
+        let Some(mut return_size) = self.return_value.size().cloned() else {
+            return Ok(());
+        };
+
+        // calculate the new exported value
+        let mut inputs: Vec<FieldSize> = self
+            .export_statements_mut()
+            .map(|x| x.output_size(sleigh, self))
+            .collect();
+        let modified =
+            len::n_generate_a(inputs.as_mut_slice(), &mut return_size)
+                .ok_or_else(|| Box::new(ExecutionError::InvalidExport))?;
+
         if modified {
             solved.i_did_a_thing();
+            for (new_size, mut old_size) in
+                inputs.into_iter().zip(self.export_statements_mut())
+            {
+                old_size.output_size_mut(sleigh, self).set(new_size);
+            }
+            *self.return_value.size_mut().unwrap() = return_size;
         }
+
         if return_size.is_undefined() {
             solved.iam_not_finished(&self.src, file!(), line!());
         }
+
         Ok(())
     }
     pub fn convert(self) -> FinalExecution {
@@ -246,5 +223,43 @@ impl Execution {
         let var = Variable::new(name, src, size, explicit);
         self.variables.push(var);
         Ok(VariableId(var_id))
+    }
+
+    pub fn export_statements(&self) -> impl Iterator<Item = Ref<Export>> {
+        self.blocks
+            .iter()
+            .filter(|block| block.next.is_none())
+            .filter_map(|block| {
+                let last = block.statements.last()?.borrow();
+                if !matches!(&*last, Statement::Export(_)) {
+                    return None;
+                }
+                Some(Ref::map(last, |last| {
+                    let Statement::Export(exp) = last else {
+                        unreachable!();
+                    };
+                    exp
+                }))
+            })
+    }
+
+    pub fn export_statements_mut(
+        &self,
+    ) -> impl Iterator<Item = RefMut<Export>> {
+        self.blocks
+            .iter()
+            .filter(|block| block.next.is_none())
+            .filter_map(|block| {
+                let last = block.statements.last()?.borrow_mut();
+                if !matches!(&*last, Statement::Export(_)) {
+                    return None;
+                }
+                Some(RefMut::map(last, |last| {
+                    let Statement::Export(exp) = last else {
+                        unreachable!();
+                    };
+                    exp
+                }))
+            })
     }
 }

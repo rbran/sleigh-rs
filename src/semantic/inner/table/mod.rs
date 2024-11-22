@@ -305,49 +305,43 @@ impl Table {
         //here
         //update all the constructors return size, if none/undefined return just
         //finish solving
-        let mut modified = false;
         let mut export = self.export.borrow_mut();
-        let Some(new_size) = export.as_mut().and_then(|x| x.size_mut()) else {
+        let Some(export_size) = export.as_mut().and_then(|x| x.size_mut())
+        else {
             return Ok(());
         };
-        //find the sizes of all contructors
-        for con in self.constructors.borrow().iter() {
-            //if the execution is unimpl, ignore this constructor
-            let (src, size) = if let Some(exe) = con.execution() {
-                (&con.src, exe.return_value.size().unwrap(/*unreachable*/))
-            } else {
-                continue;
-            };
-            modified |= new_size
-                .update_action(|new_size| new_size.intersection(*size))
-                .ok_or_else(|| {
-                    SleighError::new_table(
-                        src.clone(),
-                        TableError::TableConstructorExportSizeInvalid,
-                    )
-                })?;
-        }
 
-        //update all the constructors
-        for con in self.constructors.borrow_mut().iter_mut() {
-            let src = con.src.clone();
-            //if the execution is unimpl, ignore this constructor
-            let (src, size) = if let Some(exe) = con.execution_mut() {
-                let size = exe.return_value.size_mut().unwrap(/*unreachable*/);
-                (src, size)
-            } else {
-                continue;
-            };
-            modified |= size
-                .update_action(|size| size.intersection(*new_size))
-                .unwrap();
-            if size.is_undefined() {
-                solved.iam_not_finished(&src, file!(), line!());
-            }
-        }
-        //update the export size
+        // calculate the new exported value
+        let mut inputs: Vec<FieldSize> = self
+            .constructors
+            .borrow()
+            .iter()
+            .filter_map(|con| con.execution())
+            .map(|exe| exe.return_value.size().unwrap().clone())
+            .collect();
+        let modified = super::execution::len::n_generate_a(
+            inputs.as_mut_slice(),
+            export_size,
+        )
+        .ok_or_else(|| SleighError::TableUnsolvable(self.name.clone()))?;
+
+        // update all the constructors
         if modified {
             solved.i_did_a_thing();
+            let mut constructors = self.constructors.borrow_mut();
+            let execs = constructors
+                .iter_mut()
+                .filter_map(|con| con.execution_mut());
+            for (new_size, exe) in inputs.into_iter().zip(execs) {
+                let old_size = exe.return_value.size_mut().unwrap();
+                *old_size = new_size;
+            }
+        }
+
+        if export_size.is_undefined() {
+            for constructor in self.constructors.borrow().iter() {
+                solved.iam_not_finished(&constructor.src, file!(), line!());
+            }
         }
         Ok(())
     }
