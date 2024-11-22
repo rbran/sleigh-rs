@@ -782,10 +782,6 @@ fn hack_auto_zext_right_side(
             op: None,
         } => {
             let var = execution.variable(*id);
-            // TODO maybe allow non explicit declared variables
-            if !var.explicit {
-                return false;
-            }
             let Some(bits) = var.size.get().final_value() else {
                 return false;
             };
@@ -801,7 +797,7 @@ fn hack_auto_zext_right_side(
         _ => return false,
     };
 
-    // left side need to be smaller then the right side
+    // right side need to be smaller then the right side
     let Some(right_size) = ass.right.size(sleigh, execution).max_bits() else {
         return false;
     };
@@ -817,6 +813,7 @@ fn hack_auto_zext_right_side(
             swap_right,
         ))
     });
+
     true
 }
 

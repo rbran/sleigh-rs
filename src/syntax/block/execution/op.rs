@@ -30,6 +30,7 @@ impl ByteRangeMsb {
 }
 #[derive(Clone, Debug)]
 pub struct ByteRangeLsb {
+    // TODO NumberNonZeroUnsigned?
     pub value: NumberUnsigned,
     pub src: Span,
 }

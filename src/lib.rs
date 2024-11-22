@@ -993,6 +993,7 @@ mod test {
     #[test]
     fn parse_all() {
         const ARCHS: &[&str] = &[
+            "x86/data/languages/x86-64.slaspec",
             //"RISCV/data/languages/riscv.lp64d.slaspec",
             //"RISCV/data/languages/riscv.ilp32d.slaspec",
             "DATA/data/languages/data-le-64.slaspec",
@@ -1047,8 +1048,8 @@ mod test {
             //"PIC/data/languages/pic16f.slaspec",
             //"Xtensa/data/languages/xtensa_be.slaspec",
             //"Xtensa/data/languages/xtensa_le.slaspec",
-            //"tricore/data/languages/tricore.slaspec",
-            //"PA-RISC/data/languages/pa-risc32be.slaspec",
+            "tricore/data/languages/tricore.slaspec",
+            "PA-RISC/data/languages/pa-risc32be.slaspec",
             //"TI_MSP430/data/languages/TI_MSP430X.slaspec",
             //"TI_MSP430/data/languages/TI_MSP430.slaspec",
             //"PowerPC/data/languages/ppc_32_quicciii_le.slaspec",
@@ -1080,7 +1081,7 @@ mod test {
             "Atmel/data/languages/avr8xmega.slaspec",
             "Atmel/data/languages/avr8e.slaspec",
             "Atmel/data/languages/avr8eind.slaspec",
-            //"x86/data/languages/x86.slaspec",
+            "x86/data/languages/x86.slaspec",
             //"x86/data/languages/x86-64.slaspec",
             "CP1600/data/languages/CP1600.slaspec",
             "SuperH/data/languages/sh-2.slaspec",
